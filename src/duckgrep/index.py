@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import posixpath
+import re
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -195,6 +196,34 @@ def _go_modules(root: str, paths: list[str]) -> list[tuple[str, str]]:
     return sorted(mods, key=lambda m: -len(m[1]))
 
 
+_TOML_SECTION = re.compile(r"^\s*\[\s*([A-Za-z0-9_.\-]+)\s*\]")
+_TOML_NAME = re.compile(r"""^\s*name\s*=\s*["']([^"']+)["']""")
+
+
+def _rust_crates(root: str, paths: list[str]) -> list[tuple[str, str]]:
+    """(package dir, crate import name) for every Cargo.toml with a [package]; deepest dir first."""
+    crates = []
+    for p in paths:
+        if posixpath.basename(p) != "Cargo.toml":
+            continue
+        section, names = None, {}
+        try:
+            with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
+                for ln in f:
+                    m = _TOML_SECTION.match(ln)
+                    if m:
+                        section = m.group(1)
+                        continue
+                    m = _TOML_NAME.match(ln)
+                    if m and section in ("package", "lib"):
+                        names.setdefault(section, m.group(1))
+        except OSError:
+            continue
+        if "package" in names:
+            crates.append((posixpath.dirname(p), names.get("lib", names["package"]).replace("-", "_")))
+    return sorted(crates, key=lambda c: -len(c[0]))
+
+
 def extractor_version() -> str:
     """Hash of the extraction code: any change forces a full re-parse."""
     from . import extract as _e
@@ -296,7 +325,12 @@ def freshen(
     st.deleted = len(deleted)
     st.touched = len(touched)
 
-    ctx = {"gomods": _go_modules(root, paths)} if any(lang == "go" for _, lang, parse in jobs if parse) else {}
+    parsed = {lang for _, lang, parse in jobs if parse}
+    ctx = {}
+    if "go" in parsed:
+        ctx["gomods"] = _go_modules(root, paths)
+    if "rust" in parsed:
+        ctx["rscrates"] = _rust_crates(root, paths)
     replaced = list(file_rows) + deleted
     rebuild_edges = full or len(replaced) > 0.3 * max(1, len(listed))
 

@@ -566,25 +566,72 @@ def _imports_go(node, src, path, ctx):
     return out
 
 
-def _rs_modpath(path: str) -> list[str]:
-    parts = path.split("/")
-    if "src" in parts:
-        parts = parts[len(parts) - parts[::-1].index("src") :]
-    stem = parts[-1].rsplit(".", 1)[0]
-    parts = parts[:-1] + ([] if stem in ("lib", "main", "mod") else [stem])
-    return ["crate"] + parts
+RS_EXTERNAL = frozenset({"std", "core", "alloc", "proc_macro", "test"})
 
 
-def _rs_abs(mod: str, path: str) -> str:
+def _rs_crate(path: str, ctx) -> tuple[str, str] | None:
+    """(package dir, crate import name) of the Cargo package that owns `path`; None outside any package."""
+    for d, name in (ctx or {}).get("rscrates", ()):
+        if not d or path.startswith(d + "/"):
+            return d, name
+    return None
+
+
+def _rs_roots(path: str, ctx) -> tuple[list[str], list[str]]:
+    """(crate root segments, module segments) of a Rust file.
+
+    Files under <package>/src belong to crate <name>. tests/, examples/ and benches/ files are their own
+    crate roots, keyed <name>::tests and so on. Other files outside src/ (build.rs) get a key no import can
+    name. Without a Cargo.toml the old scheme applies: 'crate' + the path after the last src/.
+    """
+    crate = _rs_crate(path, ctx)
+    if crate is None:
+        rel = path.split("/")
+        if "src" in rel:
+            rel = rel[len(rel) - rel[::-1].index("src") :]
+        root = ["crate"]
+    else:
+        d, name = crate
+        rel = (path[len(d) + 1 :] if d else path).split("/")
+        if rel[0] == "src":
+            root, rel = [name], rel[1:]
+        elif rel[0] in ("tests", "examples", "benches") and len(rel) > 1:
+            root, rel = [name, rel[0]], rel[1:]
+        else:
+            return [name, "!" + "/".join(rel)], []
+    stem = rel[-1].rsplit(".", 1)[0]
+    return root, rel[:-1] + ([] if stem in ("lib", "main", "mod") else [stem])
+
+
+def _rs_modpath(path: str, ctx=None) -> list[str]:
+    root, mods = _rs_roots(path, ctx)
+    return root + mods
+
+
+def _rs_abs(mod: str, path: str, ctx=None, inline=()) -> str:
+    """Module key of a `use` path written in `path`, inside the inline `mod` blocks `inline`."""
     segs = mod.split("::") if mod else []
-    here = _rs_modpath(path)
-    if segs and segs[0] == "self":
+    if segs and segs[0] == "":  # ::name
+        segs = segs[1:]
+    root, mods = _rs_roots(path, ctx)
+    here = root + mods + list(inline)
+    crates = {name for _, name in (ctx or {}).get("rscrates", ())}
+    if not segs:
+        return "::".join(here)
+    head = segs[0]
+    if head == "crate":
+        segs = root + segs[1:]
+    elif head == "self":
         segs = here + segs[1:]
-    elif segs and segs[0] == "super":
+    elif head == "super":
         n = 0
         while n < len(segs) and segs[n] == "super":
             n += 1
-        segs = here[: max(1, len(here) - n)] + segs[n:]
+        segs = here[: max(len(root), len(here) - n)] + segs[n:]
+    elif head in crates or head in RS_EXTERNAL:
+        pass
+    else:  # 2018 uniform paths: an item of the current module (`mod auth; use auth::Signer;`)
+        segs = here + segs
     return "::".join(segs)
 
 
@@ -623,16 +670,25 @@ def _imports_rust(node, src, path, ctx):
             inner = n.named_children[0] if n.named_child_count else None
             out.append(("::".join(x for x in (prefix, _text(src, inner) if inner is not None else "") if x), "*", None))
 
+    inline = []
+    p = node.parent
+    while p is not None:
+        if p.type == "mod_item" and p.child_by_field_name("body") is not None:
+            nm = p.child_by_field_name("name")
+            if nm is not None:
+                inline.append(_text(src, nm))
+        p = p.parent
+    inline.reverse()
     arg = node.child_by_field_name("argument")
     if arg is not None:
         flatten(arg, "")
     rows = []
     for mod, nm, alias in out:
         if nm == "self":
-            key = _rs_abs(mod, path)
+            key = _rs_abs(mod, path, ctx, inline)
             rows.append((mod, None, alias, alias or mod.rsplit("::", 1)[-1], line, key, None))
             continue
-        key = _rs_abs(mod, path)
+        key = _rs_abs(mod, path, ctx, inline)
         sub = f"{key}::{nm}" if nm != "*" else None
         rows.append((mod, nm, alias, (alias or nm) if nm != "*" else None, line, key, sub))
     return rows
@@ -648,7 +704,7 @@ IMPORT_FNS = {
 }
 
 
-def module_keys(path: str, lang: str) -> list[tuple[str, int]]:
+def module_keys(path: str, lang: str, ctx: dict | None = None) -> list[tuple[str, int]]:
     """Keys under which other files can import `path`, with number of dropped prefix components."""
     if lang == "python":
         parts = path.rsplit(".", 1)[0].split("/")
@@ -664,7 +720,7 @@ def module_keys(path: str, lang: str) -> list[tuple[str, int]]:
     if lang == "go":
         return [(posixpath.dirname(path), 0)]
     if lang == "rust":
-        return [("::".join(_rs_modpath(path)), 0)]
+        return [("::".join(_rs_modpath(path, ctx)), 0)]
     return []
 
 
@@ -829,5 +885,5 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
 
     if errors == 0 and tree.root_node.has_error:
         errors = 1
-    mods = [(path, family, k, d) for k, d in module_keys(path, lang)]
+    mods = [(path, family, k, d) for k, d in module_keys(path, lang, ctx)]
     return {"symbols": symbols, "refs": refs, "imports": imports, "modules": mods, "parse_errors": errors}
