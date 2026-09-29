@@ -15,7 +15,8 @@ from .index import find_root
 from .schema import SCHEMA_DOC
 
 QUERY_DOC = f"""Query the codebase index with DuckDB SQL (read-only). Prefer this over grep/find for
-locating definitions, callers, imports, and anything structural. Results are tab-separated.
+locating definitions, callers, imports, and anything structural. Results are tab-separated; cell text is verbatim (tabs and backslashes
+included) except newlines, shown as ⏎, and cells over 300 characters, cut with ….
 The index is refreshed incrementally before each call, so it reflects your latest edits.
 
 {SCHEMA_DOC}"""

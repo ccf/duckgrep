@@ -69,10 +69,11 @@ def run(root: str, sql: str, max_rows: int = 200, timeout: float = 30.0, fresh: 
 
 
 def _cell(v) -> str:
+    """The value as stored, so code can be pasted into an edit; only newlines (⏎) and long cells (…) change."""
     if v is None:
         return ""
     s = v if isinstance(v, str) else str(v)
-    s = s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+    s = s.replace("\r\n", "⏎").replace("\n", "⏎").replace("\r", "⏎")
     return s if len(s) <= MAX_CELL else s[: MAX_CELL - 1] + "…"
 
 
@@ -95,7 +96,7 @@ def format_tsv(res: Result) -> str:
 def format_table(res: Result) -> str:
     if not res.columns:
         return res.note or "(ok)"
-    cells = [[_cell(v) for v in r] for r in res.rows]
+    cells = [[_cell(v).expandtabs(4) for v in r] for r in res.rows]
     widths = [min(80, max([len(c)] + [len(r[i]) for r in cells])) for i, c in enumerate(res.columns)]
 
     def fmt(row):
