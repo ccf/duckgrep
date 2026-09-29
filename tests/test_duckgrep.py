@@ -108,7 +108,10 @@ def test_read_only(repo):
         q.run(repo, f"SELECT * FROM read_text('{path}')")
 
 
-def test_git_history(repo):
+def test_git_history(repo, monkeypatch):
+    # under a pre-commit hook GIT_DIR/GIT_INDEX_FILE name the outer repo; neither these git calls nor duckgrep's may see them
+    for k in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(k)
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "a",
