@@ -5,6 +5,8 @@ more than one file (import resolution, call edges) is a *view*, so it is always
 consistent with the base tables and never needs a global rebuild.
 """
 
+from . import builtin_names
+
 SCHEMA_VERSION = 3
 
 TABLES = """
@@ -122,10 +124,12 @@ NAME_CAP = 10
 #        2 = name match only, kept when <= NAME_CAP candidates ('name'),
 #            otherwise one row with no target ('ambiguous')
 #        calls with no candidate at all -> 'unresolved' (external / builtin)
-EDGES_COMPUTE = """
+_EDGES_TEMPLATE = """
 INSERT INTO edges
 WITH r AS (
-    SELECT r.*, f.family, regexp_replace(r.path, '/[^/]*$', '') AS dir
+    SELECT r.*, f.family, regexp_replace(r.path, '/[^/]*$', '') AS dir,
+           regexp_extract(r.receiver, '^[A-Za-z_$][A-Za-z0-9_$]*') AS recv_root,
+           regexp_extract(r.receiver, '[A-Za-z_$][A-Za-z0-9_$]*$') AS recv_last
     FROM {source} r JOIN files f USING (path)
     WHERE r.kind NOT IN ('write', 'kwarg', 'import') AND ({where})
 ),
@@ -148,6 +152,19 @@ rx AS (  -- one hop of re-exports: names that imported modules themselves import
     WHERE j.target_path IS NOT NULL AND NOT j.target_is_module
       AND j.path IN (SELECT target_path FROM imp)
       AND (j."local" IS NOT NULL OR j.name = '*')
+),
+ext AS (  -- local names bound by imports that don't resolve inside the repo (stdlib, third party)
+    SELECT DISTINCT i.path, i."local" FROM imps i
+    WHERE i."local" IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM imp WHERE imp.path = i.path AND imp."local" = i."local")
+),
+builtin_methods(family, name) AS (VALUES @BUILTIN_METHODS@),
+builtin_globals(family, name) AS (VALUES @BUILTIN_GLOBALS@),
+bglob AS (  -- builtin receivers (Date, Math, str, Vec ...) the file doesn't rebind
+    SELECT DISTINCT r.path, r.recv_root AS name FROM r
+    JOIN builtin_globals g ON g.family = r.family AND g.name = r.recv_root
+    WHERE NOT EXISTS (SELECT 1 FROM imps i WHERE i.path = r.path AND i."local" = r.recv_root)
+      AND NOT EXISTS (SELECT 1 FROM symbols s WHERE s.path = r.path AND s.name = r.recv_root AND s.parent IS NULL)
 ),
 sym AS (
     SELECT s.*, regexp_replace(s.path, '/[^/]*$', '') AS dir, f.family
@@ -204,25 +221,58 @@ t1 AS (
            AND s.name = CASE WHEN rx.name = '*' THEN r.name ELSE coalesce(nullif(rx.name, 'default'), rx."local") END
     WHERE r.receiver IS NOT NULL
   UNION ALL
+    -- `from m import *` / `use m::*`: a bare name defined at the top of the star-imported module
+    SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'import'
+    FROM r
+    JOIN imp i ON i.path = r.path AND i.name = '*' AND i."local" IS NULL
+    JOIN sym s ON s.path = i.target_path AND s.name = r.name AND s.parent IS NULL
+    WHERE r.receiver IS NULL
+  UNION ALL
+    -- ... or re-exported by it
+    SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'import'
+    FROM r
+    JOIN imp i ON i.path = r.path AND i.name = '*' AND i."local" IS NULL
+    JOIN rx ON rx.mod_path = i.target_path AND (rx."local" = r.name OR (rx.name = '*' AND rx."local" IS NULL))
+    JOIN sym s ON s.path = rx.target_path AND s.parent IS NULL
+           AND s.name = CASE WHEN rx.name = '*' THEN r.name ELSE coalesce(nullif(rx.name, 'default'), rx."local") END
+    WHERE r.receiver IS NULL
+  UNION ALL
+    -- Class.method / Type::method, with the class bound in this file: defined here, imported by name
+    -- (directly or through one re-export), or reached through an imported module (mod.Class.method)
     SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'qualified'
-    FROM r JOIN sym s ON s.name = r.name AND s.parent IS NOT NULL
-         AND (s.parent = r.receiver OR ends_with(s.parent, '.' || r.receiver))
+    FROM r JOIN sym s ON s.name = r.name AND s.family = r.family AND s.parent IS NOT NULL
+         AND (s.parent = r.recv_last OR ends_with(s.parent, '.' || r.recv_last))
     WHERE r.receiver IS NOT NULL AND r.receiver NOT IN ('self', 'cls', 'this', 'Self')
+      AND regexp_matches(r.recv_last, '^[A-Z]')
+      AND (s.path = r.path
+           OR EXISTS (SELECT 1 FROM imp i WHERE i.path = r.path AND i.target_path = s.path
+                        AND i."local" IN (r.recv_last, r.recv_root))
+           OR EXISTS (SELECT 1 FROM imp i JOIN rx ON rx.mod_path = i.target_path
+                      WHERE i.path = r.path AND i."local" = r.recv_last
+                        AND rx."local" = coalesce(nullif(i.name, 'default'), r.recv_last)
+                        AND rx.target_path = s.path))
 ),
-t1d AS (
+t1d AS (  -- one row per (ref, target): the strongest tier, then the first definition
     SELECT DISTINCT ON (path, line, col, dst_path, dst_qualname) * FROM t1
+    ORDER BY path, line, col, dst_path, dst_qualname,
+             list_position(['self', 'local', 'package', 'import', 'module', 'qualified'], resolution), dst_line
 ),
 t1refs AS (SELECT DISTINCT path, line, col FROM t1d),
 nc AS (
     SELECT family, name,
-           count(*) FILTER (WHERE kind <> 'method') AS n_bare,
+           count(*) FILTER (WHERE kind = 'macro' OR ends_with(path, '.d.ts')) AS n_bare,
            count(*) FILTER (WHERE parent IS NOT NULL OR family IN ('go', 'rs')) AS n_member
     FROM sym GROUP BY ALL
 ),
 rest AS (
-    SELECT r.*, CASE WHEN r.receiver IS NULL THEN nc.n_bare ELSE nc.n_member END AS n
+    SELECT r.*, CASE WHEN r.receiver IS NULL THEN nc.n_bare ELSE nc.n_member END AS n,
+           (x.path IS NOT NULL OR g.path IS NOT NULL) AS external,
+           bm.name IS NOT NULL AS builtin_method
     FROM r
     LEFT JOIN nc ON nc.family = r.family AND nc.name = r.name
+    LEFT JOIN ext x ON r.receiver IS NOT NULL AND x.path = r.path AND x."local" = r.recv_root
+    LEFT JOIN bglob g ON r.receiver IS NOT NULL AND g.path = r.path AND g.name = r.recv_root
+    LEFT JOIN builtin_methods bm ON r.receiver IS NOT NULL AND bm.family = r.family AND bm.name = r.name
     ANTI JOIN t1refs t ON t.path = r.path AND t.line = r.line AND t.col = r.col
 ),
 out AS (
@@ -230,21 +280,32 @@ out AS (
            count(*) OVER (PARTITION BY path, line, col) AS n
     FROM t1d
   UNION ALL
+    -- by name alone: receiver calls of unknown type. A bare name needs an import to reach another file,
+    -- except Rust macros and TypeScript ambient (.d.ts) declarations.
     SELECT r.path, r.scope, r.line, r.col, r.kind, r.name, r.receiver,
            s.path, s.qualname, s.kind, s.start_line, 'name', r.n
     FROM rest r JOIN sym s ON s.name = r.name AND s.family = r.family
-    WHERE r.kind <> 'name' AND r.n BETWEEN 1 AND {cap}
-      AND CASE WHEN r.receiver IS NULL THEN s.kind <> 'method'
+    WHERE r.kind <> 'name' AND r.n BETWEEN 1 AND {cap} AND NOT r.external AND NOT r.builtin_method
+      AND CASE WHEN r.receiver IS NULL THEN s.kind = 'macro' OR ends_with(s.path, '.d.ts')
                ELSE s.parent IS NOT NULL OR s.family IN ('go', 'rs') END
   UNION ALL
     SELECT path, scope, line, col, kind, name, receiver, NULL, NULL, NULL, NULL, 'ambiguous', n
-    FROM rest WHERE kind <> 'name' AND n > {cap}
+    FROM rest WHERE kind <> 'name' AND NOT external AND (n > {cap} OR (builtin_method AND n > 0))
   UNION ALL
     SELECT path, scope, line, col, kind, name, receiver, NULL, NULL, NULL, NULL, 'unresolved', 0
-    FROM rest WHERE kind = 'call' AND coalesce(n, 0) = 0
+    FROM rest WHERE kind = 'call' AND (external OR coalesce(n, 0) = 0)
 )
 SELECT * FROM out
 """
+
+
+def _values(pairs) -> str:
+    return ", ".join(f"('{f}', '{n}')" for f, n in sorted(pairs))
+
+
+EDGES_COMPUTE = _EDGES_TEMPLATE.replace("@BUILTIN_METHODS@", _values(builtin_names.METHODS)).replace(
+    "@BUILTIN_GLOBALS@", _values(builtin_names.GLOBALS)
+)
 
 VIEWS = r"""
 -- Imports joined to the file they refer to (NULL target = external / unresolved).
@@ -337,10 +398,11 @@ TABLES
 
 edges(src_path, src_scope, line, ref_kind, name, receiver, dst_path, dst_qualname, dst_kind, dst_line, resolution, n_candidates)
   reference -> definition (the call graph). resolution:
-    self | local | package | import | module | qualified   confident (import/scope analysis)
-    name        matched by name only, <= 10 candidates (one row each; n_candidates = how many)
-    ambiguous   > 10 same-named definitions; dst_* NULL (typical for obj.get(), obj.save() ...)
-    unresolved  call to something not defined in the repo (stdlib, third-party); dst_* NULL
+    self | local | package | import | module | qualified   confident (scope, import and star-import analysis)
+    name        obj.method() matched by method name only, <= 10 candidates (one row each; n_candidates = how many)
+    ambiguous   > 10 candidates, or a method builtin types also have (get, append, push ...); dst_* NULL
+    unresolved  call to something not defined in the repo (stdlib, builtins, third party); dst_* NULL
+  A bare name never matches by name: it resolves through its file's scope and imports, or not at all.
 
 TABLE MACROS
   defs('name')          where is it defined          callers('name' | 'Class.method')   who uses it
