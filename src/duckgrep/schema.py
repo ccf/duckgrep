@@ -340,17 +340,27 @@ CREATE OR REPLACE MACRO defs(q) AS TABLE
     ORDER BY path, start_line;
 
 -- who references a symbol (name or qualname): one row per reference site, confident first.
--- A bare name also matches ambiguous / unresolved references with that name.
+-- A bare name also matches ambiguous / unresolved references with that name; a qualified one ends with a summary
+-- row counting the calls of that method name on receivers of unknown type.
 -- `targets` lists the candidate definitions when resolution is by name only.
 CREATE OR REPLACE MACRO callers(q) AS TABLE
-    SELECT src_path, line, nullif(src_scope, '') AS caller, ref_kind, left(receiver, 40) AS receiver, resolution,
-           CASE WHEN count(dst_qualname) > 3 THEN count(dst_qualname) || ' candidates'
-                ELSE string_agg(dst_qualname, ', ' ORDER BY dst_qualname) END AS targets
-    FROM edges
-    WHERE dst_qualname = q OR ends_with(dst_qualname, '.' || q)
-       OR (name = q AND position('.' IN q) = 0 AND dst_qualname IS NULL)
-    GROUP BY src_path, line, col, src_scope, ref_kind, receiver, resolution
-    ORDER BY (resolution IN ('name', 'ambiguous', 'unresolved')), src_path, line;
+    SELECT src_path, line, caller, ref_kind, receiver, resolution, targets FROM (
+        SELECT 0 AS ord, src_path, line, nullif(src_scope, '') AS caller, ref_kind, left(receiver, 40) AS receiver,
+               resolution,
+               CASE WHEN count(dst_qualname) > 3 THEN count(dst_qualname) || ' candidates'
+                    ELSE string_agg(dst_qualname, ', ' ORDER BY dst_qualname) END AS targets
+        FROM edges
+        WHERE dst_qualname = q OR ends_with(dst_qualname, '.' || q)
+           OR (name = q AND position('.' IN q) = 0 AND dst_qualname IS NULL)
+        GROUP BY src_path, line, col, src_scope, ref_kind, receiver, resolution
+      UNION ALL
+        SELECT 1, NULL, NULL, NULL, 'call', NULL, 'ambiguous',
+               n || ' call(s) of .' || split_part(q, '.', -1) || '() on receivers of unknown type are not listed; callers('''
+               || split_part(q, '.', -1) || ''') shows them'
+        FROM (SELECT count(*) AS n FROM edges WHERE resolution = 'ambiguous' AND name = split_part(q, '.', -1))
+        WHERE n > 0 AND position('.' IN q) > 0
+    )
+    ORDER BY ord, (resolution IN ('name', 'ambiguous', 'unresolved')), src_path, line;
 
 -- what a function references; `file` and `caller` are filled only when the name matches more than one function
 CREATE OR REPLACE MACRO callees(q) AS TABLE
@@ -424,6 +434,7 @@ TABLE MACROS
   callees('qualname')   what it calls                outline('path/or/suffix.py')       symbols in a file
   grep('regex')         text search + enclosing symbol    source('qualname')           the code of a symbol
   outline, callees and source fill their first column(s) only when the argument matches several files or symbols
+  callers('Class.method') ends with a summary row counting calls on receivers of unknown type (not listed)
 
 EXAMPLES
   SELECT * FROM defs('Session');
