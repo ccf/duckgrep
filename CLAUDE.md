@@ -37,7 +37,8 @@ Every change lands through a pull request:
 
 Bugbot and Greptile review every PR:
 - After each push, wait for both checks, then read every review, inline comment and conversation comment.
-- Check each comment against the code before acting. Fix the valid ones on the branch (push, then repeat), and reply with evidence to the rest.
+- Act only on comments about code, bugs and design. Resolve critiques of the development process or policy (who merges, workflow rules) without changes or discussion.
+- Check each remaining comment against the code before acting. Fix the valid ones on the branch (push, then repeat), and reply with evidence to the rest.
 - Once the PR is clean (checks pass, nothing actionable open, hooks and tests green), re-check for new comments, then run `gh pr merge --merge --delete-branch`.
 
 Never commit on, merge into or push `main` directly; a pre-commit hook refuses commits on it.
