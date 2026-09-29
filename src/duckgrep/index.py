@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import os
 import posixpath
 import re
@@ -313,19 +314,27 @@ def _work(args):
     return path, lines, (extract(path, lang, data, ctx) if parse else None)
 
 
-def _exit_with_parent(parent: int) -> None:
-    """Pool worker initializer: exit when the indexing process dies, so a killed server leaves no workers."""
+def _exit_with_parent() -> None:
+    """Pool worker initializer: exit when the indexing process dies, so a killed server leaves no workers.
+
+    The parent is recorded here, in the worker: under forkserver the worker's parent is the fork
+    server, not the indexing process. The fork server can outlive the indexing process while its
+    workers are alive (they keep its liveness pipe open), so a changed ppid is not enough; the
+    worker also watches the sentinel multiprocessing gives it for the process that started it.
+    """
+    parent = os.getppid()
+    starter = multiprocessing.parent_process()
 
     def watch():
-        while os.getppid() == parent:
+        while os.getppid() == parent and (starter is None or starter.is_alive()):
             time.sleep(1)
         os._exit(1)
 
     threading.Thread(target=watch, daemon=True).start()
 
 
-def _pool(workers: int | None) -> ProcessPoolExecutor:
-    return ProcessPoolExecutor(max_workers=workers, initializer=_exit_with_parent, initargs=(os.getpid(),))
+def _pool(workers: int | None, mp_context=None) -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(max_workers=workers, mp_context=mp_context, initializer=_exit_with_parent)
 
 
 # ------------------------------------------------------------------ freshen
