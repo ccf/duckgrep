@@ -1,24 +1,11 @@
 import os
-import shutil
 import subprocess
 
 import duckdb
 import pytest
+from helpers import fresh_snapshot, rows, snapshot, write
 
 from duckgrep import query as q
-
-FIXTURE = os.path.join(os.path.dirname(__file__), "fixture")
-
-
-@pytest.fixture()
-def repo(tmp_path):
-    root = tmp_path / "repo"
-    shutil.copytree(FIXTURE, root, ignore=shutil.ignore_patterns(".duckgrep"))
-    return str(root)
-
-
-def rows(root, sql):
-    return q.run(root, sql, max_rows=10_000).rows
 
 
 def test_symbols_all_languages(repo):
@@ -152,57 +139,44 @@ def test_parse_errors_do_not_break_index(repo):
     assert ("ok",) in rows(repo, "SELECT qualname FROM symbols WHERE path = 'pkg/broken.py'")
 
 
-def _edges_snapshot(root):
-    return rows(root, "SELECT * FROM edges ORDER BY ALL")
-
-
-def _rebuild_snapshot(root, tmp_path):
-    clone = tmp_path / "clone"
-    shutil.copytree(root, clone, ignore=shutil.ignore_patterns(".duckgrep"))
-    return _edges_snapshot(str(clone))
-
-
 def test_incremental_edges_match_full_rebuild(repo, tmp_path):
     rows(repo, "SELECT 1")
 
-    def w(rel, text):
-        with open(os.path.join(repo, rel), "w") as f:
-            f.write(text)
-
     # rename a definition that other files call
     helpers = os.path.join(repo, "pkg/sub/helpers.py")
-    w("pkg/sub/helpers.py", open(helpers).read().replace("def normalize", "def normalise"))
+    write(repo, "pkg/sub/helpers.py", open(helpers).read().replace("def normalize", "def normalise"))
     rows(repo, "SELECT 1")
-    assert _edges_snapshot(repo) == _rebuild_snapshot(repo, tmp_path / "a")
+    assert snapshot(repo) == fresh_snapshot(repo, tmp_path / "a")
     # add a module that shadows an import key, and a new caller
     os.makedirs(os.path.join(repo, "pkg/sub2"), exist_ok=True)
-    w("pkg/sub2/__init__.py", "def normalize(x):\n    return x\n")
-    w(
+    write(repo, "pkg/sub2/__init__.py", "def normalize(x):\n    return x\n")
+    write(
+        repo,
         "pkg/caller.py",
         "from .sub2 import normalize as n\nfrom .sub import helpers\n\n"
         "def go():\n    n(1)\n    helpers.normalise('a')\n",
     )
     rows(repo, "SELECT 1")
-    assert _edges_snapshot(repo) == _rebuild_snapshot(repo, tmp_path / "b")
+    assert snapshot(repo) == fresh_snapshot(repo, tmp_path / "b")
     got = rows(repo, "SELECT dst_path, resolution FROM edges WHERE src_scope = 'go' ORDER BY line")
     assert got == [("pkg/sub2/__init__.py", "import"), ("pkg/sub/helpers.py", "module")]
     # delete the target module: the aliased call must stop resolving to it
     os.remove(os.path.join(repo, "pkg/sub2/__init__.py"))
     rows(repo, "SELECT 1")
-    assert _edges_snapshot(repo) == _rebuild_snapshot(repo, tmp_path / "c")
+    assert snapshot(repo) == fresh_snapshot(repo, tmp_path / "c")
     assert ("pkg/sub2/__init__.py",) not in rows(repo, "SELECT dst_path FROM edges")
 
 
 def test_reexports(repo, tmp_path):
 
-    def w(rel, text):
-        with open(os.path.join(repo, rel), "w") as f:
-            f.write(text)
-
-    w("pkg/sub/__init__.py", "from .helpers import slugify\n")
-    w("pkg/use.py", "from . import sub\nfrom .sub import slugify as s\n\ndef f():\n    sub.slugify('a')\n    s('b')\n")
-    w("web/index.ts", 'export { fetchJson as fj } from "./http";\n')
-    w("web/use.ts", 'import { fj } from "./index";\nexport function g() { return fj("/"); }\n')
+    write(repo, "pkg/sub/__init__.py", "from .helpers import slugify\n")
+    write(
+        repo,
+        "pkg/use.py",
+        "from . import sub\nfrom .sub import slugify as s\n\ndef f():\n    sub.slugify('a')\n    s('b')\n",
+    )
+    write(repo, "web/index.ts", 'export { fetchJson as fj } from "./http";\n')
+    write(repo, "web/use.ts", 'import { fj } from "./index";\nexport function g() { return fj("/"); }\n')
     got = rows(
         repo,
         "SELECT src_scope, name, dst_path, resolution FROM edges WHERE src_path IN ('pkg/use.py', 'web/use.ts') "
@@ -214,6 +188,6 @@ def test_reexports(repo, tmp_path):
         ("g", "fj", "web/http.ts", "import"),
     ]
     # changing only the re-export list must update edges incrementally
-    w("pkg/sub/__init__.py", "from .helpers import normalize\n")
+    write(repo, "pkg/sub/__init__.py", "from .helpers import normalize\n")
     rows(repo, "SELECT 1")
-    assert _edges_snapshot(repo) == _rebuild_snapshot(repo, tmp_path / "x")
+    assert snapshot(repo) == fresh_snapshot(repo, tmp_path / "x")
