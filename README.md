@@ -33,7 +33,7 @@ uv tool install git+ssh://git@github.com/ccf/duckgrep
 claude mcp add duckgrep -- duckgrep mcp
 ```
 
-The server's root is `-C DIR`, else `$DUCKGREP_ROOT`, else the nearest directory above its working directory with `.git` or `.duckgrep`. Outside a repository it refuses to start. The first call builds the index. After that, every call runs an incremental refresh, so results reflect the agent's latest edits with no hooks.
+The server's root is `-C DIR`, else `$DUCKGREP_ROOT`, else the nearest directory above its working directory with `.git` or `.duckgrep`. Outside a repository it refuses to start. It answers at once and builds the index in the background; the first call waits for it. After that, every call runs an incremental refresh, so results reflect the agent's latest edits with no hooks.
 
 ## CLI
 
@@ -69,14 +69,21 @@ Table macros: `defs`, `callers`, `callees`, `outline`, `grep`, `source`.
 
 Tree-sitter gives syntax, not types, so every edge says how it was resolved:
 
-- **Confident:** `self`, `local`, `package` (Go), `import`, `module`, `qualified`. These come from scope and import analysis, including aliases, relative imports, `go.mod` prefixes, and one hop of re-exports (`__init__.py`, `export … from`).
-- **`name`:** name match only. Kept as one row per candidate when there are ≤10 candidates.
-- **`ambiguous`:** >10 same-named definitions (`obj.get()`, `obj.save()`); the target is left NULL rather than guessed.
-- **`unresolved`:** calls to things not defined in the repo (stdlib, third-party).
+- **Confident:** `self`, `local`, `package` (Go), `import`, `module` and `qualified`. These come from scope and import analysis:
+  - aliases, relative imports, and star imports (Python and Rust);
+  - `go.mod` prefixes and Cargo crate names;
+  - one hop of re-exports (`__init__.py`, `export … from`, `pub use`).
+
+  `qualified` (`Class.method`, `Type::method`) requires the class to be defined or imported in the calling file.
+- **`name`:** `obj.method()` on a receiver of unknown type, matched by method name only. Kept as one row per candidate when there are ≤10 candidates.
+- **`ambiguous`:** more than 10 candidates, or a method that builtin types also have (`get`, `append`, `push`, `clone`…). The target is left NULL rather than guessed. `callers('Class.method')` ends with a row counting these calls.
+- **`unresolved`:** no in-repo target found. That covers stdlib, builtins, third-party code, calls on a receiver bound to an external import (`json.dumps`), and imports duckgrep can't follow.
+
+A bare name (`helper()`) resolves only through its file's scope and imports. It never matches another file's definition by name alone; Rust macros and `.d.ts` declarations are the exceptions.
 
 ## How it stays fresh
 
-`freshen()` runs before every query: one `git ls-files`, a stat per file, then a content hash only for files whose size or mtime changed. Changed files have their rows swapped in one transaction. Edges that depend on other files (same name elsewhere, imports that move when a file appears or disappears) are marked dirty. They are recomputed lazily, and only when a query touches `edges`/`callers`/`callees`. A test checks that the incremental edges equal a full rebuild after renames, shadowing modules and deletions. Any change to the extractor code triggers a full re-parse.
+`freshen()` runs before every query: one `git ls-files`, a stat per file, then a content hash only for files whose size or mtime changed. Changed files have their rows swapped in one transaction. Edges that depend on other files (same name elsewhere, imports that move when a file appears or disappears) are marked dirty. They are recomputed lazily, and only when a query touches `edges`/`callers`/`callees`. Tests check that the incremental index equals a full rebuild after renames, shadowing modules, deletions, re-export and star-import changes, and `go.mod`/`Cargo.toml` renames. A rebuild interrupted midway is finished by the next query. An upgrade that changes the extractor, the grammars or the table layout triggers a full re-parse. One that changes only the resolution SQL rebuilds the call graph.
 
 ## Results so far
 
@@ -84,15 +91,19 @@ Full numbers are in [bench/RESULTS.md](bench/RESULTS.md). Headlines:
 
 - **Latency (django, 7k files):** a no-op refresh takes ~140 ms, one edited file ~330 ms (+~0.8 s call-graph sync when the query needs it), and typical queries 30–90 ms. On vscode (19.5k files, 6.5M refs) typical queries take 80–370 ms. The full initial index of vscode takes ~2.5 min on 2 cores.
 - **vs ripgrep on agent-style questions (django):** "Who calls `get_or_create`, from which function" took 22 rg calls and 58 KB for grep vs 1 call and 9 KB for duckgrep. "Everything within 3 hops of `execute_sql`" took 110 calls and 104 KB vs 1 call and 113 bytes.
-- **Call-graph precision vs jedi (requests):** confident tiers covered 85.5% of in-repo calls with 100% precision. This is a small sample (55 calls); django is still to run.
+- **Call-graph precision vs jedi:**
+  - requests: confident tiers covered 85.5% of 55 in-repo calls at 100% precision.
+  - freqtrade (1,118 in-repo calls): 73% at 100% precision.
+  - django (474): 72–76% at 99.4–100%. The misses reached the right definition plus a same-named nested class.
 
 ## Known gaps / next
 
-1. **Calls on local variables** (`compiler.execute_sql()`) fall to `name`/`ambiguous`. On django, a 3-hop caller walk finds 4 functions via confident edges and 2,639 if name-only edges are followed. Light local type inference (assignment from a constructor or annotated param, then attribute calls) is the next big win.
-2. Run `bench/accuracy.py` on django at scale; add a TS equivalent (tsserver as reference).
+1. **Calls on local variables** (`compiler.execute_sql()`) fall to `name`/`ambiguous`, and so do methods named like builtins (`cache.get()`) and methods of external objects (`con.execute()` on a duckdb connection). On django, a 3-hop caller walk finds 4 functions via confident edges and 2,639 if name-only edges are followed. Light local type inference would turn 20–65% of these receiver calls into correct confident edges (measured against jedi on five Python repos): inherited `self`/`super()` methods, `x = Foo()`, annotated parameters, `self.attr`, imported module-level instances, and return annotations. It is the next big win.
+2. Add a TS equivalent of `bench/accuracy.py`, with tsserver as the reference.
 3. Optional SCIP ingestion where an indexer exists, for exact edges.
 4. Task-level eval: agent success, turns and tokens on real tasks with vs without duckgrep (vs plain grep and Serena).
 5. Refresh on edit touches every ref sharing a name with the edited file's definitions (~60k refs for django `query.py`). Scope the dirty set tighter.
+6. **Aliased re-export chains** (`from pkg import X as Y` where `pkg/__init__.py` re-exports `X`, and TS barrels) can keep a stale edge after an edit to the underlying module. The differential fuzzer still finds this on a re-export-heavy synthetic repo; real repos rarely hit it (6 of 32,754 import edges in a large TS repo).
 
 ## Dev
 
