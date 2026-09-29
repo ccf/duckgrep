@@ -201,7 +201,7 @@ def _go_modules(root: str, paths: list[str]) -> list[tuple[str, str]]:
     return sorted(mods, key=lambda m: -len(m[1]))
 
 
-_TOML_SECTION = re.compile(r"^\s*\[\s*([A-Za-z0-9_.\-]+)\s*\]")
+_TOML_SECTION = re.compile(r"^\s*(\[\[?)\s*([A-Za-z0-9_.\-]+)\s*\]")
 _TOML_NAME = re.compile(r"""^\s*name\s*=\s*["']([^"']+)["']""")
 
 
@@ -217,7 +217,7 @@ def _rust_crates(root: str, paths: list[str]) -> list[tuple[str, str]]:
                 for ln in f:
                     m = _TOML_SECTION.match(ln)
                     if m:
-                        section = m.group(1)
+                        section = m.group(2) if m.group(1) == "[" else f"[[{m.group(2)}]]"
                         continue
                     m = _TOML_NAME.match(ln)
                     if m and section in ("package", "lib"):
