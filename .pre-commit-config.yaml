@@ -10,6 +10,7 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict
+      - id: no-commit-to-branch  # main changes only through pull requests
       - id: check-added-large-files
       - id: debug-statements
 
