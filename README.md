@@ -24,7 +24,7 @@ Languages: Python, TypeScript/TSX, JavaScript, Go, Rust. Every other text file i
 ## Install
 
 ```bash
-uv tool install git+ssh://git@github.com/ccf/duckgrep   # or: pip install -e .
+uv tool install git+ssh://git@github.com/ccf/duckgrep
 ```
 
 ### Claude Code
@@ -95,8 +95,14 @@ Full numbers are in [bench/RESULTS.md](bench/RESULTS.md). Headlines:
 ## Dev
 
 ```bash
-pip install -e '.[dev]' && pytest
-python bench/latency.py <repo> <file-to-edit> <symbol> <qualname>
-python bench/vs_grep.py <django-checkout>
-python bench/accuracy.py <python-repo> [n]      # needs jedi
+uv sync                          # .venv with the dev tools: pytest, ruff, pre-commit
+uv run pre-commit install        # ruff check --fix, ruff format and pytest on every commit
+uv run pytest
+uv run python bench/latency.py <repo> <file-to-edit> <symbol> <qualname>
+uv run python bench/vs_grep.py <django-checkout>
+uv run --group bench python bench/accuracy.py <python-repo> [n]   # jedi as the reference
 ```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

@@ -1,0 +1,41 @@
+# Format, lint and test on every commit. Install once per clone: uv run pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^tests/fixture/  # test data: tests assert exact lines in it
+      - id: end-of-file-fixer
+        exclude: ^tests/fixture/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: debug-statements
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.20
+    hooks:
+      - id: uv-lock
+
+  # ruff and pytest run in the project's uv environment, so their versions come from uv.lock
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: pytest
+        name: pytest
+        entry: uv run --frozen pytest -q
+        language: system
+        pass_filenames: false
+        files: ^(src/|tests/|pyproject\.toml$|uv\.lock$)
