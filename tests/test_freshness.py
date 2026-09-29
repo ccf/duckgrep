@@ -5,7 +5,7 @@ import os
 import pytest
 from helpers import fresh_snapshot, make_repo, rows, snapshot, write
 
-from duckgrep import index
+from duckgrep import index, schema
 
 
 def lib_repo(tmp_path, n=40):
@@ -61,3 +61,30 @@ def test_interrupted_parse_on_rebuild_path_is_redone(tmp_path, monkeypatch):
         rows(root, "SELECT 1")
     monkeypatch.undo()
     assert snapshot(root) == fresh_snapshot(root, tmp_path)
+
+
+def test_edge_logic_change_rebuilds_edges(tmp_path, monkeypatch):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a.py": "class A:\n    def run(self):\n        pass\n",
+            "b.py": "class B:\n    def run(self):\n        pass\n",
+            "c.py": "def go(x):\n    x.run()\n",
+        },
+    )
+    q = "SELECT resolution FROM edges WHERE src_path = 'c.py' AND name = 'run'"
+    assert rows(root, q) == [("name",), ("name",)]
+    monkeypatch.setattr(schema, "NAME_CAP", 1)  # 2 candidates is now over the cap
+    assert rows(root, q) == [("ambiguous",)]
+
+
+def test_grammar_upgrade_reparses(tmp_path, monkeypatch):
+    root = make_repo(tmp_path / "r", {"a.py": "def f():\n    pass\n"})
+    rows(root, "SELECT 1")
+    monkeypatch.setattr(index, "_grammar_versions", lambda: "tree-sitter-python==99")
+    con = index.connect(root)
+    try:
+        st = index.freshen(con, root)
+    finally:
+        con.close()
+    assert st.parsed == 1

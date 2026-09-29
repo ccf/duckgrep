@@ -195,12 +195,44 @@ def _go_modules(root: str, paths: list[str]) -> list[tuple[str, str]]:
     return sorted(mods, key=lambda m: -len(m[1]))
 
 
+GRAMMARS = (
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
+    "tree-sitter-rust",
+)
+
+
+def _grammar_versions() -> str:
+    """Installed tree-sitter runtime and grammar versions: an upgrade can change every parse."""
+    from importlib import metadata
+
+    out = []
+    for name in GRAMMARS:
+        try:
+            out.append(f"{name}=={metadata.version(name)}")
+        except metadata.PackageNotFoundError:
+            out.append(f"{name}==?")
+    return ";".join(out)
+
+
 def extractor_version() -> str:
-    """Hash of the extraction code: any change forces a full re-parse."""
+    """What stored rows depend on: extractor code, grammars and table layout. A change forces a full re-parse."""
     from . import extract as _e
 
+    h = hashlib.blake2b(digest_size=8)
     with open(_e.__file__, "rb") as f:
-        return hashlib.blake2b(f.read(), digest_size=8).hexdigest()
+        h.update(f.read())
+    h.update(_grammar_versions().encode())
+    h.update(schema.TABLES.encode())
+    return h.hexdigest()
+
+
+def edges_version() -> str:
+    """What the call graph depends on beyond the rows: the resolution SQL and its cap. A change rebuilds edges."""
+    return hashlib.blake2b(f"{schema.EDGES_COMPUTE}\0{schema.NAME_CAP}".encode(), digest_size=8).hexdigest()
 
 
 CHUNK = 256
@@ -242,6 +274,7 @@ def freshen(
     t0 = time.perf_counter()
     st = FreshenStats()
     ver = extractor_version()
+    ever = edges_version()
     meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
     if meta.get("extractor_version") != ver:
         full = True
@@ -298,7 +331,12 @@ def freshen(
 
     ctx = {"gomods": _go_modules(root, paths)} if any(lang == "go" for _, lang, parse in jobs if parse) else {}
     replaced = list(file_rows) + deleted
-    rebuild_edges = full or "edges_rebuild_pending" in meta or len(replaced) > 0.3 * max(1, len(listed))
+    rebuild_edges = (
+        full
+        or "edges_rebuild_pending" in meta
+        or meta.get("edges_version") != ever
+        or len(replaced) > 0.3 * max(1, len(listed))
+    )
 
     # ---- write: one transaction; parse + insert in bounded chunks
     con.execute("BEGIN")
@@ -369,6 +407,7 @@ def freshen(
         if rebuild_edges:
             _rebuild_edges(con)
             con.execute("DELETE FROM meta WHERE key = 'edges_rebuild_pending'")
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('edges_version', ?)", [ever])
         elif replaced:
             _mark_edges_dirty(con)
         if replaced:
