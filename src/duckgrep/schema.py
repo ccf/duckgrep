@@ -341,7 +341,7 @@ CREATE OR REPLACE MACRO defs(q) AS TABLE
 
 -- who references a symbol (name or qualname): one row per reference site, confident first.
 -- A bare name also matches ambiguous / unresolved references with that name; a qualified one ends with a summary
--- row counting the calls of that method name on receivers of unknown type.
+-- row counting the calls of that method name on receivers of unknown type, in the language that defines it.
 -- `targets` lists the candidate definitions when resolution is by name only.
 CREATE OR REPLACE MACRO callers(q) AS TABLE
     SELECT src_path, line, caller, ref_kind, receiver, resolution, targets FROM (
@@ -357,7 +357,10 @@ CREATE OR REPLACE MACRO callers(q) AS TABLE
         SELECT 1, NULL, NULL, NULL, 'call', NULL, 'ambiguous',
                n || ' call(s) of .' || split_part(q, '.', -1) || '() on receivers of unknown type are not listed; callers('''
                || split_part(q, '.', -1) || ''') shows them'
-        FROM (SELECT count(*) AS n FROM edges WHERE resolution = 'ambiguous' AND name = split_part(q, '.', -1))
+        FROM (SELECT count(*) AS n FROM edges e JOIN files f ON f.path = e.src_path
+              WHERE e.resolution = 'ambiguous' AND e.name = split_part(q, '.', -1)
+                AND f.family IN (SELECT DISTINCT sf.family FROM symbols s JOIN files sf USING (path)
+                                 WHERE s.qualname = q OR ends_with(s.qualname, '.' || q)))
         WHERE n > 0 AND position('.' IN q) > 0
     )
     ORDER BY ord, (resolution IN ('name', 'ambiguous', 'unresolved')), src_path, line;
@@ -426,7 +429,7 @@ edges(src_path, src_scope, line, ref_kind, name, receiver, dst_path, dst_qualnam
     self | local | package | import | module | qualified   confident (scope, import and star-import analysis)
     name        obj.method() matched by method name only, <= 10 candidates (one row each; n_candidates = how many)
     ambiguous   > 10 candidates, or a method builtin types also have (get, append, push ...); dst_* NULL
-    unresolved: no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow).
+    unresolved  no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow); dst_* NULL
   A bare name resolves through its file's scope and imports only (Rust macros and .d.ts declarations excepted).
 
 TABLE MACROS
@@ -434,7 +437,7 @@ TABLE MACROS
   callees('qualname')   what it calls                outline('path/or/suffix.py')       symbols in a file
   grep('regex')         text search + enclosing symbol    source('qualname')           the code of a symbol
   outline, callees and source fill their first column(s) only when the argument matches several files or symbols
-  callers('Class.method') ends with a summary row counting calls on receivers of unknown type (not listed)
+  callers('Class.method') ends with one row (src_path NULL) counting its calls on receivers of unknown type
 
 EXAMPLES
   SELECT * FROM defs('Session');

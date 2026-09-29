@@ -161,6 +161,6 @@ def test_schema_doc_states_the_bare_name_and_unresolved_rules_accurately():
         in SCHEMA_DOC
     )
     assert (
-        "unresolved: no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow)."
+        "unresolved  no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow); dst_* NULL"
         in SCHEMA_DOC
     )

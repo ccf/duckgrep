@@ -250,3 +250,18 @@ def test_js_export_star_does_not_bind_names_locally(tmp_path):
         },
     )
     assert edges_at(root, "b.ts", "foo") == [(None, None, "unresolved")]
+
+
+def test_callers_summary_counts_only_the_class_language(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "cache.py": "class Cache:\n    def get(self, key):\n        return key\n",
+            "use.py": "def lookup(d):\n    return d.get('x')\n",
+            "store.ts": "export class Store {\n  get(k: string) { return k; }\n}\n",
+            "use.ts": "export function f(m: Map<string, number>) { return m.get('x'); }\n",
+        },
+    )
+    got = rows(root, "SELECT targets FROM callers('Cache.get') WHERE src_path IS NULL")
+    assert got == [("1 call(s) of .get() on receivers of unknown type are not listed; callers('get') shows them",)]
+    assert rows(root, "SELECT * FROM callers('NoSuchClass.get')") == []

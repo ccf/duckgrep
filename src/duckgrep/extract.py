@@ -587,6 +587,8 @@ def _rs_layout(path: str, ctx) -> tuple[list[str], list[str], list[str]]:
     `scope` is what `self::`, `super::` and uniform paths start from: the module key, except for a
     single-file crate root, whose scope is its directory. Other files outside src/ (build.rs) get a key no
     import can name. Without a Cargo.toml the old scheme applies: 'crate' + the path after the last src/.
+    Known gap: items defined in a single-file crate root (src/bin/<x>.rs, tests/<x>.rs) are keyed by its file
+    name, so `crate::Item` or `super::Item` from its submodules stays unresolved rather than resolving.
     """
     crate = _rs_crate(path, ctx)
     if crate is None:
