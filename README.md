@@ -8,11 +8,11 @@ Agents locate code with chains of `grep` → read file → `grep` again. That wo
 SELECT * FROM callers('Session.request') WHERE resolution <> 'name';
 
 -- everything that reaches a function within 3 hops
-WITH RECURSIVE up(q, d) AS (
-  SELECT 'SQLCompiler.execute_sql', 0
-  UNION SELECT e.src_scope, d + 1 FROM edges e JOIN up ON e.dst_qualname = up.q
+WITH RECURSIVE up(p, q, d) AS (
+  SELECT path, qualname, 0 FROM symbols WHERE qualname = 'SQLCompiler.execute_sql'
+  UNION SELECT e.src_path, e.src_scope, d + 1 FROM edges e JOIN up ON e.dst_path = up.p AND e.dst_qualname = up.q
   WHERE d < 3 AND e.resolution NOT IN ('name', 'ambiguous', 'unresolved') AND e.src_scope <> '')
-SELECT q, min(d) FROM up GROUP BY q;
+SELECT p, q, min(d) FROM up GROUP BY p, q;
 
 -- hottest files by churn that define classes
 SELECT * FROM file_churn WHERE path IN (SELECT path FROM symbols WHERE kind = 'class')
@@ -33,9 +33,11 @@ uv tool install git+ssh://git@github.com/ccf/duckgrep
 claude mcp add duckgrep -- duckgrep mcp
 ```
 
-The server finds the repo root from its working directory (nearest `.git` or `.duckgrep`), or from `DUCKGREP_ROOT`. The first call builds the index. After that, every call runs an incremental refresh, so results reflect the agent's latest edits with no hooks.
+The server's root is `-C DIR`, else `$DUCKGREP_ROOT`, else the nearest directory above its working directory with `.git` or `.duckgrep`. Outside a repository it refuses to start. The first call builds the index. After that, every call runs an incremental refresh, so results reflect the agent's latest edits with no hooks.
 
 ## CLI
+
+`-C DIR` sets the repo root, used as given.
 
 ```bash
 duckgrep index                      # build / update (.duckgrep/index.duckdb, self-gitignored)

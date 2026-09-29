@@ -88,15 +88,15 @@ class FreshenStats:
         return s
 
 
-def find_root(start: str | None = None) -> str:
-    d = os.path.abspath(start or os.getcwd())
-    cur = d
+def find_root(start: str | None = None) -> str | None:
+    """Nearest directory at or above `start` (default: the cwd) holding .duckgrep or .git; None if there is none."""
+    cur = os.path.abspath(start or os.getcwd())
     while True:
         if os.path.isdir(os.path.join(cur, DB_DIR)) or os.path.exists(os.path.join(cur, ".git")):
             return cur
         parent = os.path.dirname(cur)
         if parent == cur:
-            return d
+            return None
         cur = parent
 
 
@@ -170,6 +170,8 @@ def list_files(root: str) -> list[str]:
         dirnames[:] = [d for d in dirnames if d not in DEFAULT_IGNORES and not d.startswith(".")]
         rel = os.path.relpath(dirpath, root)
         for fn in filenames:
+            if fn.startswith("."):
+                continue
             p = fn if rel == "." else f"{rel}/{fn}"
             paths.append(p.replace(os.sep, "/"))
     return paths
