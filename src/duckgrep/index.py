@@ -459,9 +459,12 @@ def sync_edges(con) -> int:
             SELECT * FROM refs WHERE rowid IN (
                 SELECT rowid FROM refs WHERE path IN (SELECT path FROM edges_dirty WHERE kind = 'path')
                 UNION SELECT rowid FROM refs WHERE name IN (SELECT name FROM edges_dirty WHERE kind = 'name')
+                -- refs bound through an import: by name (f()) or through their receiver (m.f(), Class.m())
                 UNION SELECT r.rowid FROM refs r
                       SEMI JOIN (SELECT path, name FROM edges_dirty WHERE kind = 'bound') b
-                      ON b.path = r.path AND b.name = r.name)
+                      ON b.path = r.path
+                         AND b.name IN (r.name, regexp_extract(r.receiver, '^[A-Za-z_$][A-Za-z0-9_$]*'),
+                                        regexp_extract(r.receiver, '[A-Za-z_$][A-Za-z0-9_$]*$')))
         """)
         n = con.execute("SELECT count(*) FROM _r").fetchone()[0]
         con.execute("""
