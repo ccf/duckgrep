@@ -291,17 +291,28 @@ CREATE OR REPLACE MACRO callers(q) AS TABLE
     GROUP BY src_path, line, col, src_scope, ref_kind, receiver, resolution
     ORDER BY (resolution IN ('name', 'ambiguous', 'unresolved')), src_path, line;
 
--- what a function/method references (by qualname)
+-- what a function references; `file` and `caller` are filled only when the name matches more than one function
 CREATE OR REPLACE MACRO callees(q) AS TABLE
-    SELECT line, ref_kind, name, receiver, dst_path, dst_qualname, resolution, n_candidates
-    FROM edges WHERE src_scope = q OR ends_with(src_scope, '.' || q)
-    ORDER BY line, col;
+    WITH m AS (
+        SELECT * FROM edges WHERE src_scope = q
+        UNION ALL
+        SELECT * FROM edges WHERE ends_with(src_scope, '.' || q) AND NOT EXISTS (SELECT 1 FROM edges WHERE src_scope = q)
+    ), k AS (SELECT count(DISTINCT (src_path, src_scope)) AS n FROM m)
+    SELECT CASE WHEN k.n > 1 THEN m.src_path END AS file, CASE WHEN k.n > 1 THEN m.src_scope END AS caller,
+           line, ref_kind, name, receiver, dst_path, dst_qualname, resolution, n_candidates
+    FROM m, k
+    ORDER BY m.src_path, m.src_scope, line, col;
 
--- file outline
+-- symbols in a file; `file` is filled only when the argument matches more than one file
 CREATE OR REPLACE MACRO outline(p) AS TABLE
-    SELECT start_line, end_line, kind, qualname, signature
-    FROM symbols WHERE path = p OR ends_with(path, '/' || p)
-    ORDER BY start_line;
+    WITH m AS (
+        SELECT * FROM symbols WHERE path = p
+        UNION ALL
+        SELECT * FROM symbols WHERE ends_with(path, '/' || p) AND NOT EXISTS (SELECT 1 FROM files WHERE path = p)
+    ), k AS (SELECT count(DISTINCT path) AS n FROM m)
+    SELECT CASE WHEN k.n > 1 THEN m.path END AS file, start_line, end_line, kind, qualname, signature
+    FROM m, k
+    ORDER BY m.path, start_line;
 
 -- regex search (RE2 syntax, prefix (?i) for case-insensitive) with the enclosing symbol
 CREATE OR REPLACE MACRO grep(pat) AS TABLE
@@ -312,10 +323,14 @@ CREATE OR REPLACE MACRO grep(pat) AS TABLE
     QUALIFY row_number() OVER (PARTITION BY l.path, l.line ORDER BY s.start_line DESC NULLS LAST) = 1
     ORDER BY l.path, l.line;
 
--- source of a symbol (by qualname or name); first match
+-- the code of a symbol (qualname or name); with several matches, the first row's `file` names the one shown
 CREATE OR REPLACE MACRO source(q) AS TABLE
-    WITH s AS (SELECT * FROM symbols WHERE qualname = q OR name = q ORDER BY (qualname = q) DESC, path LIMIT 1)
-    SELECT l.line, l.text FROM lines l JOIN s ON l.path = s.path AND l.line BETWEEN s.start_line AND s.end_line
+    WITH c AS (SELECT * FROM symbols WHERE qualname = q OR name = q),
+         s AS (SELECT * FROM c ORDER BY (qualname = q) DESC, path, start_line LIMIT 1),
+         k AS (SELECT count(*) AS n FROM c)
+    SELECT CASE WHEN k.n > 1 AND l.line = s.start_line THEN s.path || ' (1 of ' || k.n || ' matches)' END AS file,
+           l.line, l.text
+    FROM s JOIN lines l ON l.path = s.path AND l.line BETWEEN s.start_line AND s.end_line, k
     ORDER BY l.line;
 """
 
@@ -346,6 +361,7 @@ TABLE MACROS
   defs('name')          where is it defined          callers('name' | 'Class.method')   who uses it
   callees('qualname')   what it calls                outline('path/or/suffix.py')       symbols in a file
   grep('regex')         text search + enclosing symbol    source('qualname')           the code of a symbol
+  outline, callees and source fill their first column(s) only when the argument matches several files or symbols
 
 EXAMPLES
   SELECT * FROM defs('Session');
@@ -354,9 +370,10 @@ EXAMPLES
   -- functions nothing references (by edge; aliases and module.attr calls count)
   SELECT s.path, s.qualname FROM symbols s WHERE s.kind = 'function'
     AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.dst_path = s.path AND e.dst_qualname = s.qualname);
-  -- transitive callers (2 hops)
-  WITH RECURSIVE up(q, d) AS (SELECT 'Session.send', 0 UNION
-    SELECT e.src_scope, d+1 FROM edges e JOIN up ON e.dst_qualname = up.q WHERE d < 2 AND e.resolution <> 'name' AND e.src_scope <> '')
+  -- transitive callers (2 hops), keyed on (path, qualname) so same-named functions elsewhere don't join
+  WITH RECURSIVE up(p, q, d) AS (SELECT path, qualname, 0 FROM symbols WHERE qualname = 'Session.send' UNION
+    SELECT e.src_path, e.src_scope, d+1 FROM edges e JOIN up ON e.dst_path = up.p AND e.dst_qualname = up.q
+    WHERE d < 2 AND e.resolution <> 'name' AND e.src_scope <> '')
   SELECT * FROM up;
   -- hottest files by churn that define classes
   SELECT c.* FROM file_churn c WHERE path IN (SELECT path FROM symbols WHERE kind='class') ORDER BY n_commits DESC LIMIT 10;
