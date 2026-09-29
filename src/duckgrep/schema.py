@@ -426,8 +426,8 @@ edges(src_path, src_scope, line, ref_kind, name, receiver, dst_path, dst_qualnam
     self | local | package | import | module | qualified   confident (scope, import and star-import analysis)
     name        obj.method() matched by method name only, <= 10 candidates (one row each; n_candidates = how many)
     ambiguous   > 10 candidates, or a method builtin types also have (get, append, push ...); dst_* NULL
-    unresolved  call to something not defined in the repo (stdlib, builtins, third party); dst_* NULL
-  A bare name never matches by name: it resolves through its file's scope and imports, or not at all.
+    unresolved: no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow).
+  A bare name resolves through its file's scope and imports only (Rust macros and .d.ts declarations excepted).
 
 TABLE MACROS
   defs('name')          where is it defined          callers('name' | 'Class.method')   who uses it

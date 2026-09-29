@@ -151,3 +151,16 @@ def test_walk_fallback_skips_dotfiles(tmp_path):
     root = make_repo(tmp_path / "plain", {"a.py": "x = 1\n", ".env": "API_KEY=secret\n"})
     assert cli.main(["-C", root, "index"]) == 0
     assert rows(root, "SELECT path FROM files") == [("a.py",)]
+
+
+def test_schema_doc_states_the_bare_name_and_unresolved_rules_accurately():
+    from duckgrep.schema import SCHEMA_DOC
+
+    assert (
+        "A bare name resolves through its file's scope and imports only (Rust macros and .d.ts declarations excepted)."
+        in SCHEMA_DOC
+    )
+    assert (
+        "unresolved: no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow)."
+        in SCHEMA_DOC
+    )
