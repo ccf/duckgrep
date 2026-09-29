@@ -10,6 +10,7 @@ import hashlib
 import os
 import posixpath
 import subprocess
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -254,6 +255,21 @@ def _work(args):
     return path, lines, (extract(path, lang, data, ctx) if parse else None)
 
 
+def _exit_with_parent(parent: int) -> None:
+    """Pool worker initializer: exit when the indexing process dies, so a killed server leaves no workers."""
+
+    def watch():
+        while os.getppid() == parent:
+            time.sleep(1)
+        os._exit(1)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _pool(workers: int | None) -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(max_workers=workers, initializer=_exit_with_parent, initargs=(os.getpid(),))
+
+
 # ------------------------------------------------------------------ freshen
 
 
@@ -362,7 +378,7 @@ def freshen(
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
 
         use_pool = len(jobs) >= PARALLEL_THRESHOLD and (workers or os.cpu_count() or 1) > 1
-        ex = ProcessPoolExecutor(max_workers=workers) if use_pool else None
+        ex = _pool(workers) if use_pool else None
         try:
             for i in range(0, len(jobs), CHUNK):
                 chunk = [(root, p, lang, parse, ctx) for p, lang, parse in jobs[i : i + CHUNK]]

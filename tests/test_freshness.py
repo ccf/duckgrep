@@ -1,6 +1,9 @@
 """Freshness under interruption, logic changes and killed parents."""
 
 import os
+import subprocess
+import sys
+import time
 
 import pytest
 from helpers import fresh_snapshot, make_repo, rows, snapshot, write
@@ -88,3 +91,31 @@ def test_grammar_upgrade_reparses(tmp_path, monkeypatch):
     finally:
         con.close()
     assert st.parsed == 1
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_pool_workers_exit_when_parent_dies(tmp_path):
+    script = tmp_path / "parent.py"
+    script.write_text(
+        "import os, time\n"
+        "from duckgrep import index\n"
+        "ex = index._pool(2)\n"
+        "futures = [ex.submit(time.sleep, 60) for _ in range(2)]\n"
+        "time.sleep(1.5)\n"
+        "print(' '.join(str(p) for p in ex._processes), flush=True)\n"
+        "os._exit(0)\n"
+    )
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=60).stdout
+    pids = [int(p) for p in out.split()]
+    assert pids
+    deadline = time.time() + 10
+    while time.time() < deadline and any(_alive(p) for p in pids):
+        time.sleep(0.2)
+    assert not any(_alive(p) for p in pids)
