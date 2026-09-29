@@ -226,7 +226,7 @@ t1 AS (
     FROM r
     JOIN imp i ON i.path = r.path AND i.name = '*' AND i."local" IS NULL
     JOIN sym s ON s.path = i.target_path AND s.name = r.name AND s.parent IS NULL
-    WHERE r.receiver IS NULL
+    WHERE r.receiver IS NULL AND r.family IN ('py', 'rs')
   UNION ALL
     -- ... or re-exported by it
     SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'import'
@@ -235,7 +235,7 @@ t1 AS (
     JOIN rx ON rx.mod_path = i.target_path AND (rx."local" = r.name OR (rx.name = '*' AND rx."local" IS NULL))
     JOIN sym s ON s.path = rx.target_path AND s.parent IS NULL
            AND s.name = CASE WHEN rx.name = '*' THEN r.name ELSE coalesce(nullif(rx.name, 'default'), rx."local") END
-    WHERE r.receiver IS NULL
+    WHERE r.receiver IS NULL AND r.family IN ('py', 'rs')
   UNION ALL
     -- Class.method / Type::method, with the class bound in this file: defined here, imported by name
     -- (directly or through one re-export), or reached through an imported module (mod.Class.method)

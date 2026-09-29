@@ -198,3 +198,14 @@ def test_reexport_change_updates_class_calls(tmp_path):
     write(root, "pkg/__init__.py", "from .other import Client\n")
     assert edges_at(root, "use.py", "settings") == [("pkg/other.py", "Client.settings", "qualified")]
     assert snapshot(root, ALL) == fresh_snapshot(root, tmp_path, ALL)
+
+
+def test_js_export_star_does_not_bind_names_locally(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a.ts": "export function foo() { return 1; }\n",
+            "b.ts": "export * from './a';\nexport function bar() { return foo(); }\n",
+        },
+    )
+    assert edges_at(root, "b.ts", "foo") == [(None, None, "unresolved")]
