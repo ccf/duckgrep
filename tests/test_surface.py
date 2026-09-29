@@ -3,8 +3,11 @@
 import time
 import tracemalloc
 
+import anyio
 from helpers import make_repo, rows
+from mcp.shared.memory import create_connected_server_and_client_session
 
+from duckgrep import mcp_server
 from duckgrep import query as q
 
 
@@ -59,3 +62,24 @@ def test_source_says_which_match_it_shows(tmp_path):
     got = rows(root, "SELECT file, line, text FROM source('check')")
     assert got[0] == ("a/check.py (1 of 2 matches)", 1, "def check():")
     assert all(r[0] is None for r in got[1:])
+
+
+def test_serve_starts_before_the_index_is_built(repo, monkeypatch):
+    from mcp.server.fastmcp import FastMCP
+
+    started = []
+    monkeypatch.setattr(q, "refresh", lambda root, **kw: time.sleep(2) or "")
+    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **k: started.append(time.perf_counter()))
+    t = time.perf_counter()
+    mcp_server.serve(repo)
+    assert started and started[0] - t < 1.0
+
+
+def test_first_query_waits_for_the_initial_index(repo):
+    async def main():
+        server = mcp_server.build(repo)
+        async with create_connected_server_and_client_session(server._mcp_server) as client:
+            res = await client.call_tool("query", {"sql": "SELECT count(*) AS n FROM files"})
+        return res.content[0].text
+
+    assert int(anyio.run(main).splitlines()[-1]) > 0
