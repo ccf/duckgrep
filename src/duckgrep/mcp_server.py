@@ -6,14 +6,13 @@ query on its first call without a discovery round-trip.
 
 from __future__ import annotations
 
-import os
+import sys
 import threading
 
 import anyio
 from mcp.server.fastmcp import FastMCP
 
 from . import query as q
-from .index import find_root
 from .schema import SCHEMA_DOC
 
 QUERY_DOC = f"""Query the codebase index with DuckDB SQL (read-only). Prefer this over grep/find for
@@ -52,13 +51,15 @@ def build(root: str) -> FastMCP:
     return mcp
 
 
-def serve(root: str | None = None) -> None:
-    root = root or find_root(os.environ.get("DUCKGREP_ROOT"))
+def serve(root: str) -> None:
     build(root).run()
 
 
 def main() -> None:
-    serve()
+    """The `duckgrep-mcp` entry point: the same as `duckgrep [-C DIR] mcp`."""
+    from . import cli
+
+    sys.exit(cli.main([*sys.argv[1:], "mcp"]))
 
 
 if __name__ == "__main__":

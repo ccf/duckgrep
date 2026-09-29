@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import query as q
@@ -24,9 +25,27 @@ SHORTCUTS = {
 }
 
 
+class RootError(Exception):
+    pass
+
+
+def resolve_root(explicit: str | None, env: str | None = None) -> str:
+    """-C DIR as given, else $DUCKGREP_ROOT (MCP server only), else the nearest .git/.duckgrep above the cwd."""
+    for given in (explicit, env):
+        if given:
+            path = os.path.abspath(given)
+            if not os.path.isdir(path):
+                raise RootError(f"no such directory: {given}")
+            return path
+    found = find_root()
+    if found is None:
+        raise RootError(f"not inside a repository (no .git or .duckgrep above {os.getcwd()}); use -C DIR")
+    return found
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="duckgrep", description="DuckDB index of a codebase for coding agents")
-    ap.add_argument("-C", "--root", help="repo root (default: nearest .git / .duckgrep above cwd)")
+    ap.add_argument("-C", "--root", help="repo root, used as given (default: nearest .git / .duckgrep above the cwd)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("index", help="build or update the index")
@@ -47,11 +66,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp", help="run the MCP server on stdio")
 
     a = ap.parse_args(argv)
-    root = find_root(a.root)
 
     if a.cmd == "schema":
         print(SCHEMA_DOC)
         return 0
+    try:
+        root = resolve_root(a.root, os.environ.get("DUCKGREP_ROOT") if a.cmd == "mcp" else None)
+    except RootError as e:
+        print(f"duckgrep: {e}", file=sys.stderr)
+        return 2
     if a.cmd == "mcp":
         from .mcp_server import serve
 

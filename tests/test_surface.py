@@ -1,5 +1,7 @@
 """The agent-facing surface: result limits, verbatim text, macro disambiguation, MCP startup, roots."""
 
+import os
+import subprocess
 import time
 import tracemalloc
 
@@ -7,7 +9,7 @@ import anyio
 from helpers import make_repo, rows
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from duckgrep import mcp_server
+from duckgrep import cli, mcp_server
 from duckgrep import query as q
 
 
@@ -83,3 +85,45 @@ def test_first_query_waits_for_the_initial_index(repo):
         return res.content[0].text
 
     assert int(anyio.run(main).splitlines()[-1]) > 0
+
+
+def git_repo(path, files):
+    root = make_repo(path, files)
+    subprocess.run(["git", "init", "-q", root], check=True)
+    return root
+
+
+def test_explicit_root_is_used_as_given(tmp_path, capsys):
+    outer = git_repo(tmp_path / "outer", {"sub/a.py": "def f():\n    pass\n", "b.py": "x = 1\n"})
+    code = cli.main(["-C", os.path.join(outer, "sub"), "q", "SELECT count(*) AS n FROM files", "-f", "tsv"])
+    assert code == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "1"
+
+
+def test_missing_root_is_an_error(tmp_path, capsys):
+    assert cli.main(["-C", str(tmp_path / "typo"), "q", "SELECT 1"]) == 2
+    assert "no such directory" in capsys.readouterr().err
+    assert not (tmp_path / "typo").exists()
+
+
+def test_no_repository_is_an_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["q", "SELECT 1"]) == 2
+    assert "not inside a repository" in capsys.readouterr().err
+
+
+def test_mcp_root_comes_from_env(tmp_path, monkeypatch):
+    target = git_repo(tmp_path / "target", {"a.py": "x = 1\n"})
+    elsewhere = git_repo(tmp_path / "elsewhere", {"b.py": "y = 2\n"})
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("DUCKGREP_ROOT", target)
+    seen = []
+    monkeypatch.setattr(mcp_server, "serve", seen.append)
+    assert cli.main(["mcp"]) == 0
+    assert seen == [target]
+
+
+def test_walk_fallback_skips_dotfiles(tmp_path):
+    root = make_repo(tmp_path / "plain", {"a.py": "x = 1\n", ".env": "API_KEY=secret\n"})
+    assert cli.main(["-C", root, "index"]) == 0
+    assert rows(root, "SELECT path FROM files") == [("a.py",)]

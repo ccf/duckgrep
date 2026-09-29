@@ -33,9 +33,11 @@ uv tool install git+ssh://git@github.com/ccf/duckgrep
 claude mcp add duckgrep -- duckgrep mcp
 ```
 
-The server finds the repo root from its working directory (nearest `.git` or `.duckgrep`), or from `DUCKGREP_ROOT`. The first call builds the index. After that, every call runs an incremental refresh, so results reflect the agent's latest edits with no hooks.
+The server's root is `-C DIR`, else `$DUCKGREP_ROOT`, else the nearest directory above its working directory with `.git` or `.duckgrep`. Outside a repository it refuses to start. The first call builds the index. After that, every call runs an incremental refresh, so results reflect the agent's latest edits with no hooks.
 
 ## CLI
+
+`-C DIR` sets the repo root, used as given.
 
 ```bash
 duckgrep index                      # build / update (.duckgrep/index.duckdb, self-gitignored)
