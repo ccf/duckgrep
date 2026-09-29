@@ -108,7 +108,11 @@ def test_read_only(repo):
         q.run(repo, f"SELECT * FROM read_text('{path}')")
 
 
-def test_git_history(repo):
+def test_git_history(repo, monkeypatch):
+    # inside a linked worktree's commit hook git exports an absolute GIT_INDEX_FILE, which would make this
+    # test (and duckgrep's own git calls) act on the worktree's index; drop every inherited GIT_* variable
+    for k in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(k)
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "a",
