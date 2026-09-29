@@ -159,11 +159,31 @@ def ensure_schema(con) -> bool:
 # ------------------------------------------------------------------ listing
 
 
+_GIT_LOCATION_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+)
+
+
+def _git_env() -> dict[str, str]:
+    """The environment minus the variables that point git at a repository, so `-C root` decides which one."""
+    return {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+
+
 def list_files(root: str) -> list[str]:
     if os.path.exists(os.path.join(root, ".git")):
         try:
             out = subprocess.run(
-                ["git", "-C", root, "ls-files", "-z", "-co", "--exclude-standard"], capture_output=True, check=True
+                ["git", "-C", root, "ls-files", "-z", "-co", "--exclude-standard"],
+                capture_output=True,
+                check=True,
+                env=_git_env(),
             ).stdout
             paths = [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
             return [p for p in paths if not p.startswith(DB_DIR + "/")]
@@ -647,9 +667,8 @@ def _insert(con, table: str, cols: list[str], rows: list[tuple], or_ignore: bool
 
 def _git(root, *args) -> str | None:
     try:
-        return subprocess.run(["git", "-C", root, *args], capture_output=True, check=True).stdout.decode(
-            "utf-8", "replace"
-        )
+        out = subprocess.run(["git", "-C", root, *args], capture_output=True, check=True, env=_git_env()).stdout
+        return out.decode("utf-8", "replace")
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
