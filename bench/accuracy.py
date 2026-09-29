@@ -5,6 +5,7 @@ jedi does real (static) type inference, so it is a fair, independent reference f
 
 usage: python bench/accuracy.py <repo> [n_samples]
 """
+
 import collections
 import os
 import random
@@ -33,22 +34,27 @@ def to_repo_path(module_path, root, repo_files):
 
 def main(root, n=300, seed=0):
     root = os.path.abspath(root)
-    refs = q.run(root, """
+    refs = q.run(
+        root,
+        """
         SELECT src_path, line, col, name, receiver,
                list(DISTINCT resolution) AS res,
                list((dst_path, dst_qualname, dst_line)) FILTER (WHERE dst_path IS NOT NULL) AS dst
         FROM edges e JOIN files f ON f.path = e.src_path
         WHERE ref_kind = 'call' AND f.lang = 'python'
         GROUP BY ALL
-    """, max_rows=10_000_000).rows
+    """,
+        max_rows=10_000_000,
+    ).rows
     random.Random(seed).shuffle(refs)
     # make jedi resolve the repo's own packages to the repo, not to an installed copy
     extra = [os.path.join(root, d) for d in ("src", "lib") if os.path.isdir(os.path.join(root, d))]
     project = jedi.Project(root, added_sys_path=extra)
     scripts = {}
     ranges = {}  # (path, name) -> [(start, end, qualname)]
-    for p, nm, s, e, qn in q.run(root, "SELECT path, name, start_line, end_line, qualname FROM symbols",
-                                 max_rows=10_000_000, fresh=False).rows:
+    for p, nm, s, e, qn in q.run(
+        root, "SELECT path, name, start_line, end_line, qualname FROM symbols", max_rows=10_000_000, fresh=False
+    ).rows:
         ranges.setdefault((p, nm), []).append((s, e, qn))
 
     repo_files = {r[0] for r in q.run(root, "SELECT path FROM files", max_rows=10_000_000, fresh=False).rows}
@@ -102,18 +108,24 @@ def main(root, n=300, seed=0):
         if tier == "external(jedi)":
             continue
         n_ = c["n"]
-        print(f"{tier:12s} {n_ / stats['in_repo']:6.1%} {c['hit'] / n_:21.1%} {c['exact'] / n_:11.1%} "
-              f"{c['cands'] / n_:10.1f}")
+        print(
+            f"{tier:12s} {n_ / stats['in_repo']:6.1%} {c['hit'] / n_:21.1%} {c['exact'] / n_:11.1%} "
+            f"{c['cands'] / n_:10.1f}"
+        )
         if tier in ("self", "local", "import", "module", "qualified", "package"):
             confident.update(c)
     if confident["n"]:
-        print(f"\nconfident tiers: {confident['n'] / stats['in_repo']:.1%} of in-repo calls, "
-              f"precision {confident['exact'] / confident['n']:.1%}")
+        print(
+            f"\nconfident tiers: {confident['n'] / stats['in_repo']:.1%} of in-repo calls, "
+            f"precision {confident['exact'] / confident['n']:.1%}"
+        )
     ext = by_tier["external(jedi)"]
     if ext:
         tot = sum(ext.values())
-        print(f"calls jedi resolves outside the repo -> duckgrep: " +
-              ", ".join(f"{k} {v / tot:.0%}" for k, v in ext.most_common()))
+        print(
+            f"calls jedi resolves outside the repo -> duckgrep: "
+            + ", ".join(f"{k} {v / tot:.0%}" for k, v in ext.most_common())
+        )
     if examples:
         print("\nconfident misses:")
         for ex in examples:

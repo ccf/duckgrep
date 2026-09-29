@@ -2,6 +2,7 @@
 
 usage: python bench/mcp_smoke.py [repo]   (default: tests/fixture)
 """
+
 import asyncio
 import os
 import sys

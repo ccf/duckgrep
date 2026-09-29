@@ -3,6 +3,7 @@
 The whole schema is in the tool description, so the agent can write a correct
 query on its first call without a discovery round-trip.
 """
+
 from __future__ import annotations
 
 import os

@@ -23,28 +23,44 @@ def rows(root, sql):
 
 def test_symbols_all_languages(repo):
     got = {r[0] for r in rows(repo, "SELECT qualname || ':' || kind FROM symbols")}
-    for want in ["Engine:class", "Engine.build:method", "Engine.step.inner:function", "MAX_RETRIES:constant",
-                 "Client.user:method", "makeClient:function", "User:interface",
-                 "Server:struct", "Server.Start:method", "Greet:function",
-                 "Circle:struct", "Circle.new:method", "area:function"]:
+    for want in [
+        "Engine:class",
+        "Engine.build:method",
+        "Engine.step.inner:function",
+        "MAX_RETRIES:constant",
+        "Client.user:method",
+        "makeClient:function",
+        "User:interface",
+        "Server:struct",
+        "Server.Start:method",
+        "Greet:function",
+        "Circle:struct",
+        "Circle.new:method",
+        "area:function",
+    ]:
         assert want in got, want
 
 
-@pytest.mark.parametrize("src_scope,name,dst_path,dst_qualname,resolution", [
-    ("Base.run", "step", "pkg/core.py", "Base.step", "self"),
-    ("Engine.__init__", "slug", "pkg/sub/helpers.py", "slugify", "import"),          # aliased import
-    ("Engine.step.inner", "normalize", "pkg/sub/helpers.py", "normalize", "module"), # module.attr
-    ("make_engine", "build", "pkg/core.py", "Engine.build", "qualified"),
-    ("Client.user", "get", "web/http.ts", "fetchJson", "import"),
-    ("Client.ping", "fetchJson", "web/http.ts", "fetchJson", "module"),             # namespace import
-    ("Server.Start", "Greet", "gosvc/util/util.go", "Greet", "module"),             # go.mod prefix
-    ("Server.Start", "helper", "gosvc/other.go", "helper", "package"),              # same Go package
-    ("total", "area", "rs/src/shapes.rs", "area", "import"),
-    ("total", "new", "rs/src/shapes.rs", "Circle.new", "qualified"),
-])
+@pytest.mark.parametrize(
+    "src_scope,name,dst_path,dst_qualname,resolution",
+    [
+        ("Base.run", "step", "pkg/core.py", "Base.step", "self"),
+        ("Engine.__init__", "slug", "pkg/sub/helpers.py", "slugify", "import"),  # aliased import
+        ("Engine.step.inner", "normalize", "pkg/sub/helpers.py", "normalize", "module"),  # module.attr
+        ("make_engine", "build", "pkg/core.py", "Engine.build", "qualified"),
+        ("Client.user", "get", "web/http.ts", "fetchJson", "import"),
+        ("Client.ping", "fetchJson", "web/http.ts", "fetchJson", "module"),  # namespace import
+        ("Server.Start", "Greet", "gosvc/util/util.go", "Greet", "module"),  # go.mod prefix
+        ("Server.Start", "helper", "gosvc/other.go", "helper", "package"),  # same Go package
+        ("total", "area", "rs/src/shapes.rs", "area", "import"),
+        ("total", "new", "rs/src/shapes.rs", "Circle.new", "qualified"),
+    ],
+)
 def test_edges(repo, src_scope, name, dst_path, dst_qualname, resolution):
-    got = rows(repo, f"SELECT dst_path, dst_qualname, resolution FROM edges "
-                     f"WHERE src_scope = '{src_scope}' AND name = '{name}'")
+    got = rows(
+        repo,
+        f"SELECT dst_path, dst_qualname, resolution FROM edges WHERE src_scope = '{src_scope}' AND name = '{name}'",
+    )
     assert (dst_path, dst_qualname, resolution) in got
 
 
@@ -59,8 +75,11 @@ def test_macros(repo):
     assert sorted(c[0] for c in callers) == ["Engine.step.inner", "slugify"]
     g = rows(repo, "SELECT path, line, symbol FROM grep('self\\.name')")
     assert ("pkg/core.py", 29, "Engine.step.inner") in g
-    assert [r[0] for r in rows(repo, "SELECT qualname FROM outline('helpers.py')")] == \
-        ["slugify", "normalize", "unused_helper"]
+    assert [r[0] for r in rows(repo, "SELECT qualname FROM outline('helpers.py')")] == [
+        "slugify",
+        "normalize",
+        "unused_helper",
+    ]
     assert "def step(self):" in rows(repo, "SELECT text FROM source('Engine.step')")[0][0]
 
 
@@ -101,8 +120,13 @@ def test_read_only(repo):
 
 
 def test_git_history(repo):
-    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@x", "GIT_COMMITTER_NAME": "a",
-           "GIT_COMMITTER_EMAIL": "a@x"}
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "a",
+        "GIT_AUTHOR_EMAIL": "a@x",
+        "GIT_COMMITTER_NAME": "a",
+        "GIT_COMMITTER_EMAIL": "a@x",
+    }
     run = lambda *a: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, env=env)
     run("init", "-q")
     run("add", "-A")
@@ -144,8 +168,11 @@ def test_incremental_edges_match_full_rebuild(repo, tmp_path):
     # add a module that shadows an import key, and a new caller
     os.makedirs(os.path.join(repo, "pkg/sub2"), exist_ok=True)
     w("pkg/sub2/__init__.py", "def normalize(x):\n    return x\n")
-    w("pkg/caller.py", "from .sub2 import normalize as n\nfrom .sub import helpers\n\n"
-                       "def go():\n    n(1)\n    helpers.normalise('a')\n")
+    w(
+        "pkg/caller.py",
+        "from .sub2 import normalize as n\nfrom .sub import helpers\n\n"
+        "def go():\n    n(1)\n    helpers.normalise('a')\n",
+    )
     rows(repo, "SELECT 1")
     assert _edges_snapshot(repo) == _rebuild_snapshot(repo, tmp_path / "b")
     got = rows(repo, "SELECT dst_path, resolution FROM edges WHERE src_scope = 'go' ORDER BY line")
@@ -163,10 +190,16 @@ def test_reexports(repo, tmp_path):
     w("pkg/use.py", "from . import sub\nfrom .sub import slugify as s\n\ndef f():\n    sub.slugify('a')\n    s('b')\n")
     w("web/index.ts", 'export { fetchJson as fj } from "./http";\n')
     w("web/use.ts", 'import { fj } from "./index";\nexport function g() { return fj("/"); }\n')
-    got = rows(repo, "SELECT src_scope, name, dst_path, resolution FROM edges WHERE src_path IN ('pkg/use.py', 'web/use.ts') "
-                     "AND ref_kind = 'call' ORDER BY src_path, line")
-    assert got == [("f", "slugify", "pkg/sub/helpers.py", "module"), ("f", "s", "pkg/sub/helpers.py", "import"),
-                   ("g", "fj", "web/http.ts", "import")]
+    got = rows(
+        repo,
+        "SELECT src_scope, name, dst_path, resolution FROM edges WHERE src_path IN ('pkg/use.py', 'web/use.ts') "
+        "AND ref_kind = 'call' ORDER BY src_path, line",
+    )
+    assert got == [
+        ("f", "slugify", "pkg/sub/helpers.py", "module"),
+        ("f", "s", "pkg/sub/helpers.py", "import"),
+        ("g", "fj", "web/http.ts", "import"),
+    ]
     # changing only the re-export list must update edges incrementally
     w("pkg/sub/__init__.py", "from .helpers import normalize\n")
     rows(repo, "SELECT 1")

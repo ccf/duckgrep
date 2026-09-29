@@ -2,6 +2,7 @@
 
 usage: python bench/latency.py <repo> <file-to-edit> <symbol> <qualname>
 """
+
 import statistics
 import sys
 import time

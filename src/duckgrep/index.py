@@ -3,6 +3,7 @@
 `freshen()` is cheap when nothing changed (one `git ls-files`, one stat per file,
 one small query), so it runs before every query instead of relying on hooks.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -25,11 +26,35 @@ DB_FILE = "index.duckdb"
 MAX_BYTES = 1_000_000
 MAX_LINE = 1000
 PARALLEL_THRESHOLD = 48
-DEFAULT_IGNORES = {".git", ".duckgrep", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
-                   ".pytest_cache", "dist", "build", "target", ".tox", ".next"}
+DEFAULT_IGNORES = {
+    ".git",
+    ".duckgrep",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+    "target",
+    ".tox",
+    ".next",
+}
 
-SYMBOL_COLS = ["path", "lang", "name", "qualname", "kind", "parent", "start_line", "end_line",
-               "signature", "doc", "exported"]
+SYMBOL_COLS = [
+    "path",
+    "lang",
+    "name",
+    "qualname",
+    "kind",
+    "parent",
+    "start_line",
+    "end_line",
+    "signature",
+    "doc",
+    "exported",
+]
 REF_COLS = ["path", "lang", "name", "kind", "receiver", "line", "col", "scope", "scope_class"]
 IMPORT_COLS = ["path", "family", "module", "name", "alias", "local", "line", "key", "subkey"]
 MODULE_COLS = ["path", "family", "key", "drop_n"]
@@ -42,10 +67,10 @@ class FreshenStats:
     added: int = 0
     changed: int = 0
     deleted: int = 0
-    touched: int = 0          # stat changed, content identical
+    touched: int = 0  # stat changed, content identical
     parsed: int = 0
     new_commits: int = 0
-    edge_refs: int = 0        # refs whose edges were recomputed
+    edge_refs: int = 0  # refs whose edges were recomputed
     seconds: float = 0.0
     changed_paths: list = field(default_factory=list)
 
@@ -54,8 +79,10 @@ class FreshenStats:
         return bool(self.added or self.changed or self.deleted)
 
     def summary(self) -> str:
-        s = (f"scanned {self.scanned} files in {self.seconds * 1000:.0f} ms: "
-             f"+{self.added} ~{self.changed} -{self.deleted}")
+        s = (
+            f"scanned {self.scanned} files in {self.seconds * 1000:.0f} ms: "
+            f"+{self.added} ~{self.changed} -{self.deleted}"
+        )
         if self.new_commits:
             s += f", {self.new_commits} new commits"
         return s
@@ -90,8 +117,10 @@ def connect(root: str, read_only: bool = False, retries: int = 40) -> duckdb.Duc
         try:
             if read_only:
                 return duckdb.connect(path, read_only=True)
-            con = duckdb.connect(path, config={"preserve_insertion_order": False,
-                                               "memory_limit": os.environ.get("DUCKGREP_MEMORY", "2GB")})
+            con = duckdb.connect(
+                path,
+                config={"preserve_insertion_order": False, "memory_limit": os.environ.get("DUCKGREP_MEMORY", "2GB")},
+            )
             if not ensure_schema(con):
                 con.close()
                 for suffix in ("", ".wal"):
@@ -125,11 +154,13 @@ def ensure_schema(con) -> bool:
 
 # ------------------------------------------------------------------ listing
 
+
 def list_files(root: str) -> list[str]:
     if os.path.exists(os.path.join(root, ".git")):
         try:
-            out = subprocess.run(["git", "-C", root, "ls-files", "-z", "-co", "--exclude-standard"],
-                                 capture_output=True, check=True).stdout
+            out = subprocess.run(
+                ["git", "-C", root, "ls-files", "-z", "-co", "--exclude-standard"], capture_output=True, check=True
+            ).stdout
             paths = [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
             return [p for p in paths if not p.startswith(DB_DIR + "/")]
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -167,6 +198,7 @@ def _go_modules(root: str, paths: list[str]) -> list[tuple[str, str]]:
 def extractor_version() -> str:
     """Hash of the extraction code: any change forces a full re-parse."""
     from . import extract as _e
+
     with open(_e.__file__, "rb") as f:
         return hashlib.blake2b(f.read(), digest_size=8).hexdigest()
 
@@ -192,8 +224,16 @@ def _work(args):
 
 # ------------------------------------------------------------------ freshen
 
-def freshen(con, root: str, full: bool = False, workers: int | None = None,
-            git_history: bool = True, max_commits: int = 5000, edges: bool = True) -> FreshenStats:
+
+def freshen(
+    con,
+    root: str,
+    full: bool = False,
+    workers: int | None = None,
+    git_history: bool = True,
+    max_commits: int = 5000,
+    edges: bool = True,
+) -> FreshenStats:
     """Bring the index in line with the working tree.
 
     edges=False leaves call-graph maintenance pending (recorded in edges_dirty) so that
@@ -208,8 +248,7 @@ def freshen(con, root: str, full: bool = False, workers: int | None = None,
     paths = list_files(root)
     st.scanned = len(paths)
 
-    known = {r[0]: (r[1], r[2], r[3]) for r in
-             con.execute("SELECT path, size, mtime_ns, sha FROM files").fetchall()}
+    known = {r[0]: (r[1], r[2], r[3]) for r in con.execute("SELECT path, size, mtime_ns, sha FROM files").fetchall()}
     listed = set()
     candidates = []
     for p in paths:
@@ -269,12 +308,16 @@ def freshen(con, root: str, full: bool = False, workers: int | None = None,
             con.execute("CREATE OR REPLACE TEMP TABLE _chg AS SELECT DISTINCT path FROM _chg_src")
             con.unregister("_chg_src")
             # what the old versions defined / exported (needed to find edges that point at them)
-            con.execute("CREATE OR REPLACE TEMP TABLE _aff_names AS "
-                        "SELECT name FROM symbols WHERE path IN (SELECT path FROM _chg) "
-                        "UNION SELECT \"local\" FROM imports WHERE path IN (SELECT path FROM _chg) "
-                        "AND \"local\" IS NOT NULL")
-            con.execute("CREATE OR REPLACE TEMP TABLE _aff_keys AS "
-                        "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)")
+            con.execute(
+                "CREATE OR REPLACE TEMP TABLE _aff_names AS "
+                "SELECT name FROM symbols WHERE path IN (SELECT path FROM _chg) "
+                'UNION SELECT "local" FROM imports WHERE path IN (SELECT path FROM _chg) '
+                'AND "local" IS NOT NULL'
+            )
+            con.execute(
+                "CREATE OR REPLACE TEMP TABLE _aff_keys AS "
+                "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)"
+            )
             for t in PER_FILE_TABLES + ["files"]:
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
 
@@ -282,7 +325,7 @@ def freshen(con, root: str, full: bool = False, workers: int | None = None,
         ex = ProcessPoolExecutor(max_workers=workers) if use_pool else None
         try:
             for i in range(0, len(jobs), CHUNK):
-                chunk = [(root, p, l, parse, ctx) for p, l, parse in jobs[i:i + CHUNK]]
+                chunk = [(root, p, l, parse, ctx) for p, l, parse in jobs[i : i + CHUNK]]
                 results = ex.map(_work, chunk, chunksize=8) if ex else map(_work, chunk)
                 rows = {"symbols": [], "refs": [], "imports": [], "modules": []}
                 lines = {"path": [], "line": [], "text": []}
@@ -314,8 +357,12 @@ def freshen(con, root: str, full: bool = False, workers: int | None = None,
         finally:
             if ex:
                 ex.shutdown()
-        _insert(con, "files", ["path", "lang", "family", "size", "mtime_ns", "sha", "n_lines", "skipped",
-                               "parse_errors", "indexed_at"], [tuple(r) for r in file_rows.values()])
+        _insert(
+            con,
+            "files",
+            ["path", "lang", "family", "size", "mtime_ns", "sha", "n_lines", "skipped", "parse_errors", "indexed_at"],
+            [tuple(r) for r in file_rows.values()],
+        )
         if touched:
             con.executemany("UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?", touched)
         if rebuild_edges:
@@ -369,13 +416,17 @@ def _mark_edges_dirty(con) -> None:
         (file added / deleted), since their import resolution may have moved.
     Expects temp tables _chg (paths), _aff_names and _aff_keys (pre-change state).
     """
-    con.execute("CREATE OR REPLACE TEMP TABLE _new_keys AS "
-                "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)")
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE _new_keys AS "
+        "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)"
+    )
     # names defined or re-exported (imported) by the changed files, before and after
-    con.execute("INSERT INTO edges_dirty SELECT 'name', NULL, name FROM _aff_names "
-                "UNION SELECT 'name', NULL, name FROM symbols WHERE path IN (SELECT path FROM _chg) "
-                "UNION SELECT 'name', NULL, \"local\" FROM imports WHERE path IN (SELECT path FROM _chg) "
-                "AND \"local\" IS NOT NULL")
+    con.execute(
+        "INSERT INTO edges_dirty SELECT 'name', NULL, name FROM _aff_names "
+        "UNION SELECT 'name', NULL, name FROM symbols WHERE path IN (SELECT path FROM _chg) "
+        "UNION SELECT 'name', NULL, \"local\" FROM imports WHERE path IN (SELECT path FROM _chg) "
+        'AND "local" IS NOT NULL'
+    )
     con.execute("""
         INSERT INTO edges_dirty
         WITH moved AS (
@@ -442,10 +493,12 @@ def _insert(con, table: str, cols: list[str], rows: list[tuple], or_ignore: bool
 
 # ------------------------------------------------------------------ git history
 
+
 def _git(root, *args) -> str | None:
     try:
         return subprocess.run(["git", "-C", root, *args], capture_output=True, check=True).stdout.decode(
-            "utf-8", "replace")
+            "utf-8", "replace"
+        )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
@@ -464,8 +517,15 @@ def _update_git(con, root: str, max_commits: int) -> int:
     if rng == [head] and last:  # history rewritten: rebuild
         con.execute("DELETE FROM file_changes")
         con.execute("DELETE FROM commits")
-    out = _git(root, "log", f"--max-count={max_commits}", "--no-renames", "--numstat",
-               "--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s", *rng)
+    out = _git(
+        root,
+        "log",
+        f"--max-count={max_commits}",
+        "--no-renames",
+        "--numstat",
+        "--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s",
+        *rng,
+    )
     commits, changes = [], []
     for block in (out or "").split("\x1e")[1:]:
         header, _, body = block.partition("\n")

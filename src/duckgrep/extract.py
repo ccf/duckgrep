@@ -7,6 +7,7 @@ The walker is table-driven: each language supplies a `Spec` describing which
 node types are definitions, calls, member accesses, and which syntactic
 positions put an identifier into a context (type, import, write, ...).
 """
+
 from __future__ import annotations
 
 import posixpath
@@ -15,9 +16,15 @@ from dataclasses import dataclass, field
 import tree_sitter as ts
 
 EXT_LANG = {
-    ".py": "python", ".pyi": "python",
-    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
-    ".ts": "typescript", ".mts": "typescript", ".cts": "typescript",
+    ".py": "python",
+    ".pyi": "python",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
     ".tsx": "tsx",
     ".go": "go",
     ".rs": "rust",
@@ -26,9 +33,17 @@ FAMILY = {"python": "py", "javascript": "js", "typescript": "js", "tsx": "js", "
 
 STICKY = frozenset({"inherit", "decorator", "import", "type", "param"})
 CTX_KIND = {
-    "callee": "call", "attr_call": "call", "attr": "attr", "attr_write": "write", "write": "write",
-    "inherit": "inherit", "decorator": "decorator", "import": "import", "type": "type",
-    "kwarg": "kwarg", "normal": "name",
+    "callee": "call",
+    "attr_call": "call",
+    "attr": "attr",
+    "attr_write": "write",
+    "write": "write",
+    "inherit": "inherit",
+    "decorator": "decorator",
+    "import": "import",
+    "type": "type",
+    "kwarg": "kwarg",
+    "normal": "name",
 }
 CLASS_KINDS = frozenset({"class", "interface", "struct", "trait", "enum", "impl"})
 
@@ -40,17 +55,29 @@ def get_parser(lang: str) -> ts.Parser:
     p = _PARSERS.get(lang)
     if p is None:
         if lang == "python":
-            import tree_sitter_python as m; raw = m.language()
+            import tree_sitter_python as m
+
+            raw = m.language()
         elif lang == "javascript":
-            import tree_sitter_javascript as m; raw = m.language()
+            import tree_sitter_javascript as m
+
+            raw = m.language()
         elif lang == "typescript":
-            import tree_sitter_typescript as m; raw = m.language_typescript()
+            import tree_sitter_typescript as m
+
+            raw = m.language_typescript()
         elif lang == "tsx":
-            import tree_sitter_typescript as m; raw = m.language_tsx()
+            import tree_sitter_typescript as m
+
+            raw = m.language_tsx()
         elif lang == "go":
-            import tree_sitter_go as m; raw = m.language()
+            import tree_sitter_go as m
+
+            raw = m.language()
         elif lang == "rust":
-            import tree_sitter_rust as m; raw = m.language()
+            import tree_sitter_rust as m
+
+            raw = m.language()
         else:
             raise ValueError(lang)
         _LANGS[lang] = ts.Language(raw)
@@ -60,15 +87,15 @@ def get_parser(lang: str) -> ts.Parser:
 
 @dataclass
 class Spec:
-    defs: dict                      # node type -> symbol kind
-    idents: frozenset               # identifier-like leaf node types
-    type_idents: frozenset          # identifier types that always denote a type
-    calls: dict                     # node type -> field holding the callee
-    attrs: dict                     # node type -> (object field, member field)
-    sticky: dict                    # node type -> context for all descendants
-    field_ctx: dict                 # (parent type | '*', field) -> context
-    resets: frozenset               # (parent type, field) -> back to 'normal'
-    write_through: frozenset        # node types that pass a 'write' context to children
+    defs: dict  # node type -> symbol kind
+    idents: frozenset  # identifier-like leaf node types
+    type_idents: frozenset  # identifier types that always denote a type
+    calls: dict  # node type -> field holding the callee
+    attrs: dict  # node type -> (object field, member field)
+    sticky: dict  # node type -> context for all descendants
+    field_ctx: dict  # (parent type | '*', field) -> context
+    resets: frozenset  # (parent type, field) -> back to 'normal'
+    write_through: frozenset  # node types that pass a 'write' context to children
     comments: frozenset
     import_nodes: frozenset
     scope_only: dict = field(default_factory=dict)  # node type -> field naming the scope (Rust impl)
@@ -80,61 +107,122 @@ PY = Spec(
     type_idents=frozenset(),
     calls={"call": "function"},
     attrs={"attribute": ("object", "attribute")},
-    sticky={"decorator": "decorator", "import_statement": "import", "import_from_statement": "import",
-            "future_import_statement": "import", "parameters": "param", "lambda_parameters": "param",
-            "type": "type"},
-    field_ctx={("class_definition", "superclasses"): "inherit", ("keyword_argument", "name"): "kwarg",
-               ("assignment", "left"): "write", ("augmented_assignment", "left"): "write",
-               ("for_statement", "left"): "write", ("for_in_clause", "left"): "write",
-               ("*", "type"): "type", ("*", "return_type"): "type"},
-    resets=frozenset({("call", "arguments"), ("default_parameter", "value"),
-                      ("typed_default_parameter", "value")}),
-    write_through=frozenset({"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list",
-                             "parenthesized_expression"}),
+    sticky={
+        "decorator": "decorator",
+        "import_statement": "import",
+        "import_from_statement": "import",
+        "future_import_statement": "import",
+        "parameters": "param",
+        "lambda_parameters": "param",
+        "type": "type",
+    },
+    field_ctx={
+        ("class_definition", "superclasses"): "inherit",
+        ("keyword_argument", "name"): "kwarg",
+        ("assignment", "left"): "write",
+        ("augmented_assignment", "left"): "write",
+        ("for_statement", "left"): "write",
+        ("for_in_clause", "left"): "write",
+        ("*", "type"): "type",
+        ("*", "return_type"): "type",
+    },
+    resets=frozenset({("call", "arguments"), ("default_parameter", "value"), ("typed_default_parameter", "value")}),
+    write_through=frozenset(
+        {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list", "parenthesized_expression"}
+    ),
     comments=frozenset({"comment"}),
     import_nodes=frozenset({"import_statement", "import_from_statement"}),
 )
 
 JS = Spec(
-    defs={"function_declaration": "function", "generator_function_declaration": "function",
-          "class_declaration": "class", "abstract_class_declaration": "class",
-          "method_definition": "method", "interface_declaration": "interface",
-          "type_alias_declaration": "type", "enum_declaration": "enum",
-          "function_signature": "function", "method_signature": "method",
-          "abstract_method_signature": "method", "internal_module": "module"},
-    idents=frozenset({"identifier", "property_identifier", "type_identifier",
-                      "shorthand_property_identifier", "shorthand_property_identifier_pattern",
-                      "private_property_identifier"}),
+    defs={
+        "function_declaration": "function",
+        "generator_function_declaration": "function",
+        "class_declaration": "class",
+        "abstract_class_declaration": "class",
+        "method_definition": "method",
+        "interface_declaration": "interface",
+        "type_alias_declaration": "type",
+        "enum_declaration": "enum",
+        "function_signature": "function",
+        "method_signature": "method",
+        "abstract_method_signature": "method",
+        "internal_module": "module",
+    },
+    idents=frozenset(
+        {
+            "identifier",
+            "property_identifier",
+            "type_identifier",
+            "shorthand_property_identifier",
+            "shorthand_property_identifier_pattern",
+            "private_property_identifier",
+        }
+    ),
     type_idents=frozenset({"type_identifier"}),
-    calls={"call_expression": "function", "new_expression": "constructor",
-           "jsx_opening_element": "name", "jsx_self_closing_element": "name"},
+    calls={
+        "call_expression": "function",
+        "new_expression": "constructor",
+        "jsx_opening_element": "name",
+        "jsx_self_closing_element": "name",
+    },
     attrs={"member_expression": ("object", "property")},
-    sticky={"import_statement": "import", "decorator": "decorator", "class_heritage": "inherit",
-            "extends_type_clause": "inherit", "formal_parameters": "param",
-            "type_annotation": "type", "type_arguments": "type", "type_parameters": "param"},
-    field_ctx={("assignment_expression", "left"): "write", ("augmented_assignment_expression", "left"): "write",
-               ("variable_declarator", "name"): "write", ("pair", "key"): "kwarg",
-               ("*", "type"): "type", ("*", "return_type"): "type"},
-    resets=frozenset({("call_expression", "arguments"), ("new_expression", "arguments"),
-                      ("required_parameter", "value"), ("optional_parameter", "value"),
-                      ("assignment_pattern", "right")}),
+    sticky={
+        "import_statement": "import",
+        "decorator": "decorator",
+        "class_heritage": "inherit",
+        "extends_type_clause": "inherit",
+        "formal_parameters": "param",
+        "type_annotation": "type",
+        "type_arguments": "type",
+        "type_parameters": "param",
+    },
+    field_ctx={
+        ("assignment_expression", "left"): "write",
+        ("augmented_assignment_expression", "left"): "write",
+        ("variable_declarator", "name"): "write",
+        ("pair", "key"): "kwarg",
+        ("*", "type"): "type",
+        ("*", "return_type"): "type",
+    },
+    resets=frozenset(
+        {
+            ("call_expression", "arguments"),
+            ("new_expression", "arguments"),
+            ("required_parameter", "value"),
+            ("optional_parameter", "value"),
+            ("assignment_pattern", "right"),
+        }
+    ),
     write_through=frozenset({"array_pattern", "object_pattern", "pair_pattern"}),
     comments=frozenset({"comment"}),
     import_nodes=frozenset({"import_statement", "export_statement"}),
 )
 
 GO = Spec(
-    defs={"function_declaration": "function", "method_declaration": "method",
-          "type_spec": "type", "type_alias": "type", "method_elem": "method", "method_spec": "method"},
+    defs={
+        "function_declaration": "function",
+        "method_declaration": "method",
+        "type_spec": "type",
+        "type_alias": "type",
+        "method_elem": "method",
+        "method_spec": "method",
+    },
     idents=frozenset({"identifier", "field_identifier", "type_identifier", "package_identifier"}),
     type_idents=frozenset({"type_identifier"}),
     calls={"call_expression": "function"},
     attrs={"selector_expression": ("operand", "field"), "qualified_type": ("package", "name")},
     sticky={"import_declaration": "import", "parameter_list": "param", "type_arguments": "type"},
-    field_ctx={("assignment_statement", "left"): "write", ("short_var_declaration", "left"): "write",
-               ("var_spec", "name"): "write", ("const_spec", "name"): "write",
-               ("range_clause", "left"): "write", ("keyed_element", "key"): "kwarg",
-               ("*", "type"): "type", ("*", "result"): "type"},
+    field_ctx={
+        ("assignment_statement", "left"): "write",
+        ("short_var_declaration", "left"): "write",
+        ("var_spec", "name"): "write",
+        ("const_spec", "name"): "write",
+        ("range_clause", "left"): "write",
+        ("keyed_element", "key"): "kwarg",
+        ("*", "type"): "type",
+        ("*", "result"): "type",
+    },
     resets=frozenset({("call_expression", "arguments")}),
     write_through=frozenset({"expression_list"}),
     comments=frozenset({"comment"}),
@@ -142,21 +230,43 @@ GO = Spec(
 )
 
 RS = Spec(
-    defs={"function_item": "function", "function_signature_item": "function", "struct_item": "struct",
-          "enum_item": "enum", "union_item": "struct", "trait_item": "trait", "type_item": "type",
-          "const_item": "constant", "static_item": "variable", "mod_item": "module",
-          "macro_definition": "macro"},
+    defs={
+        "function_item": "function",
+        "function_signature_item": "function",
+        "struct_item": "struct",
+        "enum_item": "enum",
+        "union_item": "struct",
+        "trait_item": "trait",
+        "type_item": "type",
+        "const_item": "constant",
+        "static_item": "variable",
+        "mod_item": "module",
+        "macro_definition": "macro",
+    },
     idents=frozenset({"identifier", "field_identifier", "type_identifier"}),
     type_idents=frozenset({"type_identifier"}),
     calls={"call_expression": "function", "macro_invocation": "macro"},
-    attrs={"field_expression": ("value", "field"), "scoped_identifier": ("path", "name"),
-           "scoped_type_identifier": ("path", "name")},
-    sticky={"use_declaration": "import", "parameters": "param", "attribute_item": "decorator",
-            "type_arguments": "type", "type_parameters": "param"},
-    field_ctx={("let_declaration", "pattern"): "write", ("assignment_expression", "left"): "write",
-               ("compound_assignment_expr", "left"): "write", ("field_initializer", "field"): "kwarg",
-               ("impl_item", "trait"): "inherit",
-               ("*", "type"): "type", ("*", "return_type"): "type"},
+    attrs={
+        "field_expression": ("value", "field"),
+        "scoped_identifier": ("path", "name"),
+        "scoped_type_identifier": ("path", "name"),
+    },
+    sticky={
+        "use_declaration": "import",
+        "parameters": "param",
+        "attribute_item": "decorator",
+        "type_arguments": "type",
+        "type_parameters": "param",
+    },
+    field_ctx={
+        ("let_declaration", "pattern"): "write",
+        ("assignment_expression", "left"): "write",
+        ("compound_assignment_expr", "left"): "write",
+        ("field_initializer", "field"): "kwarg",
+        ("impl_item", "trait"): "inherit",
+        ("*", "type"): "type",
+        ("*", "return_type"): "type",
+    },
     resets=frozenset({("call_expression", "arguments")}),
     write_through=frozenset({"tuple_pattern"}),
     comments=frozenset({"line_comment", "block_comment"}),
@@ -170,7 +280,7 @@ JS_FUNC_VALUES = frozenset({"arrow_function", "function_expression", "function",
 
 
 def _text(src: bytes, node) -> str:
-    return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
+    return src[node.start_byte : node.end_byte].decode("utf-8", "replace")
 
 
 def _one_line(s: str, limit: int = 240) -> str:
@@ -179,6 +289,7 @@ def _one_line(s: str, limit: int = 240) -> str:
 
 
 # ---------------------------------------------------------------- definitions
+
 
 def _def_targets(node, t: str, spec: Spec, lang: str, src: bytes, top_level: bool):
     """Return [(name_node, kind, push_scope, parent_override, body_node)] for a definition node."""
@@ -248,9 +359,9 @@ def _first_of_type(node, typ: str, src: bytes):
 
 def _signature(node, body, src: bytes, lang: str) -> str:
     if body is not None and body.start_byte > node.start_byte:
-        s = src[node.start_byte:body.start_byte].decode("utf-8", "replace")
+        s = src[node.start_byte : body.start_byte].decode("utf-8", "replace")
     else:
-        s = src[node.start_byte:node.end_byte].decode("utf-8", "replace").split("\n", 1)[0]
+        s = src[node.start_byte : node.end_byte].decode("utf-8", "replace").split("\n", 1)[0]
     s = _one_line(s)
     return s.rstrip(" :{=").rstrip() if lang == "python" or s.endswith(("{", "=")) else s
 
@@ -267,7 +378,7 @@ def _docstring(node, body, spec: Spec, lang: str, src: bytes) -> str | None:
                 raw = raw.lstrip("rRbBuUfF")
                 for q in ('"""', "'''", '"', "'"):
                     if raw.startswith(q) and raw.endswith(q) and len(raw) >= 2 * len(q):
-                        raw = raw[len(q):-len(q)]
+                        raw = raw[len(q) : -len(q)]
                         break
                 for ln in raw.splitlines():
                     if ln.strip():
@@ -275,10 +386,15 @@ def _docstring(node, body, spec: Spec, lang: str, src: bytes) -> str | None:
         return None
     # leading comment block (skipping attributes / decorators / export wrappers)
     anchor = node
-    while anchor.parent is not None and anchor.parent.type in ("export_statement", "decorated_definition",
-                                                               "lexical_declaration", "variable_declaration",
-                                                               "type_declaration", "const_declaration",
-                                                               "var_declaration"):
+    while anchor.parent is not None and anchor.parent.type in (
+        "export_statement",
+        "decorated_definition",
+        "lexical_declaration",
+        "variable_declaration",
+        "type_declaration",
+        "const_declaration",
+        "var_declaration",
+    ):
         anchor = anchor.parent
     lines = []
     prev = anchor.prev_named_sibling
@@ -319,6 +435,7 @@ def _exported(node, name: str, kind: str, lang: str) -> bool:
 
 
 # ---------------------------------------------------------------- imports
+
 
 def _py_package(path: str) -> list[str]:
     parts = path[:-3].split("/") if path.endswith(".py") else path.rsplit(".", 1)[0].split("/")
@@ -427,7 +544,7 @@ def _imports_js(node, src, path, ctx):
 def _go_key(ipath: str, ctx) -> str:
     for mdir, mod in ctx.get("gomods", ()):
         if ipath == mod or ipath.startswith(mod + "/"):
-            rest = ipath[len(mod):].lstrip("/")
+            rest = ipath[len(mod) :].lstrip("/")
             return posixpath.join(mdir, rest).strip("/") if (mdir or rest) else ""
     return ipath
 
@@ -452,7 +569,7 @@ def _imports_go(node, src, path, ctx):
 def _rs_modpath(path: str) -> list[str]:
     parts = path.split("/")
     if "src" in parts:
-        parts = parts[len(parts) - parts[::-1].index("src"):]
+        parts = parts[len(parts) - parts[::-1].index("src") :]
     stem = parts[-1].rsplit(".", 1)[0]
     parts = parts[:-1] + ([] if stem in ("lib", "main", "mod") else [stem])
     return ["crate"] + parts
@@ -521,8 +638,14 @@ def _imports_rust(node, src, path, ctx):
     return rows
 
 
-IMPORT_FNS = {"python": _imports_python, "javascript": _imports_js, "typescript": _imports_js,
-              "tsx": _imports_js, "go": _imports_go, "rust": _imports_rust}
+IMPORT_FNS = {
+    "python": _imports_python,
+    "javascript": _imports_js,
+    "typescript": _imports_js,
+    "tsx": _imports_js,
+    "go": _imports_go,
+    "rust": _imports_rust,
+}
 
 
 def module_keys(path: str, lang: str) -> list[tuple[str, int]]:
@@ -547,6 +670,7 @@ def module_keys(path: str, lang: str) -> list[tuple[str, int]]:
 
 # ---------------------------------------------------------------- the walker
 
+
 def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
     """Parse one file. Returns dict of row lists: symbols, refs, imports, modules, parse_errors."""
     ctx = ctx or {}
@@ -555,15 +679,21 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
     tree = get_parser(lang).parse(src)
     symbols, refs, imports = [], [], []
     skip: set[int] = set()
-    scopes: list[str] = []          # qualnames
+    scopes: list[str] = []  # qualnames
     classes: list[str | None] = []  # innermost class-like qualname at each scope level
-    frames: list[tuple] = []        # (type, ctx, receiver, pops_scope)
+    frames: list[tuple] = []  # (type, ctx, receiver, pops_scope)
     errors = 0
     import_fn = IMPORT_FNS[lang]
     idents, calls, attrs, sticky = spec.idents, spec.calls, spec.attrs, spec.sticky
     field_ctx, resets, write_through = spec.field_ctx, spec.resets, spec.write_through
-    defs_or_hooks = set(spec.defs) | {"assignment", "variable_declarator", "public_field_definition",
-                                      "field_definition", "const_spec", "var_spec"}
+    defs_or_hooks = set(spec.defs) | {
+        "assignment",
+        "variable_declarator",
+        "public_field_definition",
+        "field_definition",
+        "const_spec",
+        "var_spec",
+    }
 
     cur = tree.walk()
 
@@ -616,8 +746,19 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
                 if kind == "name" and t in spec.type_idents:
                     kind = "type"
                 r = precv if (ptype in attrs and fld == attrs[ptype][1]) else None
-                refs.append((path, lang, _text(src, node), kind, r, node.start_point[0] + 1,
-                             node.start_point[1], scopes[-1] if scopes else "", classes[-1] if classes else None))
+                refs.append(
+                    (
+                        path,
+                        lang,
+                        _text(src, node),
+                        kind,
+                        r,
+                        node.start_point[0] + 1,
+                        node.start_point[1],
+                        scopes[-1] if scopes else "",
+                        classes[-1] if classes else None,
+                    )
+                )
         elif t in defs_or_hooks:
             targets = _def_targets(node, t, spec, lang, src, not scopes)
             for name_node, kind, push, parent_override, body in targets:
@@ -632,9 +773,21 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
                 start = node
                 if node.parent is not None and node.parent.type == "decorated_definition":
                     start = node.parent
-                symbols.append((path, lang, name, qual, kind, parent, start.start_point[0] + 1,
-                                node.end_point[0] + 1, _signature(node, body, src, lang),
-                                _docstring(node, body, spec, lang, src), _exported(node, name, kind, lang)))
+                symbols.append(
+                    (
+                        path,
+                        lang,
+                        name,
+                        qual,
+                        kind,
+                        parent,
+                        start.start_point[0] + 1,
+                        node.end_point[0] + 1,
+                        _signature(node, body, src, lang),
+                        _docstring(node, body, spec, lang, src),
+                        _exported(node, name, kind, lang),
+                    )
+                )
                 if push and not pops:
                     scopes.append(qual)
                     classes.append(qual if kind in CLASS_KINDS else (classes[-1] if classes else None))

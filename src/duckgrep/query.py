@@ -1,4 +1,5 @@
 """Run a read-only query against a freshly updated index and format it compactly."""
+
 from __future__ import annotations
 
 import json
@@ -106,5 +107,6 @@ def format_table(res: Result) -> str:
 
 
 def format_json(res: Result) -> str:
-    return json.dumps({"columns": res.columns, "rows": [list(r) for r in res.rows], "total": res.total,
-                       "note": res.note}, default=str)
+    return json.dumps(
+        {"columns": res.columns, "rows": [list(r) for r in res.rows], "total": res.total, "note": res.note}, default=str
+    )

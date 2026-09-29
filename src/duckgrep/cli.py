@@ -1,4 +1,5 @@
 """duckgrep command line."""
+
 from __future__ import annotations
 
 import argparse
@@ -53,14 +54,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "mcp":
         from .mcp_server import serve
+
         serve(root)
         return 0
     if a.cmd == "index":
         con = connect(root)
         try:
             st = freshen(con, root, full=a.full, git_history=not a.no_git)
-            n = con.execute("SELECT (SELECT count(*) FROM files), (SELECT count(*) FROM symbols), "
-                            "(SELECT count(*) FROM refs), (SELECT count(*) FROM commits)").fetchone()
+            n = con.execute(
+                "SELECT (SELECT count(*) FROM files), (SELECT count(*) FROM symbols), "
+                "(SELECT count(*) FROM refs), (SELECT count(*) FROM commits)"
+            ).fetchone()
         finally:
             con.close()
         print(st.summary())
