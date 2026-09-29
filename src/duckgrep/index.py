@@ -580,6 +580,15 @@ def _mark_edges_dirty(con) -> None:
           ON k.family = i.family AND (k.key = i.key OR k.key = i.subkey)
         WHERE i."local" IS NOT NULL
     """)
+    # a star import reaches names through the module it imports, so a change to that module's own
+    # star imports (or exports) can move the edge without touching any key the importer holds
+    con.execute("""
+        INSERT INTO edges_dirty
+        SELECT DISTINCT 'path', i.path, NULL FROM imports i
+        JOIN (SELECT * FROM _aff_keys UNION SELECT * FROM _new_keys) k
+          ON k.family = i.family AND (k.key = i.key OR k.key = i.subkey)
+        WHERE i.name = '*' AND i."local" IS NULL
+    """)
     con.execute("DROP TABLE IF EXISTS _new_keys")
 
 

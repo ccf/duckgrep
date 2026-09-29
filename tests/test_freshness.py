@@ -11,6 +11,8 @@ from helpers import fresh_snapshot, make_repo, rows, snapshot, write
 
 from duckgrep import index, schema
 
+ALL = ("files", "symbols", "refs", "imports", "modules", "lines", "edges")
+
 
 def lib_repo(tmp_path, n=40):
     files = {"lib/__init__.py": "", "lib/core.py": "def helper():\n    return 1\n"}
@@ -126,3 +128,21 @@ def test_pool_workers_exit_when_parent_dies(tmp_path, method):
     while time.time() < deadline and any(_alive(p) for p in pids):
         time.sleep(0.2)
     assert not any(_alive(p) for p in pids)
+
+
+def test_star_import_chain_change_marks_the_importer(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "pkg/__init__.py": "",
+            "pkg/use.py": "from .api import *\n\n\ndef go():\n    helper()\n",
+            "pkg/api.py": "from .a import *\n",
+            "pkg/a.py": "def helper():\n    pass\n",
+            "pkg/b.py": "def helper():\n    pass\n",
+        },
+    )
+    q = "SELECT dst_path FROM edges WHERE src_path = 'pkg/use.py' AND name = 'helper'"
+    assert rows(root, q) == [("pkg/a.py",)]
+    write(root, "pkg/api.py", "from .b import *\n")
+    assert rows(root, q) == [("pkg/b.py",)]
+    assert snapshot(root, ALL) == fresh_snapshot(root, tmp_path, ALL)
