@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import threading
 import time
 import tracemalloc
 
@@ -77,14 +78,37 @@ def test_serve_starts_before_the_index_is_built(repo, monkeypatch):
     assert started and started[0] - t < 1.0
 
 
-def test_first_query_waits_for_the_initial_index(repo):
+def test_first_query_waits_for_the_initial_index(repo, monkeypatch):
+    q.refresh(repo)  # built up front, so a query that did not wait would answer at once
+    gate = threading.Event()
+
+    def refresh(root, **kw):
+        if threading.current_thread().name == "duckgrep-index":
+            gate.wait(10)  # the warm-up: blocked until the test releases it
+        return ""  # later calls, from queries: nothing to do
+
+    monkeypatch.setattr(q, "refresh", refresh)
+    done = []
+
     async def main():
         server = mcp_server.build(repo)
         async with create_connected_server_and_client_session(server._mcp_server) as client:
-            res = await client.call_tool("query", {"sql": "SELECT count(*) AS n FROM files"})
-        return res.content[0].text
 
-    assert int(anyio.run(main).splitlines()[-1]) > 0
+            async def call():
+                res = await client.call_tool("query", {"sql": "SELECT count(*) AS n FROM files"})
+                done.append(res.content[0].text)
+
+            try:
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(call)
+                    await anyio.sleep(0.5)
+                    assert not done, f"the query answered before the index was built: {done}"
+                    gate.set()
+            finally:
+                gate.set()
+
+    anyio.run(main)
+    assert int(done[0].splitlines()[-1]) == rows(repo, "SELECT count(*) FROM files")[0][0] > 0
 
 
 def git_repo(path, files):
@@ -127,3 +151,16 @@ def test_walk_fallback_skips_dotfiles(tmp_path):
     root = make_repo(tmp_path / "plain", {"a.py": "x = 1\n", ".env": "API_KEY=secret\n"})
     assert cli.main(["-C", root, "index"]) == 0
     assert rows(root, "SELECT path FROM files") == [("a.py",)]
+
+
+def test_schema_doc_states_the_bare_name_and_unresolved_rules_accurately():
+    from duckgrep.schema import SCHEMA_DOC
+
+    assert (
+        "A bare name resolves through its file's scope and imports only (Rust macros and .d.ts declarations excepted)."
+        in SCHEMA_DOC
+    )
+    assert (
+        "unresolved: no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow)."
+        in SCHEMA_DOC
+    )

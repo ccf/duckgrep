@@ -26,7 +26,48 @@ def test_builtin_method_names_do_not_match_by_name(tmp_path):
         },
     )
     assert edges_at(root, "use.py", "get") == [(None, None, "ambiguous")]
-    assert rows(root, "SELECT * FROM callers('Cache.get')") == []
+    assert rows(root, "SELECT * FROM callers('Cache.get')") == [
+        (
+            None,
+            None,
+            None,
+            "call",
+            None,
+            "ambiguous",
+            "1 call(s) of .get() on receivers of unknown type are not listed; callers('get') shows them",
+        )
+    ]
+
+
+def test_qualified_callers_list_confident_rows_before_the_unknown_receiver_summary(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "cache.py": (
+                "class Cache:\n"
+                "    def get(self, key):\n"
+                "        return key\n"
+                "\n"
+                "    def fetch(self, key):\n"
+                "        return self.get(key)\n"
+            ),
+            "use.py": "def lookup(d):\n    return d.get('x')\n",
+        },
+    )
+    got = rows(root, "SELECT src_path, line, caller, resolution, targets FROM callers('Cache.get')")
+    assert got == [
+        ("cache.py", 6, "Cache.fetch", "self", "Cache.get"),
+        (
+            None,
+            None,
+            None,
+            "ambiguous",
+            "1 call(s) of .get() on receivers of unknown type are not listed; callers('get') shows them",
+        ),
+    ]
+    # no unknown-receiver calls, no summary row; a bare name never gets one
+    assert rows(root, "SELECT * FROM callers('Cache.fetch')") == []
+    assert all(r[0] is not None for r in rows(root, "SELECT * FROM callers('get')"))
 
 
 def test_calls_on_external_modules_are_unresolved(tmp_path):
@@ -198,3 +239,14 @@ def test_reexport_change_updates_class_calls(tmp_path):
     write(root, "pkg/__init__.py", "from .other import Client\n")
     assert edges_at(root, "use.py", "settings") == [("pkg/other.py", "Client.settings", "qualified")]
     assert snapshot(root, ALL) == fresh_snapshot(root, tmp_path, ALL)
+
+
+def test_js_export_star_does_not_bind_names_locally(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a.ts": "export function foo() { return 1; }\n",
+            "b.ts": "export * from './a';\nexport function bar() { return foo(); }\n",
+        },
+    )
+    assert edges_at(root, "b.ts", "foo") == [(None, None, "unresolved")]

@@ -577,35 +577,50 @@ def _rs_crate(path: str, ctx) -> tuple[str, str] | None:
     return None
 
 
-def _rs_roots(path: str, ctx) -> tuple[list[str], list[str]]:
-    """(crate root segments, module segments) of a Rust file.
+def _rs_layout(path: str, ctx) -> tuple[list[str], list[str], list[str]]:
+    """(crate root, module key, scope) of a Rust file, all as segment lists.
 
-    Files under <package>/src belong to crate <name>. tests/, examples/ and benches/ files are their own
-    crate roots, keyed <name>::tests and so on. Other files outside src/ (build.rs) get a key no import can
-    name. Without a Cargo.toml the old scheme applies: 'crate' + the path after the last src/.
+    Files under <package>/src belong to crate <name>. tests/, examples/ and benches/ files are keyed
+    <name>::tests and so on, but each of tests/<x>.rs, src/bin/<x>.rs and <dir>/<x>/main.rs is the root of its
+    own crate: `crate::` names <name>::tests (tests/<x>.rs, tests/common/**), <name>::bin (src/bin/<x>.rs),
+    <name>::bin::<x> (src/bin/<x>/**) or <name>::tests::<x> (tests/<x>/**, assumed to have a main.rs).
+    `scope` is what `self::`, `super::` and uniform paths start from: the module key, except for a
+    single-file crate root, whose scope is its directory. Other files outside src/ (build.rs) get a key no
+    import can name. Without a Cargo.toml the old scheme applies: 'crate' + the path after the last src/.
     """
     crate = _rs_crate(path, ctx)
     if crate is None:
         rel = path.split("/")
         if "src" in rel:
             rel = rel[len(rel) - rel[::-1].index("src") :]
-        root = ["crate"]
+        base, croot, single = ["crate"], ["crate"], False
     else:
         d, name = crate
         rel = (path[len(d) + 1 :] if d else path).split("/")
         if rel[0] == "src":
-            root, rel = [name], rel[1:]
+            rel = rel[1:]
+            base, croot, single = [name], [name], False
+            if rel[0] == "bin" and len(rel) > 1:
+                if len(rel) == 2:
+                    croot, single = [name, "bin"], True
+                else:
+                    croot = [name, "bin", rel[1]]
         elif rel[0] in ("tests", "examples", "benches") and len(rel) > 1:
-            root, rel = [name, rel[0]], rel[1:]
+            base = [name, rel[0]]
+            rel = rel[1:]
+            croot, single = base, len(rel) == 1
+            if len(rel) > 1 and rel[0] != "common":
+                croot = base + [rel[0]]
         else:
-            return [name, "!" + "/".join(rel)], []
+            key = [name, "!" + "/".join(rel)]
+            return key, key, key
     stem = rel[-1].rsplit(".", 1)[0]
-    return root, rel[:-1] + ([] if stem in ("lib", "main", "mod") else [stem])
+    key = base + rel[:-1] + ([] if stem in ("lib", "main", "mod") else [stem])
+    return croot, key, base + rel[:-1] if single else key
 
 
 def _rs_modpath(path: str, ctx=None) -> list[str]:
-    root, mods = _rs_roots(path, ctx)
-    return root + mods
+    return _rs_layout(path, ctx)[1]
 
 
 def _rs_abs(mod: str, path: str, ctx=None, inline=()) -> str:
@@ -613,8 +628,8 @@ def _rs_abs(mod: str, path: str, ctx=None, inline=()) -> str:
     segs = mod.split("::") if mod else []
     if segs and segs[0] == "":  # ::name
         segs = segs[1:]
-    root, mods = _rs_roots(path, ctx)
-    here = root + mods + list(inline)
+    root, _, scope = _rs_layout(path, ctx)
+    here = scope + list(inline)
     crates = {name for _, name in (ctx or {}).get("rscrates", ())}
     if not segs:
         return "::".join(here)

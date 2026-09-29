@@ -226,7 +226,7 @@ t1 AS (
     FROM r
     JOIN imp i ON i.path = r.path AND i.name = '*' AND i."local" IS NULL
     JOIN sym s ON s.path = i.target_path AND s.name = r.name AND s.parent IS NULL
-    WHERE r.receiver IS NULL
+    WHERE r.receiver IS NULL AND r.family IN ('py', 'rs')
   UNION ALL
     -- ... or re-exported by it
     SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'import'
@@ -235,7 +235,7 @@ t1 AS (
     JOIN rx ON rx.mod_path = i.target_path AND (rx."local" = r.name OR (rx.name = '*' AND rx."local" IS NULL))
     JOIN sym s ON s.path = rx.target_path AND s.parent IS NULL
            AND s.name = CASE WHEN rx.name = '*' THEN r.name ELSE coalesce(nullif(rx.name, 'default'), rx."local") END
-    WHERE r.receiver IS NULL
+    WHERE r.receiver IS NULL AND r.family IN ('py', 'rs')
   UNION ALL
     -- Class.method / Type::method, with the class bound in this file: defined here, imported by name
     -- (directly or through one re-export), or reached through an imported module (mod.Class.method)
@@ -340,17 +340,27 @@ CREATE OR REPLACE MACRO defs(q) AS TABLE
     ORDER BY path, start_line;
 
 -- who references a symbol (name or qualname): one row per reference site, confident first.
--- A bare name also matches ambiguous / unresolved references with that name.
+-- A bare name also matches ambiguous / unresolved references with that name; a qualified one ends with a summary
+-- row counting the calls of that method name on receivers of unknown type.
 -- `targets` lists the candidate definitions when resolution is by name only.
 CREATE OR REPLACE MACRO callers(q) AS TABLE
-    SELECT src_path, line, nullif(src_scope, '') AS caller, ref_kind, left(receiver, 40) AS receiver, resolution,
-           CASE WHEN count(dst_qualname) > 3 THEN count(dst_qualname) || ' candidates'
-                ELSE string_agg(dst_qualname, ', ' ORDER BY dst_qualname) END AS targets
-    FROM edges
-    WHERE dst_qualname = q OR ends_with(dst_qualname, '.' || q)
-       OR (name = q AND position('.' IN q) = 0 AND dst_qualname IS NULL)
-    GROUP BY src_path, line, col, src_scope, ref_kind, receiver, resolution
-    ORDER BY (resolution IN ('name', 'ambiguous', 'unresolved')), src_path, line;
+    SELECT src_path, line, caller, ref_kind, receiver, resolution, targets FROM (
+        SELECT 0 AS ord, src_path, line, nullif(src_scope, '') AS caller, ref_kind, left(receiver, 40) AS receiver,
+               resolution,
+               CASE WHEN count(dst_qualname) > 3 THEN count(dst_qualname) || ' candidates'
+                    ELSE string_agg(dst_qualname, ', ' ORDER BY dst_qualname) END AS targets
+        FROM edges
+        WHERE dst_qualname = q OR ends_with(dst_qualname, '.' || q)
+           OR (name = q AND position('.' IN q) = 0 AND dst_qualname IS NULL)
+        GROUP BY src_path, line, col, src_scope, ref_kind, receiver, resolution
+      UNION ALL
+        SELECT 1, NULL, NULL, NULL, 'call', NULL, 'ambiguous',
+               n || ' call(s) of .' || split_part(q, '.', -1) || '() on receivers of unknown type are not listed; callers('''
+               || split_part(q, '.', -1) || ''') shows them'
+        FROM (SELECT count(*) AS n FROM edges WHERE resolution = 'ambiguous' AND name = split_part(q, '.', -1))
+        WHERE n > 0 AND position('.' IN q) > 0
+    )
+    ORDER BY ord, (resolution IN ('name', 'ambiguous', 'unresolved')), src_path, line;
 
 -- what a function references; `file` and `caller` are filled only when the name matches more than one function
 CREATE OR REPLACE MACRO callees(q) AS TABLE
@@ -416,14 +426,15 @@ edges(src_path, src_scope, line, ref_kind, name, receiver, dst_path, dst_qualnam
     self | local | package | import | module | qualified   confident (scope, import and star-import analysis)
     name        obj.method() matched by method name only, <= 10 candidates (one row each; n_candidates = how many)
     ambiguous   > 10 candidates, or a method builtin types also have (get, append, push ...); dst_* NULL
-    unresolved  call to something not defined in the repo (stdlib, builtins, third party); dst_* NULL
-  A bare name never matches by name: it resolves through its file's scope and imports, or not at all.
+    unresolved: no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow).
+  A bare name resolves through its file's scope and imports only (Rust macros and .d.ts declarations excepted).
 
 TABLE MACROS
   defs('name')          where is it defined          callers('name' | 'Class.method')   who uses it
   callees('qualname')   what it calls                outline('path/or/suffix.py')       symbols in a file
   grep('regex')         text search + enclosing symbol    source('qualname')           the code of a symbol
   outline, callees and source fill their first column(s) only when the argument matches several files or symbols
+  callers('Class.method') ends with a summary row counting calls on receivers of unknown type (not listed)
 
 EXAMPLES
   SELECT * FROM defs('Session');

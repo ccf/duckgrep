@@ -106,3 +106,58 @@ def test_nested_inline_mods(tmp_path):
     deep = "pub fn top() {}\n\nmod x {\n    mod y {\n        use super::super::top;\n    }\n}\n"
     root = workspace(tmp_path, **{"crates/b/src/deep.rs": deep})
     assert target(root, "crates/b/src/deep.rs", 5) == [("crates/b/src/deep.rs",)]
+
+
+def _crate_root_repo(tmp_path, files):
+    return make_repo(
+        tmp_path / "k",
+        {"Cargo.toml": '[package]\nname = "k"\nversion = "0.1.0"\n', "src/lib.rs": "pub mod cli;\n", **files},
+    )
+
+
+def test_integration_test_root_sees_its_sibling_module(tmp_path):
+    root = _crate_root_repo(
+        tmp_path,
+        {
+            "tests/it.rs": "mod common;\nuse common::helper;\n\nfn t() {\n    helper();\n}\n",
+            "tests/common/mod.rs": "pub fn helper() {}\n",
+        },
+    )
+    assert target(root, "tests/it.rs", 2) == [("tests/common/mod.rs",)]
+    got = rows(root, "SELECT dst_path, resolution FROM edges WHERE src_path = 'tests/it.rs' AND name = 'helper'")
+    assert got == [("tests/common/mod.rs", "import")]
+    keys = dict(rows(root, "SELECT path, key FROM modules WHERE family = 'rs'"))
+    assert keys["tests/it.rs"] == "k::tests::it"
+    assert keys["tests/common/mod.rs"] == "k::tests::common"
+
+
+def test_bin_crate_path_is_not_the_library(tmp_path):
+    root = _crate_root_repo(
+        tmp_path,
+        {"src/cli.rs": "pub struct X;\n", "src/bin/tool.rs": "use crate::cli::X;\n"},
+    )
+    assert target(root, "src/bin/tool.rs", 1) == [(None,)]
+    assert dict(rows(root, "SELECT path, key FROM modules WHERE family = 'rs'"))["src/bin/tool.rs"] == "k::bin::tool"
+
+
+def test_bin_names_its_library_by_crate_name(tmp_path):
+    root = _crate_root_repo(
+        tmp_path,
+        {"src/cli.rs": "pub struct X;\n", "src/bin/tool.rs": "use k::cli::X;\n"},
+    )
+    assert target(root, "src/bin/tool.rs", 1) == [("src/cli.rs",)]
+
+
+def test_bin_directory_and_test_directory_crate_roots(tmp_path):
+    root = _crate_root_repo(
+        tmp_path,
+        {
+            "src/bin/t/main.rs": "mod cmd;\nuse cmd::run;\nuse crate::cmd::run as r2;\n",
+            "src/bin/t/cmd.rs": "pub fn run() {}\n",
+            "tests/big/main.rs": "mod util;\nuse crate::util::f;\n",
+            "tests/big/util.rs": "pub fn f() {}\n",
+        },
+    )
+    assert target(root, "src/bin/t/main.rs", 2) == [("src/bin/t/cmd.rs",)]
+    assert target(root, "src/bin/t/main.rs", 3) == [("src/bin/t/cmd.rs",)]
+    assert target(root, "tests/big/main.rs", 2) == [("tests/big/util.rs",)]
