@@ -7,6 +7,7 @@ one small query), so it runs before every query instead of relying on hooks.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import posixpath
 import re
@@ -224,6 +225,32 @@ def _rust_crates(root: str, paths: list[str]) -> list[tuple[str, str]]:
     return sorted(crates, key=lambda c: -len(c[0]))
 
 
+def _is_ctx_file(p: str) -> bool:
+    return posixpath.basename(p) in ("go.mod", "Cargo.toml")
+
+
+def _module_context(con, root, paths, candidates, deleted, full) -> tuple[dict, set[str], str | None]:
+    """Extraction context (go.mod module paths, Cargo crate names), the languages to re-parse because it
+    changed, and the JSON to store (None if unchanged). Re-read only when a go.mod or Cargo.toml changed."""
+    row = con.execute("SELECT value FROM meta WHERE key = 'module_ctx'").fetchone()
+    old = {k: [tuple(x) for x in v] for k, v in json.loads(row[0]).items()} if row else None
+    if (
+        old is not None
+        and not full
+        and not any(_is_ctx_file(p) for p, _, _ in candidates)
+        and not any(_is_ctx_file(p) for p in deleted)
+    ):
+        return old, set(), None
+    new = {"gomods": _go_modules(root, paths), "rscrates": _rust_crates(root, paths)}
+    if full:
+        reparse = set()
+    elif old is None:
+        reparse = {"go", "rust"}
+    else:
+        reparse = {lang for lang, k in (("go", "gomods"), ("rust", "rscrates")) if old.get(k) != new[k]}
+    return new, reparse, json.dumps(new)
+
+
 def extractor_version() -> str:
     """Hash of the extraction code: any change forces a full re-parse."""
     from . import extract as _e
@@ -279,6 +306,7 @@ def freshen(
 
     known = {r[0]: (r[1], r[2], r[3]) for r in con.execute("SELECT path, size, mtime_ns, sha FROM files").fetchall()}
     listed = set()
+    stat = {}
     candidates = []
     for p in paths:
         try:
@@ -288,10 +316,15 @@ def freshen(
         if not (s.st_mode & 0o170000 == 0o100000):  # regular files only
             continue
         listed.add(p)
+        stat[p] = (s.st_size, s.st_mtime_ns)
         k = known.get(p)
         if full or k is None or k[0] != s.st_size or k[1] != s.st_mtime_ns:
             candidates.append((p, s.st_size, s.st_mtime_ns))
     deleted = [p for p in known if p not in listed]
+    ctx, reparse, ctx_json = _module_context(con, root, paths, candidates, deleted, full)
+    if reparse:  # the context changed: files of that language parse differently though their bytes didn't
+        have = {p for p, _, _ in candidates}
+        candidates += [(p, *stat[p]) for p in listed if p not in have and lang_of(p) in reparse]
 
     # ---- pass 1: hash candidates to find real content changes (cheap; nothing kept in memory)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -309,7 +342,7 @@ def freshen(
             continue
         sha = hashlib.blake2b(data, digest_size=16).hexdigest()
         k = known.get(p)
-        if k is not None and k[2] == sha and not full:
+        if k is not None and k[2] == sha and not full and lang not in reparse:
             touched.append((size, mtime, p))
             continue
         if b"\0" in data[:8192]:
@@ -325,12 +358,6 @@ def freshen(
     st.deleted = len(deleted)
     st.touched = len(touched)
 
-    parsed = {lang for _, lang, parse in jobs if parse}
-    ctx = {}
-    if "go" in parsed:
-        ctx["gomods"] = _go_modules(root, paths)
-    if "rust" in parsed:
-        ctx["rscrates"] = _rust_crates(root, paths)
     replaced = list(file_rows) + deleted
     rebuild_edges = full or len(replaced) > 0.3 * max(1, len(listed))
 
@@ -406,6 +433,8 @@ def freshen(
         if replaced:
             for t in ("_chg", "_aff_names", "_aff_keys"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
+        if ctx_json is not None:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('module_ctx', ?)", [ctx_json])
         if full:
             con.execute("INSERT OR REPLACE INTO meta VALUES ('extractor_version', ?)", [ver])
         if git_history:
