@@ -80,7 +80,7 @@ def main(root, edit_path, symbol, qualname):
             WHERE c.path IN (SELECT path FROM symbols WHERE kind = 'class') ORDER BY 2 DESC LIMIT 10""",
     }
     for name, sql in queries.items():
-        ms, res = timed(lambda: q.run(root, sql, max_rows=1000, fresh=False), n=3)
+        ms, res = timed(lambda sql=sql: q.run(root, sql, max_rows=1000, fresh=False), n=3)
         print(f"{name:42s}{ms:8.1f} ms   rows={res.total}")
 
 

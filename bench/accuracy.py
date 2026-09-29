@@ -123,7 +123,7 @@ def main(root, n=300, seed=0):
     if ext:
         tot = sum(ext.values())
         print(
-            f"calls jedi resolves outside the repo -> duckgrep: "
+            "calls jedi resolves outside the repo -> duckgrep: "
             + ", ".join(f"{k} {v / tot:.0%}" for k, v in ext.most_common())
         )
     if examples:

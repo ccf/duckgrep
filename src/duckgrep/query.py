@@ -63,7 +63,7 @@ def run(root: str, sql: str, max_rows: int = 200, timeout: float = 30.0, fresh: 
             rows = rows[:max_rows]
         return Result(cols, rows, total, note)
     except duckdb.InterruptException:
-        raise TimeoutError(f"query exceeded {timeout:.0f}s")
+        raise TimeoutError(f"query exceeded {timeout:.0f}s") from None
     finally:
         timer.cancel()
         con.close()
@@ -98,7 +98,10 @@ def format_table(res: Result) -> str:
         return res.note or "(ok)"
     cells = [[_cell(v) for v in r] for r in res.rows]
     widths = [min(80, max([len(c)] + [len(r[i]) for r in cells])) for i, c in enumerate(res.columns)]
-    fmt = lambda row: "  ".join(v[:w].ljust(w) for v, w in zip(row, widths)).rstrip()
+
+    def fmt(row):
+        return "  ".join(v[:w].ljust(w) for v, w in zip(row, widths, strict=True)).rstrip()
+
     lines = ([f"# {res.note}"] if res.note else []) + [fmt(res.columns), fmt(["-" * w for w in widths])]
     lines += [fmt(r) for r in cells]
     if res.total > len(res.rows):

@@ -28,7 +28,7 @@ def enclosing(root, hits):
     """(path, line) -> enclosing qualname, as an agent would learn by opening the file."""
     if not hits:
         return {}
-    vals = ",".join(f"('{p}', {l})" for p, l in hits)
+    vals = ",".join(f"('{p}', {line})" for p, line in hits)
     rows = q.run(
         root,
         f"""
@@ -40,14 +40,14 @@ def enclosing(root, hits):
         max_rows=10**7,
         fresh=False,
     ).rows
-    return {(p, l): qn for p, l, qn in rows}
+    return {(p, line): qn for p, line, qn in rows}
 
 
 def read_bytes(root, hits):
     """Bytes an agent reads to see the enclosing function of each hit (each function once)."""
     if not hits:
         return 0
-    vals = ",".join(f"('{p}', {l})" for p, l in hits)
+    vals = ",".join(f"('{p}', {line})" for p, line in hits)
     return q.run(
         root,
         f"""
@@ -66,8 +66,8 @@ def read_bytes(root, hits):
 def parse_hits(lines):
     out = []
     for ln in lines:
-        p, l, _ = ln.split(":", 2)
-        out.append((p, int(l)))
+        p, line, _ = ln.split(":", 2)
+        out.append((p, int(line)))
     return out
 
 
@@ -94,8 +94,8 @@ def main(root):
     hits = parse_hits(g)
     py_hits = [h for h in hits if h[0].endswith(".py")]
     call_lines = {
-        (p, l)
-        for p, l in q.run(
+        (p, line)
+        for p, line in q.run(
             root,
             "SELECT DISTINCT path, line FROM refs WHERE name = 'get_or_create' AND kind = 'call'",
             max_rows=10**6,

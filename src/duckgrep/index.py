@@ -296,7 +296,7 @@ def freshen(
     st.deleted = len(deleted)
     st.touched = len(touched)
 
-    ctx = {"gomods": _go_modules(root, paths)} if any(l == "go" for _, l, parse in jobs if parse) else {}
+    ctx = {"gomods": _go_modules(root, paths)} if any(lang == "go" for _, lang, parse in jobs if parse) else {}
     replaced = list(file_rows) + deleted
     rebuild_edges = full or len(replaced) > 0.3 * max(1, len(listed))
 
@@ -325,7 +325,7 @@ def freshen(
         ex = ProcessPoolExecutor(max_workers=workers) if use_pool else None
         try:
             for i in range(0, len(jobs), CHUNK):
-                chunk = [(root, p, l, parse, ctx) for p, l, parse in jobs[i : i + CHUNK]]
+                chunk = [(root, p, lang, parse, ctx) for p, lang, parse in jobs[i : i + CHUNK]]
                 results = ex.map(_work, chunk, chunksize=8) if ex else map(_work, chunk)
                 rows = {"symbols": [], "refs": [], "imports": [], "modules": []}
                 lines = {"path": [], "line": [], "text": []}

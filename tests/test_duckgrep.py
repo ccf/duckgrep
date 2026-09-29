@@ -2,10 +2,10 @@ import os
 import shutil
 import subprocess
 
+import duckdb
 import pytest
 
 from duckgrep import query as q
-from duckgrep.index import connect, freshen
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixture")
 
@@ -115,8 +115,10 @@ def test_touch_without_change_is_not_reparsed(repo):
 def test_read_only(repo):
     with pytest.raises(Exception, match="read-only"):
         q.run(repo, "DELETE FROM symbols")
-    with pytest.raises(Exception):
-        q.run(repo, "SELECT * FROM read_text('/etc/hostname')")
+    # a file that exists, so only the sandbox can refuse it
+    path = os.path.join(repo, "pkg", "core.py")
+    with pytest.raises(duckdb.PermissionException, match="disabled by configuration"):
+        q.run(repo, f"SELECT * FROM read_text('{path}')")
 
 
 def test_git_history(repo):
@@ -127,7 +129,10 @@ def test_git_history(repo):
         "GIT_COMMITTER_NAME": "a",
         "GIT_COMMITTER_EMAIL": "a@x",
     }
-    run = lambda *a: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, env=env)
+
+    def run(*a):
+        return subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True, env=env)
+
     run("init", "-q")
     run("add", "-A")
     run("commit", "-qm", "first")
@@ -159,7 +164,11 @@ def _rebuild_snapshot(root, tmp_path):
 
 def test_incremental_edges_match_full_rebuild(repo, tmp_path):
     rows(repo, "SELECT 1")
-    w = lambda rel, text: open(os.path.join(repo, rel), "w").write(text)
+
+    def w(rel, text):
+        with open(os.path.join(repo, rel), "w") as f:
+            f.write(text)
+
     # rename a definition that other files call
     helpers = os.path.join(repo, "pkg/sub/helpers.py")
     w("pkg/sub/helpers.py", open(helpers).read().replace("def normalize", "def normalise"))
@@ -185,7 +194,11 @@ def test_incremental_edges_match_full_rebuild(repo, tmp_path):
 
 
 def test_reexports(repo, tmp_path):
-    w = lambda rel, text: open(os.path.join(repo, rel), "w").write(text)
+
+    def w(rel, text):
+        with open(os.path.join(repo, rel), "w") as f:
+            f.write(text)
+
     w("pkg/sub/__init__.py", "from .helpers import slugify\n")
     w("pkg/use.py", "from . import sub\nfrom .sub import slugify as s\n\ndef f():\n    sub.slugify('a')\n    s('b')\n")
     w("web/index.ts", 'export { fetchJson as fj } from "./http";\n')
