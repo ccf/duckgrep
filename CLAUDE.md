@@ -28,6 +28,15 @@ uv run --group bench python bench/accuracy.py <python-repo> [n]   # jedi as the 
 uv run python bench/mcp_smoke.py [repo]    # drives the MCP server over stdio
 ```
 
+## Workflow
+
+Every change lands through a pull request:
+1. Branch from an up-to-date `main`.
+2. Commit through the hook.
+3. Push the branch and open a PR with `gh pr create`.
+
+Bugbot and Greptile review every PR. Check each comment against the code before acting: fix the valid ones on the branch, and reply with evidence to the rest. Never commit on, merge into or push `main`; a pre-commit hook refuses commits on it. The user merges PRs.
+
 ## How it fits together
 
 - `extract.py` is per file and pure: (path, bytes, small repo context) → symbols, refs, imports, module keys. `index.py` decides which files to re-extract and swaps their rows. `schema.py` holds the SQL: tables, `EDGES_COMPUTE` (reference resolution), views, table macros and `SCHEMA_DOC`. `builtin_names.py` lists the builtin method and global names that `EDGES_COMPUTE` inlines. `query.py` refreshes, then runs the agent's SQL. `mcp_server.py` and `cli.py` are thin wrappers over it.
