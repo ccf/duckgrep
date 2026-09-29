@@ -242,8 +242,8 @@ def freshen(
     t0 = time.perf_counter()
     st = FreshenStats()
     ver = extractor_version()
-    row = con.execute("SELECT value FROM meta WHERE key = 'extractor_version'").fetchone()
-    if not row or row[0] != ver:
+    meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
+    if meta.get("extractor_version") != ver:
         full = True
     paths = list_files(root)
     st.scanned = len(paths)
@@ -298,11 +298,13 @@ def freshen(
 
     ctx = {"gomods": _go_modules(root, paths)} if any(lang == "go" for _, lang, parse in jobs if parse) else {}
     replaced = list(file_rows) + deleted
-    rebuild_edges = full or len(replaced) > 0.3 * max(1, len(listed))
+    rebuild_edges = full or "edges_rebuild_pending" in meta or len(replaced) > 0.3 * max(1, len(listed))
 
     # ---- write: one transaction; parse + insert in bounded chunks
     con.execute("BEGIN")
     try:
+        if rebuild_edges:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('edges_rebuild_pending', '1')")
         if replaced:
             con.register("_chg_src", pa.table({"path": replaced}))
             con.execute("CREATE OR REPLACE TEMP TABLE _chg AS SELECT DISTINCT path FROM _chg_src")
@@ -350,8 +352,7 @@ def freshen(
                     con.execute("INSERT INTO lines BY NAME SELECT * FROM _lines")
                     con.unregister("_lines")
                 if rebuild_edges:
-                    # Big rebuild: commit per chunk to bound memory. Not atomic, but the extractor
-                    # version is only recorded at the end, so an interrupted rebuild is redone.
+                    # Big rebuild: commit per chunk to bound memory. The pending marker makes the next freshen finish it.
                     con.execute("COMMIT")
                     con.execute("BEGIN")
         finally:
@@ -367,6 +368,7 @@ def freshen(
             con.executemany("UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?", touched)
         if rebuild_edges:
             _rebuild_edges(con)
+            con.execute("DELETE FROM meta WHERE key = 'edges_rebuild_pending'")
         elif replaced:
             _mark_edges_dirty(con)
         if replaced:
@@ -389,6 +391,10 @@ def freshen(
 EDGE_BATCH_REFS = 400_000
 
 
+def _compute_edges(con, source: str, where: str = "TRUE") -> None:
+    con.execute(schema.EDGES_COMPUTE.format(source=source, where=where, cap=schema.NAME_CAP))
+
+
 def _rebuild_edges(con) -> None:
     """Recompute all edges, in batches of files so memory stays bounded on big repos."""
     con.execute("DELETE FROM edges")
@@ -397,7 +403,7 @@ def _rebuild_edges(con) -> None:
     batches = max(1, -(-n_refs // EDGE_BATCH_REFS))
     for b in range(batches):
         where = "TRUE" if batches == 1 else f"hash(r.path) % {batches} = {b}"
-        con.execute(schema.EDGES_COMPUTE.format(source="refs", where=where, cap=schema.NAME_CAP))
+        _compute_edges(con, "refs", where)
         if batches > 1:
             con.execute("COMMIT")
             con.execute("BEGIN")
@@ -471,7 +477,7 @@ def sync_edges(con) -> int:
                 SELECT e.rowid FROM edges e SEMI JOIN _r ON _r.path = e.src_path AND _r.line = e.line
                                                        AND _r.col = e.col AND _r.name = e.name)
         """)
-        con.execute(schema.EDGES_COMPUTE.format(source="_r", where="TRUE", cap=schema.NAME_CAP))
+        _compute_edges(con, "_r")
         con.execute("DELETE FROM edges_dirty")
         con.execute("DROP TABLE IF EXISTS _r")
         con.execute("COMMIT")
