@@ -12,6 +12,7 @@ import os
 import posixpath
 import re
 import subprocess
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -253,12 +254,44 @@ def _module_context(con, root, paths, candidates, deleted, full) -> tuple[dict, 
     return new, reparse, json.dumps(new)
 
 
+GRAMMARS = (
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
+    "tree-sitter-rust",
+)
+
+
+def _grammar_versions() -> str:
+    """Installed tree-sitter runtime and grammar versions: an upgrade can change every parse."""
+    from importlib import metadata
+
+    out = []
+    for name in GRAMMARS:
+        try:
+            out.append(f"{name}=={metadata.version(name)}")
+        except metadata.PackageNotFoundError:
+            out.append(f"{name}==?")
+    return ";".join(out)
+
+
 def extractor_version() -> str:
-    """Hash of the extraction code: any change forces a full re-parse."""
+    """What stored rows depend on: extractor code, grammars and table layout. A change forces a full re-parse."""
     from . import extract as _e
 
+    h = hashlib.blake2b(digest_size=8)
     with open(_e.__file__, "rb") as f:
-        return hashlib.blake2b(f.read(), digest_size=8).hexdigest()
+        h.update(f.read())
+    h.update(_grammar_versions().encode())
+    h.update(schema.TABLES.encode())
+    return h.hexdigest()
+
+
+def edges_version() -> str:
+    """What the call graph depends on beyond the rows: the resolution SQL and its cap. A change rebuilds edges."""
+    return hashlib.blake2b(f"{schema.EDGES_COMPUTE}\0{schema.NAME_CAP}".encode(), digest_size=8).hexdigest()
 
 
 CHUNK = 256
@@ -278,6 +311,21 @@ def _work(args):
         lines.pop()
     lines = [ln.rstrip("\r")[:MAX_LINE] for ln in lines]
     return path, lines, (extract(path, lang, data, ctx) if parse else None)
+
+
+def _exit_with_parent(parent: int) -> None:
+    """Pool worker initializer: exit when the indexing process dies, so a killed server leaves no workers."""
+
+    def watch():
+        while os.getppid() == parent:
+            time.sleep(1)
+        os._exit(1)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _pool(workers: int | None) -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(max_workers=workers, initializer=_exit_with_parent, initargs=(os.getpid(),))
 
 
 # ------------------------------------------------------------------ freshen
@@ -300,8 +348,9 @@ def freshen(
     t0 = time.perf_counter()
     st = FreshenStats()
     ver = extractor_version()
-    row = con.execute("SELECT value FROM meta WHERE key = 'extractor_version'").fetchone()
-    if not row or row[0] != ver:
+    ever = edges_version()
+    meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
+    if meta.get("extractor_version") != ver:
         full = True
     paths = list_files(root)
     st.scanned = len(paths)
@@ -361,11 +410,18 @@ def freshen(
     st.touched = len(touched)
 
     replaced = list(file_rows) + deleted
-    rebuild_edges = full or len(replaced) > 0.3 * max(1, len(listed))
+    rebuild_edges = (
+        full
+        or "edges_rebuild_pending" in meta
+        or meta.get("edges_version") != ever
+        or len(replaced) > 0.3 * max(1, len(listed))
+    )
 
     # ---- write: one transaction; parse + insert in bounded chunks
     con.execute("BEGIN")
     try:
+        if rebuild_edges:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('edges_rebuild_pending', '1')")
         if replaced:
             con.register("_chg_src", pa.table({"path": replaced}))
             con.execute("CREATE OR REPLACE TEMP TABLE _chg AS SELECT DISTINCT path FROM _chg_src")
@@ -385,7 +441,7 @@ def freshen(
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
 
         use_pool = len(jobs) >= PARALLEL_THRESHOLD and (workers or os.cpu_count() or 1) > 1
-        ex = ProcessPoolExecutor(max_workers=workers) if use_pool else None
+        ex = _pool(workers) if use_pool else None
         try:
             for i in range(0, len(jobs), CHUNK):
                 chunk = [(root, p, lang, parse, ctx) for p, lang, parse in jobs[i : i + CHUNK]]
@@ -413,8 +469,7 @@ def freshen(
                     con.execute("INSERT INTO lines BY NAME SELECT * FROM _lines")
                     con.unregister("_lines")
                 if rebuild_edges:
-                    # Big rebuild: commit per chunk to bound memory. Not atomic, but the extractor
-                    # version is only recorded at the end, so an interrupted rebuild is redone.
+                    # Big rebuild: commit per chunk to bound memory. The pending marker makes the next freshen finish it.
                     con.execute("COMMIT")
                     con.execute("BEGIN")
         finally:
@@ -430,6 +485,8 @@ def freshen(
             con.executemany("UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?", touched)
         if rebuild_edges:
             _rebuild_edges(con)
+            con.execute("DELETE FROM meta WHERE key = 'edges_rebuild_pending'")
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('edges_version', ?)", [ever])
         elif replaced:
             _mark_edges_dirty(con)
         if replaced:
@@ -454,6 +511,10 @@ def freshen(
 EDGE_BATCH_REFS = 400_000
 
 
+def _compute_edges(con, source: str, where: str = "TRUE") -> None:
+    con.execute(schema.EDGES_COMPUTE.format(source=source, where=where, cap=schema.NAME_CAP))
+
+
 def _rebuild_edges(con) -> None:
     """Recompute all edges, in batches of files so memory stays bounded on big repos."""
     con.execute("DELETE FROM edges")
@@ -462,7 +523,7 @@ def _rebuild_edges(con) -> None:
     batches = max(1, -(-n_refs // EDGE_BATCH_REFS))
     for b in range(batches):
         where = "TRUE" if batches == 1 else f"hash(r.path) % {batches} = {b}"
-        con.execute(schema.EDGES_COMPUTE.format(source="refs", where=where, cap=schema.NAME_CAP))
+        _compute_edges(con, "refs", where)
         if batches > 1:
             con.execute("COMMIT")
             con.execute("BEGIN")
@@ -539,7 +600,7 @@ def sync_edges(con) -> int:
                 SELECT e.rowid FROM edges e SEMI JOIN _r ON _r.path = e.src_path AND _r.line = e.line
                                                        AND _r.col = e.col AND _r.name = e.name)
         """)
-        con.execute(schema.EDGES_COMPUTE.format(source="_r", where="TRUE", cap=schema.NAME_CAP))
+        _compute_edges(con, "_r")
         con.execute("DELETE FROM edges_dirty")
         con.execute("DROP TABLE IF EXISTS _r")
         con.execute("COMMIT")
