@@ -2,6 +2,7 @@
 
 from helpers import fresh_snapshot, make_repo, rows, snapshot, write
 
+from duckgrep import index
 from duckgrep.index import connect, freshen
 
 ALL = ("files", "symbols", "refs", "imports", "modules", "lines", "edges")
@@ -48,3 +49,18 @@ def test_dependency_edit_does_not_reparse(tmp_path):
     finally:
         con.close()
     assert (st.changed, st.parsed) == (1, 0)
+
+
+def test_array_of_tables_names_are_not_the_lib_name(tmp_path):
+    root = make_repo(
+        tmp_path / "rs",
+        {
+            "a/Cargo.toml": '[package]\nname = "a"\n\n[lib]\nbench = false\n\n[[bench]]\nname = "speed"\n',
+            "a/src/lib.rs": "pub mod auth;\n",
+            "a/src/auth.rs": "pub fn sign() {}\n",
+            "c/Cargo.toml": '[package]\nname = "c"\n',
+            "c/src/main.rs": "use a::auth::sign;\n\nfn main() {\n    sign();\n}\n",
+        },
+    )
+    assert index._rust_crates(root, ["a/Cargo.toml"]) == [("a", "a")]
+    assert rows(root, "SELECT target_path FROM imports_resolved WHERE path = 'c/src/main.rs'") == [("a/src/auth.rs",)]

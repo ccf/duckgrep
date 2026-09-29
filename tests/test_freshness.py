@@ -1,5 +1,6 @@
 """Freshness under interruption, logic changes and killed parents."""
 
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -9,6 +10,8 @@ import pytest
 from helpers import fresh_snapshot, make_repo, rows, snapshot, write
 
 from duckgrep import index, schema
+
+ALL = ("files", "symbols", "refs", "imports", "modules", "lines", "edges")
 
 
 def lib_repo(tmp_path, n=40):
@@ -101,16 +104,22 @@ def _alive(pid):
     return True
 
 
-def test_pool_workers_exit_when_parent_dies(tmp_path):
+START_METHODS = [m for m in ("spawn", "forkserver") if m in multiprocessing.get_all_start_methods()]
+
+
+@pytest.mark.parametrize("method", START_METHODS)
+def test_pool_workers_exit_when_parent_dies(tmp_path, method):
     script = tmp_path / "parent.py"
     script.write_text(
-        "import os, time\n"
+        "import multiprocessing, os, time\n"
         "from duckgrep import index\n"
-        "ex = index._pool(2)\n"
-        "futures = [ex.submit(time.sleep, 60) for _ in range(2)]\n"
-        "time.sleep(1.5)\n"
-        "print(' '.join(str(p) for p in ex._processes), flush=True)\n"
-        "os._exit(0)\n"
+        "if __name__ == '__main__':\n"
+        f"    ex = index._pool(2, multiprocessing.get_context({method!r}))\n"
+        "    assert ex.submit(pow, 2, 5).result() == 32\n"
+        "    futures = [ex.submit(time.sleep, 60) for _ in range(2)]\n"
+        "    time.sleep(1.5)\n"
+        "    print(' '.join(str(p) for p in ex._processes), flush=True)\n"
+        "    os._exit(0)\n"
     )
     out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=60).stdout
     pids = [int(p) for p in out.split()]
@@ -119,3 +128,27 @@ def test_pool_workers_exit_when_parent_dies(tmp_path):
     while time.time() < deadline and any(_alive(p) for p in pids):
         time.sleep(0.2)
     assert not any(_alive(p) for p in pids)
+
+
+def test_edges_version_covers_the_views(monkeypatch):
+    before = index.edges_version()
+    monkeypatch.setattr(schema, "VIEWS", schema.VIEWS + "\n-- changed\n")
+    assert index.edges_version() != before
+
+
+def test_star_import_chain_change_marks_the_importer(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "pkg/__init__.py": "",
+            "pkg/use.py": "from .api import *\n\n\ndef go():\n    helper()\n",
+            "pkg/api.py": "from .a import *\n",
+            "pkg/a.py": "def helper():\n    pass\n",
+            "pkg/b.py": "def helper():\n    pass\n",
+        },
+    )
+    q = "SELECT dst_path FROM edges WHERE src_path = 'pkg/use.py' AND name = 'helper'"
+    assert rows(root, q) == [("pkg/a.py",)]
+    write(root, "pkg/api.py", "from .b import *\n")
+    assert rows(root, q) == [("pkg/b.py",)]
+    assert snapshot(root, ALL) == fresh_snapshot(root, tmp_path, ALL)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import os
 import posixpath
 import re
@@ -158,11 +159,31 @@ def ensure_schema(con) -> bool:
 # ------------------------------------------------------------------ listing
 
 
+_GIT_LOCATION_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+)
+
+
+def _git_env() -> dict[str, str]:
+    """The environment minus the variables that point git at a repository, so `-C root` decides which one."""
+    return {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+
+
 def list_files(root: str) -> list[str]:
     if os.path.exists(os.path.join(root, ".git")):
         try:
             out = subprocess.run(
-                ["git", "-C", root, "ls-files", "-z", "-co", "--exclude-standard"], capture_output=True, check=True
+                ["git", "-C", root, "ls-files", "-z", "-co", "--exclude-standard"],
+                capture_output=True,
+                check=True,
+                env=_git_env(),
             ).stdout
             paths = [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
             return [p for p in paths if not p.startswith(DB_DIR + "/")]
@@ -200,7 +221,7 @@ def _go_modules(root: str, paths: list[str]) -> list[tuple[str, str]]:
     return sorted(mods, key=lambda m: -len(m[1]))
 
 
-_TOML_SECTION = re.compile(r"^\s*\[\s*([A-Za-z0-9_.\-]+)\s*\]")
+_TOML_SECTION = re.compile(r"^\s*(\[\[?)\s*([A-Za-z0-9_.\-]+)\s*\]")
 _TOML_NAME = re.compile(r"""^\s*name\s*=\s*["']([^"']+)["']""")
 
 
@@ -216,7 +237,7 @@ def _rust_crates(root: str, paths: list[str]) -> list[tuple[str, str]]:
                 for ln in f:
                     m = _TOML_SECTION.match(ln)
                     if m:
-                        section = m.group(1)
+                        section = m.group(2) if m.group(1) == "[" else f"[[{m.group(2)}]]"
                         continue
                     m = _TOML_NAME.match(ln)
                     if m and section in ("package", "lib"):
@@ -290,8 +311,12 @@ def extractor_version() -> str:
 
 
 def edges_version() -> str:
-    """What the call graph depends on beyond the rows: the resolution SQL and its cap. A change rebuilds edges."""
-    return hashlib.blake2b(f"{schema.EDGES_COMPUTE}\0{schema.NAME_CAP}".encode(), digest_size=8).hexdigest()
+    """What the call graph depends on beyond the rows: the resolution SQL, the views it reads and its cap.
+
+    A change rebuilds edges.
+    """
+    key = f"{schema.EDGES_COMPUTE}\0{schema.VIEWS}\0{schema.NAME_CAP}"
+    return hashlib.blake2b(key.encode(), digest_size=8).hexdigest()
 
 
 CHUNK = 256
@@ -313,19 +338,27 @@ def _work(args):
     return path, lines, (extract(path, lang, data, ctx) if parse else None)
 
 
-def _exit_with_parent(parent: int) -> None:
-    """Pool worker initializer: exit when the indexing process dies, so a killed server leaves no workers."""
+def _exit_with_parent() -> None:
+    """Pool worker initializer: exit when the indexing process dies, so a killed server leaves no workers.
+
+    The parent is recorded here, in the worker: under forkserver the worker's parent is the fork
+    server, not the indexing process. The fork server can outlive the indexing process while its
+    workers are alive (they keep its liveness pipe open), so a changed ppid is not enough; the
+    worker also watches the sentinel multiprocessing gives it for the process that started it.
+    """
+    parent = os.getppid()
+    starter = multiprocessing.parent_process()
 
     def watch():
-        while os.getppid() == parent:
+        while os.getppid() == parent and (starter is None or starter.is_alive()):
             time.sleep(1)
         os._exit(1)
 
     threading.Thread(target=watch, daemon=True).start()
 
 
-def _pool(workers: int | None) -> ProcessPoolExecutor:
-    return ProcessPoolExecutor(max_workers=workers, initializer=_exit_with_parent, initargs=(os.getpid(),))
+def _pool(workers: int | None, mp_context=None) -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(max_workers=workers, mp_context=mp_context, initializer=_exit_with_parent)
 
 
 # ------------------------------------------------------------------ freshen
@@ -571,6 +604,15 @@ def _mark_edges_dirty(con) -> None:
           ON k.family = i.family AND (k.key = i.key OR k.key = i.subkey)
         WHERE i."local" IS NOT NULL
     """)
+    # a star import reaches names through the module it imports, so a change to that module's own
+    # star imports (or exports) can move the edge without touching any key the importer holds
+    con.execute("""
+        INSERT INTO edges_dirty
+        SELECT DISTINCT 'path', i.path, NULL FROM imports i
+        JOIN (SELECT * FROM _aff_keys UNION SELECT * FROM _new_keys) k
+          ON k.family = i.family AND (k.key = i.key OR k.key = i.subkey)
+        WHERE i.name = '*' AND i."local" IS NULL
+    """)
     con.execute("DROP TABLE IF EXISTS _new_keys")
 
 
@@ -625,9 +667,8 @@ def _insert(con, table: str, cols: list[str], rows: list[tuple], or_ignore: bool
 
 def _git(root, *args) -> str | None:
     try:
-        return subprocess.run(["git", "-C", root, *args], capture_output=True, check=True).stdout.decode(
-            "utf-8", "replace"
-        )
+        out = subprocess.run(["git", "-C", root, *args], capture_output=True, check=True, env=_git_env()).stdout
+        return out.decode("utf-8", "replace")
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
