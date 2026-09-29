@@ -95,3 +95,14 @@ def test_external_crates_stay_unresolved(tmp_path):
 def test_loose_rust_without_cargo_keeps_crate_keys(repo):
     # tests/fixture/rs has no Cargo.toml
     assert ("rs/src/shapes.rs", "crate::shapes") in rows(repo, "SELECT path, key FROM modules WHERE family = 'rs'")
+
+
+def test_super_in_inline_mod_is_the_enclosing_file(tmp_path):
+    root = workspace(tmp_path)
+    assert target(root, "crates/b/src/rest.rs", 10) == [("crates/b/src/rest.rs",)]
+
+
+def test_nested_inline_mods(tmp_path):
+    deep = "pub fn top() {}\n\nmod x {\n    mod y {\n        use super::super::top;\n    }\n}\n"
+    root = workspace(tmp_path, **{"crates/b/src/deep.rs": deep})
+    assert target(root, "crates/b/src/deep.rs", 5) == [("crates/b/src/deep.rs",)]
