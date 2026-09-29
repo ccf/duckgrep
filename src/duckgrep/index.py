@@ -291,8 +291,12 @@ def extractor_version() -> str:
 
 
 def edges_version() -> str:
-    """What the call graph depends on beyond the rows: the resolution SQL and its cap. A change rebuilds edges."""
-    return hashlib.blake2b(f"{schema.EDGES_COMPUTE}\0{schema.NAME_CAP}".encode(), digest_size=8).hexdigest()
+    """What the call graph depends on beyond the rows: the resolution SQL, the views it reads and its cap.
+
+    A change rebuilds edges.
+    """
+    key = f"{schema.EDGES_COMPUTE}\0{schema.VIEWS}\0{schema.NAME_CAP}"
+    return hashlib.blake2b(key.encode(), digest_size=8).hexdigest()
 
 
 CHUNK = 256

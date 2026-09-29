@@ -130,6 +130,12 @@ def test_pool_workers_exit_when_parent_dies(tmp_path, method):
     assert not any(_alive(p) for p in pids)
 
 
+def test_edges_version_covers_the_views(monkeypatch):
+    before = index.edges_version()
+    monkeypatch.setattr(schema, "VIEWS", schema.VIEWS + "\n-- changed\n")
+    assert index.edges_version() != before
+
+
 def test_star_import_chain_change_marks_the_importer(tmp_path):
     root = make_repo(
         tmp_path / "r",
