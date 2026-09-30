@@ -252,10 +252,12 @@ def evidence(
         for line in call.result.splitlines():
             if m := PATH_LINE.match(line):
                 where = candidates(m.group("path"))
-                if len(where) == 1:
+                if len(where) == 1 and len(dirs) == 1:
                     ev.pairs.append((where[0], int(m.group("n"))))
-                else:  # printed from one of several directories: the definition text must say whose
-                    ev.numbered.append((where, int(m.group("n")), line))
+                else:  # from one of several directories, even if the commit has one such file (a run may add one):
+                    ev.numbered.append((where, int(m.group("n")), line))  # the definition text must say whose
+                    if len(where) == 1:
+                        ev.paths.append(where[0])  # the file itself is named
             elif one and (n := _number(line)) is not None:
                 ev.pairs.append((one, n))
             elif several and (n := _number(line)) is not None:

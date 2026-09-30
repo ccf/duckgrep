@@ -352,3 +352,14 @@ def test_the_commits_file_list_says_which_directory_printed_a_relative_path():
     assert locate.turns_to_locate(run(head), [g], listing=listing | {"tests/b.py"}) == 1
     both = listing | {"src/a.py"}  # a true duplicate stays ambiguous
     assert locate.turns_to_locate(run(("Bash", {"command": cmd}, "./a.py:7:    x = g()")), [g], listing=both) is None
+
+
+def test_a_file_placed_by_the_commits_listing_needs_the_definition_text():
+    # a run may have written a src/a.py of its own: narrowing by the commit's files is inference, not observation
+    g = Target("tests/a.py", "g", ((7, 7),))
+    cmd = "cd src; grep -rn 'x' .; cd ../tests; grep -rn 'y' ."
+    listing = {"tests/a.py"}
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, "./a.py:7:    y = 1")), [g], listing=listing) is None
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, "./a.py:7:def g():")), [g], listing=listing) == 1
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, "./a.py:7:    y = 1")), [Target("tests/a.py")],
+                                  listing=listing) == 1  # fmt: skip
