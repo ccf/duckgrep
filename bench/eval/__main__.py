@@ -12,6 +12,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +41,7 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--seed", type=int, default=config.SEED)
     p = sub.add_parser("prepare", help="clone and check out every task's repo; build indexes and warm Serena up")
     p.add_argument("--setups", type=setup_list, default=list(SETUPS))
+    p.add_argument("--parallel", type=int, default=config.PREPARE_PARALLEL, help="repo/commit pairs built at once")
     c = sub.add_parser("check", help="verify each setup's configuration, free")
     c.add_argument("--setups", type=setup_list, default=list(SETUPS))
     r = sub.add_parser("run", help="run the suite; this costs money")
@@ -87,7 +89,7 @@ def check(tasks: list, setup_names: list[str], cache, claude: str) -> bool:
         for setup in setup_names:
             problems = runner.probe(sample, setup, cache, claude)
             ok = ok and not problems
-            print(f"{setup:9} {lang:7} {'ok' if not problems else '; '.join(problems)}")
+            print(f"{setup:13} {lang:7} {'ok' if not problems else '; '.join(problems)}")
     return ok
 
 
@@ -140,13 +142,15 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "prepare":
         out = config.RUNS_DIR / a.suite
         out.mkdir(parents=True, exist_ok=True)
+        lock = threading.Lock()  # prepare calls save from several threads
         with open(out / "prepare.jsonl", "a") as f:
 
             def save(row: dict) -> None:  # as each is measured: preparing takes an hour, and a later step can fail
-                f.write(json.dumps(row) + "\n")
-                f.flush()
+                with lock:
+                    f.write(json.dumps(row) + "\n")
+                    f.flush()
 
-            workspace.prepare(tasks, a.setups, cache, save=save)
+            workspace.prepare(tasks, a.setups, cache, save=save, workers=a.parallel)
         return 0
     wanted = a.tasks.split(",") if getattr(a, "tasks", None) else None
     chosen = [t for t in tasks if wanted is None or t.id in wanted]

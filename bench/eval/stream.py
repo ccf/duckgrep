@@ -160,6 +160,13 @@ def infrastructure_error(tr: Transcript) -> bool:
     return tr.api_error is not None or tr.result.get("terminal_reason") == "api_error"
 
 
+def permanent_error(tr: Transcript) -> bool:
+    """An infrastructure error no retry can fix: login, billing or a malformed request. Everything else (rate
+    limit, overload, server errors, unknown, a bare synthetic message) is transient."""
+    error = (tr.api_error or "").lower()
+    return any(word in error for word in ("auth", "billing", "invalid_request"))
+
+
 def metrics(tr: Transcript) -> dict:
     counts = Counter(c.name for c in tr.calls)
     total = sum(counts.values())

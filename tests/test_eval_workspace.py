@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -265,3 +266,165 @@ def test_listing_gives_the_files_at_a_commit(tmp_path):
     workspace.clone("o/r", tmp_path / "cache", url=str(src))
     assert workspace.listing(tmp_path / "cache", "o/r", commit) == {"pkg/__init__.py", "pkg/a.py"}
     assert workspace.listing(tmp_path / "cache", "o/gone", commit) is None
+
+
+def parallel_setup(tmp_path, monkeypatch, repos="ab", lang="python"):
+    """Tasks on several repos that all clone from one origin, and the first path's worktree for each."""
+    src, commit = origin(tmp_path, FILES)
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    return [Task(f"t{r}", "localization", lang, f"o/{r}", commit, "p", ("pkg/a.py:f",), "s") for r in repos]
+
+
+def test_prepare_works_on_several_repos_at_once(tmp_path, monkeypatch):
+    tasks = parallel_setup(tmp_path, monkeypatch)
+    meet = threading.Barrier(2, timeout=20)  # each index build waits for the other: only a parallel prepare passes
+    real_index = workspace.index_duckgrep
+
+    def index(path):
+        meet.wait()
+        return real_index(path)
+
+    monkeypatch.setattr(workspace, "index_duckgrep", index)
+    saved = []
+    built = workspace.prepare(tasks, ["duckgrep"], tmp_path / "cache", log=lambda _: None, save=saved.append, workers=2)
+    assert [b["repo"] for b in built] == ["o/a", "o/b"]  # in task order, whichever finished first
+    assert sorted(r["repo"] for r in saved) == ["o/a", "o/b"]
+    for t in tasks:
+        wt = workspace.worktree_path(tmp_path / "cache", "duckgrep", t.repo, t.commit)
+        assert (wt / ".duckgrep" / "index.duckdb").exists()
+
+
+def test_a_failing_pair_does_not_stop_the_others_and_every_failure_is_named(tmp_path, monkeypatch):
+    tasks = parallel_setup(tmp_path, monkeypatch, repos="abc")
+
+    def index(path):
+        if not path.name.startswith("o__a"):
+            raise RuntimeError(f"indexing {path.name[:4]} failed")
+        return {"index_seconds": 1.0, "index_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "index_duckgrep", index)
+    saved = []
+    with pytest.raises(RuntimeError) as err:
+        workspace.prepare(tasks, ["duckgrep"], tmp_path / "cache", log=lambda _: None, save=saved.append, workers=3)
+    assert "o/b" in str(err.value) and "o/c" in str(err.value) and "indexing o__b failed" in str(err.value)
+    assert "indexing o__c failed" in str(err.value)
+    assert [r["repo"] for r in saved] == ["o/a"]
+
+
+def test_clones_into_one_repo_are_serialised(tmp_path, monkeypatch):
+    src, first = origin(tmp_path, FILES)
+    (src / "pkg/a.py").write_text("def f():\n    return 2\n")
+    second = commit_all(src, "second")
+    real_git, clones = workspace.git, []
+
+    def slow_git(*args, **kw):
+        if args[0] == "clone":
+            clones.append(args)
+            time.sleep(0.3)  # long enough for the other worker to start its own clone
+        return real_git(*args, **kw)
+
+    monkeypatch.setattr(workspace, "git", slow_git)
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    tasks = [
+        Task(f"t{i}", "localization", "python", "o/r", c, "p", ("pkg/a.py:f",), "s")
+        for i, c in enumerate((first, second))
+    ]
+    workspace.prepare(tasks, ["baseline"], tmp_path / "cache", log=lambda _: None, workers=2)
+    assert len(clones) == 1
+    for c in (first, second):
+        assert (workspace.worktree_path(tmp_path / "cache", "baseline", "o/r", c) / "pkg/a.py").exists()
+
+
+def test_serena_warmups_on_one_rust_repo_never_overlap(tmp_path, monkeypatch):
+    src, first = origin(tmp_path, FILES)
+    (src / "pkg/a.py").write_text("def f():\n    return 2\n")
+    second = commit_all(src, "second")
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    analyzers, lock, state = [], threading.Lock(), {"now": 0, "most": 0}
+    monkeypatch.setattr(workspace, "rust_analyzer", lambda cache: analyzers.append(cache))
+
+    def warmup(path, repo, lang, cache):
+        with lock:
+            state["now"] += 1
+            state["most"] = max(state["most"], state["now"])
+        time.sleep(0.2)
+        with lock:
+            state["now"] -= 1
+        project = workspace.serena_project_file(cache, path)
+        project.parent.mkdir(parents=True)
+        project.write_text("")
+        return {"serena_seconds": 1.0, "serena_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "serena_warmup", warmup)
+    tasks = [
+        Task(f"t{i}", "localization", "rust", "o/r", c, "p", ("pkg/a.py:f",), "s")
+        for i, c in enumerate((first, second))
+    ]
+    built = workspace.prepare(tasks, ["serena"], tmp_path / "cache", log=lambda _: None, workers=2)
+    assert len(built) == 2 and state["most"] == 1  # they share CARGO_TARGET_DIR
+    assert analyzers == [tmp_path / "cache"]  # once, up front
+
+
+def test_ctrl_c_cancels_the_pairs_not_yet_started(tmp_path, monkeypatch):
+    import _thread
+
+    tasks = parallel_setup(tmp_path, monkeypatch, repos="abc")
+    indexed = []
+
+    def index(path):
+        indexed.append(path)
+        _thread.interrupt_main()
+        time.sleep(0.3)
+        return {"index_seconds": 1.0, "index_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "index_duckgrep", index)
+    with pytest.raises(KeyboardInterrupt):
+        workspace.prepare(tasks, ["duckgrep"], tmp_path / "cache", log=lambda _: None, workers=1)
+    time.sleep(0.5)
+    assert len(indexed) == 1
+
+
+def test_a_hinted_setup_shares_its_bases_worktree(tmp_path):
+    for base in ("duckgrep", "serena"):
+        assert workspace.worktree_path(tmp_path, f"{base}-hint", "o/r", "c" * 40) == workspace.worktree_path(
+            tmp_path, base, "o/r", "c" * 40
+        )
+    assert workspace.worktree_path(tmp_path, "duckgrep", "o/r", "c" * 40) != workspace.worktree_path(
+        tmp_path, "serena", "o/r", "c" * 40
+    )
+
+
+@pytest.mark.parametrize("pair", [["duckgrep", "duckgrep-hint"], ["duckgrep-hint", "duckgrep"], ["duckgrep-hint"]])
+def test_prepare_builds_one_index_for_a_setup_and_its_hinted_twin(tmp_path, monkeypatch, pair):
+    src, commit = origin(tmp_path, FILES)
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    indexed = []
+    real_index = workspace.index_duckgrep
+    monkeypatch.setattr(workspace, "index_duckgrep", lambda path: indexed.append(path) or real_index(path))
+    task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
+    built = workspace.prepare([task], pair, tmp_path / "cache", log=lambda _: None)
+    assert len(indexed) == 1 and [b["setup"] for b in built] == ["duckgrep"]
+
+
+def test_prepare_warms_serena_up_once_for_serena_and_serena_hint(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, FILES)
+    cache = tmp_path / "cache"
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    warmed = []
+
+    def warmup(path, repo, lang, cache):
+        warmed.append(path)
+        project = workspace.serena_project_file(cache, path)
+        project.parent.mkdir(parents=True)
+        project.write_text("")
+        return {"serena_seconds": 1.0, "serena_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "serena_warmup", warmup)
+    task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
+    built = workspace.prepare([task], ["serena-hint", "serena"], cache, log=lambda _: None)
+    assert len(warmed) == 1 and [b["setup"] for b in built] == ["serena"]

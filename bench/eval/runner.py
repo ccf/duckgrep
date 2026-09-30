@@ -27,12 +27,14 @@ from .suite import Task
 
 
 class InfrastructureError(RuntimeError):
-    """The run failed outside the agent (login, rate limit, API outage). The batch stops; the run is redone later.
-    `cost` is what the run spent before it failed, which still counts against the batch's cap."""
+    """The run failed outside the agent (login, rate limit, API outage). The run is not recorded. A transient
+    error is retried; a permanent one (login, billing, a bad request) stops the batch. `cost` is what the run
+    spent before it failed, which still counts against the batch's cap."""
 
-    def __init__(self, message: str, cost: float = 0.0):
+    def __init__(self, message: str, cost: float = 0.0, permanent: bool = False):
         super().__init__(message)
         self.cost = cost
+        self.permanent = permanent
 
 
 PROBE_TIMEOUT_S = 300
@@ -95,7 +97,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 def _mcp_file(setup: setups.Setup, task: Task, wt: Path, cache: Path, tmp: Path) -> Path | None:
     """Write the run's --mcp-config file (and its own SERENA_HOME) into `tmp`; None for the baseline."""
-    home = setups.serena_home(tmp / "serena-home", cache) if setup.name == "serena" else None
+    home = setups.serena_home(tmp / "serena-home", cache) if setup.base == "serena" else None
     cfg = setups.mcp_config(setup, wt, task.repo, cache, home)
     if cfg is None:
         return None
@@ -248,7 +250,9 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             if spent is None:
                 spent = stream.cost(stream.tokens(tr.result, tr.usage_by_message))
             raise InfrastructureError(
-                f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}", cost=spent
+                f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}",
+                cost=spent,
+                permanent=stream.permanent_error(tr),
             )
         record = {
             "task": task.id,
@@ -271,8 +275,9 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
 
 
 class Batch:
-    """Runs a schedule with `parallel` workers. Runs that share a worktree never overlap. The spending cap covers
-    what earlier invocations of the same batch spent, so resuming never renews it."""
+    """Runs a schedule with `parallel` workers. Runs that share a resource never overlap: a worktree, or the cargo
+    target directory that every Serena run on one Rust repo builds in. The spending cap covers what earlier
+    invocations of the same batch spent, so resuming never renews it."""
 
     def __init__(
         self,
@@ -292,13 +297,21 @@ class Batch:
         self.pending = [r for r in runs if r.key not in done]
         self.cache, self.out_dir, self.parallel = cache, out_dir, parallel
         self.max_total_usd, self.execute, self.claude, self.log = max_total_usd, execute_fn, claude, log
-        self.busy: set[Path] = set()
+        self.busy: set[Path] = set()  # the resources of the runs in flight
         self.cond = threading.Condition()
         self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
+        # the Claude Code version the batch began on, from its earliest recorded run (None until one has a version)
+        self.cli_version = next((r["cli_version"] for r in earlier if r.get("cli_version")), None)
         self.stopped: str | None = None
         self.interrupted = False
         self.completed = 0
         self.working = 0  # workers still running
+
+    def _resources(self, r: Run) -> set[Path]:
+        held = {workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)}
+        if setups.SETUPS[r.setup].base == "serena" and r.task.lang == "rust":
+            held.add(setups.cargo_target(self.cache, r.task.repo))
+        return held
 
     def _take(self) -> Run | None:
         with self.cond:
@@ -312,15 +325,15 @@ class Batch:
                 if self.stopped:
                     return None
                 for i, r in enumerate(self.pending):
-                    wt = workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)
-                    if wt not in self.busy:
-                        self.busy.add(wt)
+                    held = self._resources(r)
+                    if not held & self.busy:
+                        self.busy |= held
                         return self.pending.pop(i)
                 self.cond.wait()
 
     def _release(self, r: Run) -> None:
         with self.cond:
-            self.busy.discard(workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit))
+            self.busy -= self._resources(r)
             self.cond.notify_all()
 
     def _record(self, rec: dict) -> None:
@@ -331,6 +344,15 @@ class Batch:
                 os.fsync(f.fileno())
             self.spent += charged(rec)
             self.completed += 1
+            version = rec.get("cli_version")  # a run cut off before its init event has none
+            if version and self.cli_version is None:
+                self.cli_version = version
+            elif version and version != self.cli_version:  # kept, but the batch no longer measures one version
+                self.stopped = self.stopped or (
+                    f"Claude Code changed mid-batch: {rec['task']} {rec['setup']}-{rec['rep']} ran {version}, "
+                    f"the batch began on {self.cli_version}"
+                )
+                self.cond.notify_all()
 
     def _charge_unrecorded(self, r: Run, cost: float, why: str) -> None:
         """Count what a run spent that no results line will show, so a resume counts it too."""
@@ -343,15 +365,42 @@ class Batch:
                 os.fsync(f.fileno())
             self.spent += cost
 
+    def _pause(self, seconds: float) -> bool:
+        """Wait on the batch's condition, so an interrupt (or any stop) ends the wait; False if it was cut short."""
+        deadline = time.monotonic() + seconds
+        with self.cond:
+            while not self.stopped:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return True
+                self.cond.wait(left)
+        return False
+
+    def _attempt(self, r: Run, attempt: int) -> dict:
+        """One execution, redone after each of RETRY_WAITS_S while it fails with a transient API error. Every
+        failed try is charged as unrecorded spend; the last failure, a permanent one, or one after the batch
+        stopped is raised."""
+        for wait in (*config.RETRY_WAITS_S, None):
+            try:
+                return self.execute(r, self.cache, self.out_dir, attempt, self.claude)
+            except InfrastructureError as e:
+                self._charge_unrecorded(r, e.cost, "infrastructure error")
+                if e.permanent or wait is None:
+                    raise
+                self.log(f"transient API error, retrying {r.key} in {wait:g} s: {e}")
+                if not self._pause(wait):
+                    raise
+        raise AssertionError("unreachable")
+
     def _worker(self) -> None:
         while (r := self._take()) is not None:
             try:
-                rec = self.execute(r, self.cache, self.out_dir, 1, self.claude)
+                rec = self._attempt(r, 1)
                 if not rec["config_ok"] and not self.interrupted:  # discard, and retry once
                     self.log(f"config check failed, retrying: {r.key} {rec['config_problems']}")
                     first = rec
                     try:
-                        rec = self.execute(r, self.cache, self.out_dir, 2, self.claude)
+                        rec = self._attempt(r, 2)
                     except BaseException:
                         self._charge_unrecorded(r, charged(first), "discarded attempt")
                         raise
@@ -364,8 +413,7 @@ class Batch:
                     f"[{self.completed}] {r.task.id} {r.setup}-{r.rep}: {rec['tool_calls']} calls, "
                     f"${rec['cost_usd']:.3f}, success={rec['score']['success']}"
                 )
-            except InfrastructureError as e:
-                self._charge_unrecorded(r, e.cost, "infrastructure error")
+            except InfrastructureError as e:  # already charged; retries are spent
                 with self.cond:
                     self.stopped = self.stopped or f"infrastructure error: {e}"
                     self.cond.notify_all()

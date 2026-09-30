@@ -3,6 +3,7 @@ index and Serena warm-up for each worktree, and the pinned rust-analyzer."""
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import gzip
 import os
@@ -10,8 +11,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 from . import config, datasets, setups
@@ -35,22 +38,35 @@ def slug(repo: str) -> str:
     return repo.lower().replace("/", "__")
 
 
+_locks: dict[Path, threading.RLock] = {}
+_locks_guard = threading.Lock()
+
+
+def _lock(key: Path) -> threading.RLock:
+    """One re-entrant lock per resource (a repo's clone, a cargo target directory), for `prepare`'s threads."""
+    with _locks_guard:
+        return _locks.setdefault(key, threading.RLock())
+
+
 def clone(repo: str, cache: Path, url: str | None = None) -> Path:
     """A full bare clone of `repo`, made once. Not a partial clone: duckgrep indexes `git log --numstat`, and an
     agent may read history too, and in a blobless clone each old blob is a separate network fetch."""
     dest = cache / "repos" / f"{slug(repo)}.git"
-    if not dest.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(dest.name + ".part")
-        if tmp.exists():
-            shutil.rmtree(tmp)
-        git("clone", "--bare", url or f"https://github.com/{repo}.git", str(tmp))
-        tmp.rename(dest)
+    with _lock(dest):  # two commits of one repo prepared at once clone it once
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".part")
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            git("clone", "--bare", url or f"https://github.com/{repo}.git", str(tmp))
+            tmp.rename(dest)
     return dest
 
 
 # The agent sees its working directory, so the path to a worktree must not name the setup or the tool under test.
 GROUPS = {"baseline": "t1", "duckgrep": "t2", "serena": "t3"}
+# a hinted setup shares its base's worktree: only the system prompt differs, and runs of one worktree never overlap
+GROUPS |= {name: GROUPS[s.base] for name, s in setups.SETUPS.items()}
 
 
 def reader(cache: Path, repo: str, commit: str):
@@ -93,8 +109,9 @@ def worktree(repo: str, commit: str, setup: str, cache: Path, url: str | None = 
     if (path / ".git").exists():
         return path
     bare = clone(repo, cache, url)
-    if git("cat-file", "-t", commit, cwd=bare, check=False).strip() != "commit":
-        git("fetch", "origin", f"{commit}:refs/eval/{commit}", cwd=bare)  # a ref keeps gc from pruning it
+    with _lock(bare):  # fetches into one clone never run together
+        if git("cat-file", "-t", commit, cwd=bare, check=False).strip() != "commit":
+            git("fetch", "origin", f"{commit}:refs/eval/{commit}", cwd=bare)  # a ref keeps gc from pruning it
     tmp = path.with_name(path.name + ".part")
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
@@ -219,34 +236,68 @@ def serena_project_file(cache: Path, path: Path) -> Path:
     return cache / "serena-projects" / path.name / ".serena" / "project.yml"
 
 
-def prepare(tasks, setup_names: list[str], cache: Path, log=print, save=None) -> list[dict]:
-    """Worktrees for every (repo, commit, setup), with the duckgrep index or the Serena warm-up. Returns what was
-    newly built, with its cost, and hands each row to `save` as soon as it is measured, so a later failure keeps
-    it; what exists already is left alone."""
+def _prepare_pair(repo: str, commit: str, lang: str, bases: list[str], cache: Path, log, save) -> list[dict]:
+    """One (repo, commit): a worktree per base setup, with its index or warm-up. Each row is saved as soon as it
+    is measured."""
     built = []
-    todo = sorted({(t.repo, t.commit, t.lang) for t in tasks})
-    if "serena" in setup_names and any(lang == "rust" for *_, lang in todo):
-        rust_analyzer(cache)
-    for repo, commit, lang in todo:
-        for setup in setup_names:
-            require_space(cache)
-            path = worktree(repo, commit, setup, cache)
-            row: dict = {}
-            if setup == "duckgrep" and not (path / ".duckgrep" / "index.duckdb").exists():
-                row = index_duckgrep(path)
-            elif setup == "serena" and not serena_project_file(cache, path).exists():
+    for setup in bases:
+        require_space(cache)
+        path = worktree(repo, commit, setup, cache)
+        row: dict = {}
+        if setup == "duckgrep" and not (path / ".duckgrep" / "index.duckdb").exists():
+            row = index_duckgrep(path)
+        elif setup == "serena" and not serena_project_file(cache, path).exists():
+            # Serena's rust-analyzer builds in a cargo target directory shared by every commit of the repo
+            with _lock(setups.cargo_target(cache, repo)) if lang == "rust" else contextlib.nullcontext():
                 row = serena_warmup(path, repo, lang, cache)
-            leftover = changes(path)
-            if leftover and not (setup == "serena" and row):
-                raise RuntimeError(f"preparing {path} changed it: {leftover[:5]}")
-            if leftover:  # the warm-up's own: rust-analyzer's cargo writes a Cargo.lock into a repo that commits none
-                reset(path, commit)  # and every run restores it the same way
-            if row:
-                row = {"setup": setup, "repo": repo, "commit": commit, **row}
-                if leftover:
-                    row["restored"] = leftover
-                built.append(row)
-                if save:
-                    save(row)
-                log(f"prepared {setup} {repo}@{commit[:12]}: {row}")
+        leftover = changes(path)
+        if leftover and not (setup == "serena" and row):
+            raise RuntimeError(f"preparing {path} changed it: {leftover[:5]}")
+        if leftover:  # the warm-up's own: rust-analyzer's cargo writes a Cargo.lock into a repo that commits none
+            reset(path, commit)  # and every run restores it the same way
+        if row:
+            row = {"setup": setup, "repo": repo, "commit": commit, **row}
+            if leftover:
+                row["restored"] = leftover
+            built.append(row)
+            if save:
+                save(row)
+            log(f"prepared {setup} {repo}@{commit[:12]}: {row}")
     return built
+
+
+def prepare(
+    tasks, setup_names: list[str], cache: Path, log=print, save=None, workers: int = config.PREPARE_PARALLEL
+) -> list[dict]:
+    """Worktrees for every (repo, commit, setup), with the duckgrep index or the Serena warm-up, `workers` pairs
+    at a time. Returns what was newly built, in task order, with its cost, and hands each row to `save` (from any
+    thread) as soon as it is measured, so a later failure keeps it; what exists already is left alone. A pair that
+    fails does not stop the others: once all are done, the failures are raised together."""
+    todo = sorted({(t.repo, t.commit, t.lang) for t in tasks})
+    bases = list(dict.fromkeys(setups.SETUPS[s].base for s in setup_names))  # a hinted setup shares its base's build
+    if "serena" in bases and any(lang == "rust" for *_, lang in todo):
+        rust_analyzer(cache)
+    rows: dict[int, list[dict]] = {}
+    failures: list[str] = []
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {pool.submit(_prepare_pair, *pair, bases, cache, log, save): i for i, pair in enumerate(todo)}
+        waiting = set(futures)
+        while waiting:  # polling, so Ctrl-C reaches this thread whatever the workers are doing
+            finished, waiting = wait(waiting, timeout=0.2)
+            for done in finished:
+                i = futures[done]
+                try:
+                    rows[i] = done.result()
+                except Exception as e:
+                    repo, commit, _ = todo[i]
+                    failures.append(f"{repo}@{commit[:12]}: {e}")
+    except KeyboardInterrupt:  # the pairs not yet started are dropped; those running finish, as their builds clean up
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
+    if failures:
+        raise RuntimeError(
+            f"preparing failed for {len(failures)} of {len(todo)} repo/commit pairs:\n" + "\n".join(failures)
+        )
+    return [row for i in sorted(rows) for row in rows[i]]

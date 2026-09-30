@@ -8,7 +8,7 @@ import time
 import pytest
 from eval_helpers import origin
 
-from bench.eval import config, runner, workspace
+from bench.eval import config, runner, setups, workspace
 from bench.eval.suite import Task
 
 RUNS = os.path.join(os.path.dirname(__file__), "eval_runs")
@@ -64,6 +64,11 @@ def test_batch_records_every_run_once_and_resumes(tmp_path):
     assert again.pending == [] and again.run() is None
 
 
+@pytest.fixture(autouse=True)
+def tiny_retry_waits(monkeypatch):
+    monkeypatch.setattr(config, "RETRY_WAITS_S", (0.01, 0.01, 0.01))
+
+
 def test_a_failed_configuration_check_is_retried_once(tmp_path):
     runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
     batch = runner.Batch(
@@ -78,20 +83,125 @@ def test_a_failed_configuration_check_is_retried_once(tmp_path):
     assert rec["attempt"] == 2 and rec["config_ok"]
 
 
-def test_an_infrastructure_error_stops_the_batch_without_recording(tmp_path):
+def test_a_permanent_infrastructure_error_stops_the_batch_at_once_without_recording(tmp_path):
     runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    calls = []
 
     def execute(r, *a):
-        if r.task.id == "t1":
-            raise runner.InfrastructureError("authentication_failed")
-        return fake_record(r, 1)
+        calls.append(r.task.id)
+        raise runner.InfrastructureError("authentication_failed", cost=0.3, permanent=True)
 
     stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
     assert "authentication_failed" in stopped
+    assert len(calls) == 1 and not (tmp_path / "out/results.jsonl").exists()  # no retry, no second run
+
+
+def unrecorded(out):
+    with open(out / "unrecorded.jsonl") as f:
+        return [json.loads(line) for line in f]
+
+
+def test_a_transient_error_is_retried_and_its_attempt_charged(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(r.task.id)
+        if len(calls) == 1:
+            raise runner.InfrastructureError("overloaded", cost=0.3)
+        return fake_record(r, a[2])
+
+    batch = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None)
+    assert batch.run() is None
+    [rec] = results(tmp_path / "out")
+    assert rec["task"] == "t1" and len(calls) == 2
+    assert [u["cost_usd"] for u in unrecorded(tmp_path / "out")] == [0.3]
+    assert batch.spent == pytest.approx(0.3 + 0.01)
+
+
+def test_a_transient_error_waits_as_long_as_the_configuration_says_and_then_stops_the_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RETRY_WAITS_S", (0.01, 0.02, 0.03))
+    waits = []
+    original = runner.Batch._pause
+    monkeypatch.setattr(runner.Batch, "_pause", lambda self, s: waits.append(s) or original(self, s))
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(r.task.id)
+        raise runner.InfrastructureError("rate_limit", cost=0.1)
+
+    batch = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None)
+    stopped = batch.run()
+    assert "rate_limit" in stopped and waits == [0.01, 0.02, 0.03]
+    assert calls == [runs[0].task.id] * 4  # the first try and three retries; the other task never starts
+    assert len(unrecorded(tmp_path / "out")) == 4 and batch.spent == pytest.approx(0.4)
+    assert not (tmp_path / "out/results.jsonl").exists()
+
+
+def test_a_permanent_error_on_a_retry_stops_the_batch_at_once(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(1)
+        raise runner.InfrastructureError("overloaded" if len(calls) == 1 else "billing_error", permanent=len(calls) > 1)
+
+    stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "billing_error" in stopped and len(calls) == 2
+
+
+def test_an_interrupt_ends_a_retry_wait_promptly(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RETRY_WAITS_S", (60,))
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(1)
+        raise runner.InfrastructureError("overloaded", cost=0.1)
+
+    batch = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None)
+    threading.Timer(0.3, batch.interrupt).start()
+    t0 = time.monotonic()
+    stopped = batch.run()
+    assert "interrupted" in stopped and time.monotonic() - t0 < 10 and len(calls) == 1
+
+
+def test_a_run_on_another_claude_code_version_is_recorded_and_then_stops_the_batch(tmp_path):
+    runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 1, seed=1)
+    first = runs[0].key
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "cli_version": "2.1.285" if r.key == first else "2.1.290"}
+
+    stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "2.1.285" in stopped and "2.1.290" in stopped and "Claude Code" in stopped
+    assert len(results(tmp_path / "out")) == 2  # the odd run is kept; the third never starts
+
+
+def test_a_resumed_batch_keeps_the_version_it_began_on(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    with open(out / "results.jsonl", "w") as f:
+        f.write(json.dumps({**fake_record(runner.Run(task(9), "baseline", 1), 1), "cli_version": "2.1.285"}) + "\n")
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "cli_version": "2.1.290"}
+
+    stopped = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "2.1.285" in stopped and len(results(out)) == 2
+
+
+def test_runs_without_a_recorded_version_do_not_set_or_break_the_batchs_version(tmp_path):
+    runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 1, seed=1)
+    versions = iter([None, "2.1.285", None])  # a run killed before its init event has none
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "cli_version": next(versions)}
+
     assert (
-        "t1" not in [x["task"] for x in results(tmp_path / "out")]
-        if (tmp_path / "out/results.jsonl").exists()
-        else True
+        runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run() is None
     )
 
 
@@ -125,6 +235,61 @@ def test_runs_sharing_a_worktree_never_overlap(tmp_path):
 
     runner.Batch(runs, tmp_path, tmp_path / "out", parallel=3, execute_fn=execute, log=lambda _: None).run()
     assert len(clashes) == 6 and not any(clashes)
+
+
+def rust_task(i, repo, commit):
+    return Task(f"r{i}", "localization", "rust", repo, commit, "p", ("src/a.rs:needle_fn",), "s")
+
+
+def test_serena_runs_on_one_rust_repo_never_overlap_but_other_runs_are_not_held_back(tmp_path):
+    a, b = "a" * 40, "b" * 40
+    serena_runs = [
+        runner.Run(rust_task(1, "o/x", a), "serena", 1),
+        runner.Run(rust_task(2, "o/x", b), "serena-hint", 1),  # another commit and worktree, the same cargo target
+    ]
+    baselines = [runner.Run(rust_task(3, "o/x", a), "baseline", 1), runner.Run(rust_task(4, "o/x", b), "baseline", 1)]
+    lock, serena_on, baselines_done = threading.Lock(), threading.Event(), threading.Event()
+    state = {"serena": 0, "most": 0, "baselines": 0, "overlapped": 0}
+
+    def execute(r, *a):
+        if r.setup == "baseline":
+            assert serena_on.wait(10)  # a baseline run starts while a Serena run is going
+            with lock:
+                state["overlapped"] += state["serena"] > 0
+                state["baselines"] += 1
+                if state["baselines"] == 2:
+                    baselines_done.set()
+        else:
+            with lock:
+                state["serena"] += 1
+                state["most"] = max(state["most"], state["serena"])
+            serena_on.set()
+            assert baselines_done.wait(10)
+            time.sleep(0.05)  # long enough for a second Serena run to start if it could
+            with lock:
+                state["serena"] -= 1
+        return fake_record(r, 1)
+
+    batch = runner.Batch(
+        serena_runs + baselines, tmp_path, tmp_path / "out", parallel=4, execute_fn=execute, log=lambda _: None
+    )
+    assert batch.run() is None
+    assert state["most"] == 1 and state["overlapped"] == 2 and len(results(tmp_path / "out")) == 4
+
+
+def test_only_serena_on_a_rust_task_holds_the_cargo_target(tmp_path):
+    batch = runner.Batch([], tmp_path, tmp_path / "out", log=lambda _: None)
+    wt = workspace.worktree_path(tmp_path, "serena", "o/x", "a" * 40)
+    target = tmp_path / "cargo-target" / "o__x"
+    assert batch._resources(runner.Run(rust_task(1, "o/x", "a" * 40), "serena", 1)) == {wt, target}
+    assert target in batch._resources(runner.Run(rust_task(1, "o/x", "b" * 40), "serena-hint", 1))
+    for setup in ("baseline", "duckgrep", "duckgrep-hint"):
+        assert batch._resources(runner.Run(rust_task(1, "o/x", "a" * 40), setup, 1)) == {
+            workspace.worktree_path(tmp_path, setup, "o/x", "a" * 40)
+        }
+    assert batch._resources(runner.Run(task(1, "a" * 40), "serena", 1)) == {
+        workspace.worktree_path(tmp_path, "serena", "o/r", "a" * 40)
+    }  # Python: Serena has no cargo
 
 
 def fake_claude(tmp_path, stream_lines, extra=""):
@@ -204,6 +369,7 @@ def test_execute_runs_scores_and_restores(tmp_path, monkeypatch):
         "TMPDIR",
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
         "ENABLE_TOOL_SEARCH",
+        "DISABLE_AUTOUPDATER",
         "CODE_TASKS_RUN",  # the run's marker, so the harness can find every process the run started
     }
     assert got["argv"][got["argv"].index("--model") + 1] == config.MODEL
@@ -218,6 +384,20 @@ def test_execute_turns_an_auth_failure_into_an_infrastructure_error(tmp_path):
     with pytest.raises(runner.InfrastructureError):
         runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
     assert not (workspace.worktree_path(cache, "baseline", "o/r", commit) / "stray.txt").exists()
+
+
+@pytest.mark.parametrize("name, server", [("duckgrep-hint", "duckgrep"), ("serena-hint", "serena")])
+def test_a_hinted_run_uses_its_bases_worktree_and_server_and_adds_the_hint(tmp_path, name, server):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, server, cache, url=str(src))
+    mcp = tmp_path / "mcp-seen.json"
+    copy = f"open({str(mcp)!r}, 'w').write(open(sys.argv[sys.argv.index('--mcp-config') + 1]).read())"
+    exe, seen = fake_claude(tmp_path, recorded_stream("no answer"), extra=copy)
+    rec = runner.execute(runner.Run(task(1, commit), name, 1), cache, tmp_path / "out", 1, exe)
+    argv = json.loads(seen.read_text())["argv"]
+    assert argv[argv.index("--append-system-prompt") + 1] == setups.SETUPS[name].hint
+    assert list(json.loads(mcp.read_text())["mcpServers"]) == [server] and rec["setup"] == name
 
 
 def test_execute_puts_back_a_moved_head_and_ignored_files(tmp_path):
@@ -429,10 +609,10 @@ def test_spend_of_runs_that_were_never_recorded_counts_after_a_resume(tmp_path):
 def test_an_infrastructure_error_and_a_failed_retry_count_their_spend(tmp_path):
     def execute(r, c, o, attempt, cl):
         if r.task.id == "t1":
-            raise runner.InfrastructureError("rate limited", cost=0.3)
+            raise runner.InfrastructureError("rate limited", cost=0.3, permanent=True)
         if attempt == 1:
             return fake_record(r, attempt, ok=False, cost=0.2)  # t2's first attempt fails its check
-        raise runner.InfrastructureError("overloaded", cost=0.0)
+        raise runner.InfrastructureError("overloaded", cost=0.0, permanent=True)
 
     out = tmp_path / "out"
     for t in (task(1), task(2)):
