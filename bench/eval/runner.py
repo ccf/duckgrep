@@ -37,12 +37,17 @@ class InfrastructureError(RuntimeError):
         self.permanent = permanent
 
 
+class Interrupted(RuntimeError):
+    """The batch was interrupted before the run started: nothing ran, nothing was spent."""
+
+
 PROBE_TIMEOUT_S = 300
 
 
 INTERRUPTED = "interrupted; rerun the same command to resume"
 _live: dict[subprocess.Popen, str] = {}  # the runs in flight (process -> run id), for an interrupt
 _live_lock = threading.Lock()
+_stopping = threading.Event()  # set by an interrupt under _live_lock, so a run starting as it comes is not missed
 
 
 def charged(rec: dict) -> float:
@@ -233,6 +238,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             started = time.monotonic()
             killed = False
             run_id = uuid.uuid4().hex
+            if _stopping.is_set():  # the interrupt came while this run was being set up
+                raise Interrupted(INTERRUPTED)
             with open(raw, "w") as out, open(run_dir / f"{run.setup}-{run.rep}.stderr", "w") as err:
                 proc = subprocess.Popen(
                     argv,
@@ -245,6 +252,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                 )
                 with _live_lock:
                     _live[proc] = run_id
+                    if _stopping.is_set():  # the interrupt came between the check above and Popen, and missed it
+                        os.killpg(proc.pid, signal.SIGKILL)
                 try:
                     proc.wait(timeout=config.WALL_LIMIT_S)
                 except subprocess.TimeoutExpired:
@@ -254,16 +263,22 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                     setups.sweep(run_id)
                     with _live_lock:
                         _live.pop(proc, None)
+                        interrupted = _stopping.is_set()
             wall = time.monotonic() - started
         with open(raw) as f:
             tr = stream.read(f)
         with open(raw, "rb") as src, gzip.open(raw.with_name(raw.name + ".gz"), "wb") as dst:
             shutil.copyfileobj(src, dst)
         raw.unlink()
-        if stream.infrastructure_error(tr) and not killed:
-            spent = tr.result.get("total_cost_usd")
-            if spent is None:
-                spent = stream.cost(stream.tokens(tr.result, tr.usage_by_message))
+        spent = tr.result.get("total_cost_usd")
+        if spent is None:
+            spent = stream.cost(stream.tokens(tr.result, tr.usage_by_message))
+        if not tr.result and not killed and not interrupted:  # a crash, say under memory pressure: not the setup's
+            raise InfrastructureError(
+                f"{task.id}/{run.setup}-{run.rep}: claude exited with status {proc.returncode} before its result",
+                cost=spent,
+            )
+        if stream.infrastructure_error(tr) and not killed and not interrupted:
             raise InfrastructureError(
                 f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}",
                 cost=spent,
@@ -481,6 +496,8 @@ class Batch:
                     f"[{self.completed}] {r.task.id} {r.setup}-{r.rep}: {rec['tool_calls']} calls, "
                     f"${rec['cost_usd']:.3f}, success={rec['score']['success']}"
                 )
+            except Interrupted:  # nothing started; the batch has stopped already
+                pass
             except InfrastructureError as e:  # already charged; retries are spent
                 with self.cond:
                     self.stopped = self.stopped or f"infrastructure error: {e}"
@@ -493,13 +510,14 @@ class Batch:
                 self._release(r)
 
     def interrupt(self) -> None:
-        """Stop now: start nothing more and kill the runs in flight. They reset their worktrees as they unwind
-        and are not recorded, so a resume redoes them."""
+        """Stop now: start nothing more and kill the runs in flight, and any run about to start. They reset their
+        worktrees as they unwind and are not recorded, so a resume redoes them."""
         with self.cond:
             self.interrupted = True
             self.stopped = INTERRUPTED
             self.cond.notify_all()
         with _live_lock:
+            _stopping.set()
             live = list(_live.items())
         for proc, run_id in live:
             try:
@@ -527,6 +545,7 @@ class Batch:
         """Run everything pending; return why the batch stopped early, or None if it finished. Ctrl-C and
         SIGTERM interrupt it cleanly."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        _stopping.clear()  # an earlier batch's interrupt
         self.working = self.parallel
         for _ in range(self.parallel):
             threading.Thread(target=self._work, daemon=True).start()
@@ -540,6 +559,8 @@ class Batch:
         finally:
             if main:
                 signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+            if not self.working:
+                _stopping.clear()  # the interrupt is over; runs executed after this batch must start
         return self.stopped
 
 

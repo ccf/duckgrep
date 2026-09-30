@@ -682,6 +682,83 @@ def test_sigterm_stops_the_batch_like_ctrl_c(tmp_path):
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # restored afterwards
 
 
+def test_an_interrupt_before_the_run_starts_keeps_it_from_starting(tmp_path, monkeypatch):
+    batch, wt, started = slow_batch(tmp_path)
+    reset = workspace.reset
+    calls = []
+
+    def interrupted_during_reset(path, commit):  # after _take, before Popen: nothing in flight to kill yet
+        calls.append(1)
+        if len(calls) == 1:
+            batch.interrupt()
+        return reset(path, commit)
+
+    monkeypatch.setattr(runner.workspace, "reset", interrupted_during_reset)
+    t0 = time.monotonic()
+    assert "interrupted" in batch.run() and time.monotonic() - t0 < 10
+    assert not started.exists() and not (tmp_path / "out" / "unrecorded.jsonl").exists()  # nothing spent
+    assert not (tmp_path / "out" / "results.jsonl").exists()
+
+    quick = tmp_path / "quick"  # the interrupt is over: a later batch in the same process runs
+    quick.mkdir()
+    exe, _ = fake_claude(quick, recorded_stream("no answer"))
+    runs = runner.schedule([task(1, workspace.git("rev-parse", "HEAD", cwd=wt).strip())], ["baseline"], 1, seed=1)
+    assert runner.Batch(runs, tmp_path / "cache", tmp_path / "out", claude=exe, log=lambda _: None).run() is None
+    assert len(results(tmp_path / "out")) == 1
+
+
+def test_an_interrupt_just_after_the_run_started_kills_it(tmp_path, monkeypatch):
+    batch, wt, started = slow_batch(tmp_path)
+    popen = runner.subprocess.Popen
+
+    def interrupted_at_start(argv, *a, **k):  # before execute put the process where an interrupt looks
+        proc = popen(argv, *a, **k)
+        if argv[0] == batch.claude:
+            batch.interrupt()
+        return proc
+
+    monkeypatch.setattr(runner.subprocess, "Popen", interrupted_at_start)
+    t0 = time.monotonic()
+    assert "interrupted" in batch.run() and time.monotonic() - t0 < 10  # the fake hangs for 20 s
+    assert not (tmp_path / "out" / "results.jsonl").exists() and not (wt / "stray.txt").exists()
+    assert [u["why"] for u in unrecorded(tmp_path / "out")] == ["interrupted"]
+
+
+def crashing_claude(tmp_path, crashes=1):
+    """A fake claude that streams a run but, the first `crashes` times, dies with status 3 before its result."""
+    count = tmp_path / "count"
+    stream_file = tmp_path / "stream.jsonl"
+    crash = (
+        f"n = len(open({str(count)!r}).read()) if os.path.exists({str(count)!r}) else 0\n"
+        f"open({str(count)!r}, 'a').write('x')\n"
+        f"if n < {crashes}:\n"
+        f"    lines = open({str(stream_file)!r}).read().splitlines()\n"
+        "    sys.stdout.write(''.join(x + '\\n' for x in lines if '\"type\": \"result\"' not in x))\n"
+        "    sys.stdout.flush()\n"
+        "    os._exit(3)"
+    )
+    return fake_claude(tmp_path, recorded_stream("no answer"), extra=crash)[0]
+
+
+def test_a_claude_that_dies_mid_run_is_an_infrastructure_error_not_the_setups_failure(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    exe = crashing_claude(tmp_path)
+    with pytest.raises(runner.InfrastructureError, match="exited with status 3") as e:
+        runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
+    assert not e.value.permanent and e.value.cost > 0  # from the usage streamed before it died
+
+    logged = []
+    runs = runner.schedule([task(1, commit)], ["baseline"], 1, seed=1)
+    (tmp_path / "again").mkdir()
+    batch = runner.Batch(runs, cache, tmp_path / "out2", claude=crashing_claude(tmp_path / "again"), log=logged.append)
+    assert batch.run() is None  # retried, and the retry finished
+    assert len(results(tmp_path / "out2")) == 1
+    assert [u["why"] for u in unrecorded(tmp_path / "out2")] == ["infrastructure error"]
+    assert any("exited with status 3" in line for line in logged)
+
+
 def test_spend_of_runs_that_were_never_recorded_counts_after_a_resume(tmp_path):
     runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 1, seed=1)
     out = tmp_path / "out"
