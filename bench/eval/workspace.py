@@ -196,7 +196,8 @@ def serena_warmup(path: Path, repo: str, lang: str, cache: Path) -> dict:
         argv += ["--language", lang, "--log-level", "WARNING"]
         project = serena_project_file(cache, path).parent.parent
         _build(f"warming Serena up on {path}", argv, env, project, timeout=SERENA_TIMEOUT_S)
-    return {"serena_seconds": round(time.monotonic() - started, 1)}
+    size = sum(f.stat().st_size for f in project.rglob("*") if f.is_file())
+    return {"serena_seconds": round(time.monotonic() - started, 1), "serena_mb": round(size / 1e6, 1)}
 
 
 def serena_project_file(cache: Path, path: Path) -> Path:

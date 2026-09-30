@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,13 +37,14 @@ class Metric:
     get: Callable[[dict], float | None]
     scale: str  # log, log1p (ratios of geometric means) or diff
     lower_is_better: bool
+    unit: str = "n"  # n, tokens, usd, share (a proportion) or score
 
 
 METRICS = (
     Metric("tool calls", lambda r: r["tool_calls"], "log1p", True),
     Metric("round trips", lambda r: r["rounds"], "log1p", True),
-    Metric("tokens", lambda r: r["tokens_total"], "log", True),
-    Metric("cost ($)", lambda r: r["cost_usd"], "log", True),
+    Metric("tokens", lambda r: r["tokens_total"], "log", True, "tokens"),
+    Metric("cost ($)", lambda r: r["cost_usd"], "log", True, "usd"),
     # a run that never saw a key location counts as its rounds + 1, rather than dropping the task (which would
     # compare a setup that often fails to locate only on its easy tasks); "located" reports how often that was
     Metric(
@@ -51,9 +53,9 @@ METRICS = (
         "diff",
         True,
     ),
-    Metric("located", lambda r: float(r["turns_to_locate"] is not None), "diff", False),
-    Metric("success", lambda r: float(r["score"]["success"]), "diff", False),
-    Metric("F1", lambda r: r["score"]["f1"], "diff", False),
+    Metric("located", lambda r: float(r["turns_to_locate"] is not None), "diff", False, "share"),
+    Metric("success", lambda r: float(r["score"]["success"]), "diff", False, "share"),
+    Metric("F1", lambda r: r["score"]["f1"], "diff", False, "score"),
 )
 
 
@@ -167,14 +169,21 @@ def comparisons(records: list[dict], seed: int = config.SEED) -> list[Comparison
     return found
 
 
-def _num(v: float) -> str:
-    return f"{v:,.4f}" if abs(v) < 1 else f"{v:,.1f}" if abs(v) < 100 else f"{v:,.0f}"
+def _num(v: float, unit: str) -> str:
+    return {
+        "tokens": f"{v:,.0f}",
+        "usd": f"{v:.4f}",
+        "share": f"{v:.0%}",
+        "score": f"{v:.2f}",
+    }.get(unit, f"{v:,.1f}")
 
 
 def _effect(c: Comparison) -> str:
-    if c.metric.scale == "diff":
-        return f"{c.effect:+.2f} [{c.low:+.2f}, {c.high:+.2f}]"
-    return f"×{c.effect:.2f} [{c.low:.2f}, {c.high:.2f}]"
+    if c.metric.scale != "diff":
+        return f"×{c.effect:.2f} [{c.low:.2f}, {c.high:.2f}]"
+    if c.metric.unit == "share":
+        return f"{100 * c.effect:+.0f} pp [{100 * c.low:+.0f}, {100 * c.high:+.0f}]"
+    return f"{c.effect:+.2f} [{c.low:+.2f}, {c.high:+.2f}]"
 
 
 def metric_table(found: list[Comparison], title: str) -> list[str]:
@@ -182,14 +191,35 @@ def metric_table(found: list[Comparison], title: str) -> list[str]:
     if not rows:
         return []
     out = [f"### {title}", ""]
-    out.append("| metric | tasks | baseline | setup | vs baseline [95% CI] | p (Holm) | win rate |")
-    out.append("|---|---:|---:|---|---|---:|---:|")
+    out.append("| metric | tasks | baseline | setup | vs baseline [95% CI] | p | p (Holm) | win rate |")
+    out.append("|---|---:|---:|---|---|---:|---:|---:|")
     for c in rows:
+        unit = c.metric.unit
         out.append(
-            f"| {c.metric.name} | {c.n} | {_num(c.base)} | {c.setup} {_num(c.other)} | {_effect(c)} | "
-            f"{c.p_holm:.3f} | {c.win:.0%} |"
+            f"| {c.metric.name} | {c.n} | {_num(c.base, unit)} | {c.setup} {_num(c.other, unit)} | {_effect(c)} | "
+            f"{c.p:.3f} | {c.p_holm:.3f} | {c.win:.0%} |"
         )
     return out + [""]
+
+
+def reading(found: list[Comparison]) -> list[str]:
+    """How to read the tables, and whether any comparison could pass the correction at this many tasks."""
+    text = (
+        "How to read the tables: each row pairs a setup with the baseline task by task, a task's repetitions "
+        "averaged first. Tokens and cost are compared as ratios of geometric means; tool calls and round trips as "
+        "ratios on log(1 + n), that is of 1 + n; turns to locate, located, success and F1 as differences, shares "
+        "in percentage points. Intervals are 95% bootstrap intervals over tasks. p is a Wilcoxon signed-rank test "
+        f"and p (Holm) corrects it across all {len(found)} comparisons in the report."
+    )
+    if found:
+        most = max(c.n for c in found)
+        floor = 2 / 2**most  # the smallest two-sided p the test can give with `most` tasks
+        if floor * len(found) >= 0.05:
+            text += (
+                f" With at most {most} tasks per comparison the smallest possible p is {floor:.4f}, so no "
+                "comparison can reach p < 0.05 after correction: read the intervals and win rates."
+            )
+    return [text, ""]
 
 
 def adoption_table(records: list[dict]) -> list[str]:
@@ -221,16 +251,17 @@ def repo_table(records: list[dict]) -> list[str]:
     out = [
         "### By repo",
         "",
-        "| repo | setup | runs | tool calls | cost ($) | success |",
-        "|---|---|---:|---:|---:|---:|",
+        "| kind | repo | setup | runs | tool calls | cost ($) | success |",
+        "|---|---|---|---:|---:|---:|---:|",
     ]
-    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for r in records:
         if r["config_ok"]:
-            groups[(r["repo"], r["setup"])].append(r)
-    for (repo, setup), rs in sorted(groups.items()):
+            groups[(r["kind"], r["repo"].lower(), r["setup"])].append(r)
+    for (kind, _, setup), rs in sorted(groups.items()):
+        repo = Counter(r["repo"] for r in rs).most_common(1)[0][0]
         out.append(
-            f"| {repo} | {setup} | {len(rs)} | {np.mean([r['tool_calls'] for r in rs]):.1f} | "
+            f"| {kind} | {repo} | {setup} | {len(rs)} | {np.mean([r['tool_calls'] for r in rs]):.1f} | "
             f"{np.mean([r['cost_usd'] for r in rs]):.3f} | {np.mean([r['score']['success'] for r in rs]):.0%} |"
         )
     return out + [""]
@@ -276,36 +307,52 @@ def setup_costs(prepared: list[dict]) -> list[str]:
         rows = [p for p in prepared if p["setup"] == setup]
         if rows:
             secs = sum(p.get("index_seconds", 0) + p.get("serena_seconds", 0) for p in rows)
-            mb = sum(p.get("index_mb", 0) for p in rows)
-            out.append(f"| {setup} | {len(rows)} | {secs:,.0f} | {mb:,.0f} |")
+            sizes = [p.get("index_mb", p.get("serena_mb")) for p in rows]
+            mb = "–" if None in sizes else f"{sum(sizes):,.0f}"  # not recorded (before serena_mb existed)
+            out.append(f"| {setup} | {len(rows)} | {secs:,.0f} | {mb} |")
     return out + [""]
+
+
+def _changed(path: str) -> str:
+    path = path[3:] if len(path) > 3 and path[2] == " " else path  # the porcelain status
+    return re.sub(r"__pycache__/.*", "__pycache__/", path)
 
 
 def summary(records: list[dict]) -> list[str]:
     n = len(records)
-    bad = sum(not r["config_ok"] for r in records)
-    killed = sum(r["killed"] for r in records)
-    silent = sum(r["config_ok"] and not r["tokens_total"] for r in records)
-    errors = sum(r["is_error"] for r in records)
-    dirty = sum(bool(r["worktree_changes"]) for r in records)
+    happened = [
+        (sum(not r["config_ok"] for r in records), "failed the configuration check twice (excluded)"),
+        (
+            sum(r["killed"] for r in records),
+            "hit the wall-clock limit (their tokens are summed from their API calls, output as a lower bound)",
+        ),
+        (
+            sum(r["config_ok"] and not r["tokens_total"] for r in records),
+            "never reached the model (left out of token and cost means)",
+        ),
+        (sum(r["is_error"] for r in records), "ended in an error (turn or budget cap)"),
+    ]
+    said = [f"{k} {what}" for k, what in happened if k]
+    text = f"{n} runs: " + ", ".join(said) + "." if said else f"{n} runs, all completed normally."
+    dirty = [r for r in records if r["worktree_changes"]]
+    if dirty:
+        files = Counter(f for r in dirty for f in {_changed(p) for p in r["worktree_changes"]})
+        listed = ", ".join(f"{f} ({k} run{'s' if k > 1 else ''})" for f, k in files.most_common(8))
+        text += f" {len(dirty)} left files in their worktree, all restored after the run: {listed}."
     cost = sum(r["cost_usd"] for r in records)
     cli = sum(r.get("cli_cost_usd") or 0 for r in records)
     versions = sorted({str(r["cli_version"]) for r in records})
     models = sorted({str(r["model"]) for r in records})
-    return [
-        f"{n} runs: {bad} failed the configuration check twice (excluded), {killed} hit the wall-clock limit "
-        "(their tokens are summed from their API calls, output as a lower bound), "
-        f"{silent} never reached the model (left out of token and cost means), "
-        f"{errors} ended in an error (turn or budget cap), {dirty} changed their worktree (restored after). "
-        f"Cost ${cost:,.2f} at list rates (Claude Code billed ${cli:,.2f}). Claude Code {', '.join(versions)}; "
-        f"model {', '.join(models)}.",
-        "",
-    ]
+    text += (
+        f" Cost ${cost:,.2f} at list rates (Claude Code billed ${cli:,.2f}). Claude Code {', '.join(versions)}; "
+        f"model {', '.join(models)}."
+    )
+    return [text, ""]
 
 
 def build(records: list[dict], prepared: list[dict], name: str, seed: int = config.SEED) -> str:
     found = comparisons(records, seed)
-    lines = [f"## A/B evaluation: {name}", ""] + summary(records)
+    lines = [f"## A/B evaluation: {name}", ""] + summary(records) + reading(found)
     for title in [t for *_, t in TABLES] + ["Rust localization, post-cutoff issues"]:
         lines += metric_table(found, title)
     lines += adoption_table(records) + repo_table(records) + variance_table(records) + setup_costs(prepared)

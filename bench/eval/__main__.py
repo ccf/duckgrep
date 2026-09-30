@@ -12,6 +12,8 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import config, report, runner, suite, workspace
 from .setups import SETUPS
@@ -82,6 +84,14 @@ def check(tasks: list, setup_names: list[str], cache, claude: str) -> bool:
     return ok
 
 
+def harness() -> dict:
+    """The commit of this repo that measures the runs, and whether its tracked files differ from it."""
+    root = Path(__file__).resolve().parents[2]
+    commit = workspace.git("rev-parse", "HEAD", cwd=root).strip()
+    dirty = bool(workspace.git("status", "--porcelain", "--untracked-files=no", cwd=root).strip())
+    return {"commit": commit, "dirty": dirty}
+
+
 def claude_path() -> str:
     found = shutil.which("claude")
     if not found:
@@ -144,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     out = config.RUNS_DIR / (a.name or a.suite)
     out.mkdir(parents=True, exist_ok=True)
     meta = {
+        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "harness": harness(),
         "suite": a.suite,
         "tasks": len(chosen),
         "setups": a.setups,
@@ -155,7 +167,10 @@ def main(argv: list[str] | None = None) -> int:
         "max_turns": config.MAX_TURNS,
         "max_budget_usd": config.MAX_BUDGET_USD,
     }
-    (out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    path = out / "meta.json"  # one entry per invocation: a resumed batch keeps what started it
+    earlier = json.loads(path.read_text()) if path.exists() else []
+    earlier = [earlier] if isinstance(earlier, dict) else earlier
+    path.write_text(json.dumps(earlier + [meta], indent=2) + "\n")
     runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
     print(f"{len(runs)} runs, results in {out}")
     stopped = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude).run()

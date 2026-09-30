@@ -85,3 +85,28 @@ def test_rescore_rewrites_the_named_results(tmp_path, monkeypatch, capsys):
     assert cli.main(["rescore", "--name", "smoke"]) == 0
     assert seen == {"out": tmp_path / "runs" / "smoke", "tasks": ["t1"], "cache": tmp_path / "cache"}
     assert "turns_to_locate: 3" in capsys.readouterr().out
+
+
+def test_each_run_invocation_is_kept_in_meta_with_the_harness_commit(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(cli, "claude_path", lambda: "true")
+    monkeypatch.setattr(cli.runner, "probe", lambda task, setup, cache, claude: [])
+
+    class Batch:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(cli.runner, "Batch", Batch)
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    assert cli.main(["run", "--name", "x"]) == 0
+    assert cli.main(["run", "--name", "x", "--reps", "3"]) == 0  # resuming, say
+    meta = json.loads((tmp_path / "runs" / "x" / "meta.json").read_text())
+    assert [m["reps"] for m in meta] == [2, 3]
+    assert all(len(m["harness"]["commit"]) == 40 and "dirty" in m["harness"] and m["started"] for m in meta)
