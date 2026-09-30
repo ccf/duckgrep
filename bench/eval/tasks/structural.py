@@ -14,7 +14,7 @@ import random
 import subprocess
 import sysconfig
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -468,11 +468,18 @@ def common_names(a: Analysis) -> set[str]:
 
 
 def pick(
-    a: Analysis, lang: str, make: Callable, common: int, unique: int, rng: random.Random, taken: set | None = None
+    a: Analysis,
+    lang: str,
+    make: Callable,
+    common: int,
+    unique: int,
+    rng: random.Random,
+    taken: set | None = None,
+    asked: Collection[Def] = (),
 ) -> list[tuple]:
     """(def, question, key, is_common) for up to `common` common-name targets and `unique` others; a common one
     that can't be found is replaced by a unique one. A question whose key is in `taken`, or repeats one picked
-    here, is passed over."""
+    here, is passed over, and so is a target in `asked`: the repo has a question about it already."""
     taken = set(taken or ())
     names = common_names(a)
     seen: dict[tuple[str, str], int] = defaultdict(int)
@@ -491,7 +498,7 @@ def pick(
                 break
             if seen[(d.path, d.qualname)] > 1:
                 continue  # two functions of that name in the file: a question about it would be ambiguous
-            if (d.name in names) == want_common and all(p[0] != d for p in picked):
+            if (d.name in names) == want_common and d not in asked and all(p[0] != d for p in picked):
                 made = make(a, d, lang)
                 if made and made[1] not in taken:
                     taken.add(made[1])
@@ -518,6 +525,7 @@ def repo_tasks(
     tasks = []
 
     answers: set[tuple[str, ...]] = set()
+    asked: set[Def] = set()  # a target gets one question: its callers, or its callers two hops out
 
     def add(kind: str, label: str, question: str, key: tuple[str, ...], answer: str, stratum: str) -> bool:
         if key in answers:
@@ -541,8 +549,9 @@ def repo_tasks(
 
     for kind, make, n in (("callers", callers_question, callers), ("two-hop", two_hop_question, two_hop)):
         common = n // 2 + n % 2
-        for d, question, key, is_common in pick(a, pin.lang, make, common, n - common, rng, taken=answers):
-            add(kind, d.qualname, question, key, "functions", f"{kind}:{'common' if is_common else 'unique'}")
+        for d, question, key, is_common in pick(a, pin.lang, make, common, n - common, rng, answers, asked):
+            if add(kind, d.qualname, question, key, "functions", f"{kind}:{'common' if is_common else 'unique'}"):
+                asked.add(d)
     modules = sorted(a.modules, key=lambda m: m.file)
     rng.shuffle(modules)
     made_importers = 0

@@ -113,6 +113,18 @@ def test_a_repo_never_gets_two_questions_with_one_answer(tmp_path, monkeypatch):
     assert sum(t.id.startswith("pkg-callers-") for t in tasks) <= 8
 
 
+def test_a_target_asked_about_its_callers_is_not_asked_about_again_through_two_hops(tmp_path, monkeypatch):
+    root = python_repo(tmp_path)
+    monkeypatch.setattr(st.workspace, "worktree", lambda *a, **k: root)
+    pin = st.config.PinnedRepo("o/pkg", "python", "v1", "c" * 40)
+    tasks = st.repo_tasks(pin, tmp_path / "cache", 1, callers=8, two_hop=8, importers=0)
+    asked = {
+        kind: {t.id.removeprefix(f"pkg-{kind}-") for t in tasks if t.id.startswith(f"pkg-{kind}-")}
+        for kind in ("callers", "two-hop")
+    }
+    assert "Store.get" in asked["callers"] | asked["two-hop"] and not asked["callers"] & asked["two-hop"]
+
+
 def test_python_module_names():
     assert st.python_module("src/requests/utils.py") == "requests.utils"
     assert st.python_module("pkg/__init__.py") == "pkg"
