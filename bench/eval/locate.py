@@ -207,7 +207,9 @@ def _number(line: str) -> int | None:
     return int(m.group("n")) if m else None
 
 
-def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Evidence, str]:
+def evidence(
+    call: Call, cwd: str = "", roots: tuple[str, ...] = (), listing: frozenset[str] | set[str] | None = None
+) -> tuple[Evidence, str]:
     """What one tool call showed: numbered lines placed in files, symbols it named, and the rest; and the shell's
     directory after it."""
     ev = Evidence(text=json.dumps(call.input) + "\n" + call.result)
@@ -237,8 +239,12 @@ def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Ev
     else:  # Grep, Bash, Glob and anything else: text
         one = ev.files[0] if len(ev.files) == 1 and not globbed else None
 
-        def candidates(path: str) -> tuple[str, ...]:  # a relative path, under each directory the command ran in
-            return tuple(dict.fromkeys(_path(path, d, roots) for d in dirs))
+        def candidates(path: str) -> tuple[str, ...]:
+            """A relative path under each directory the command ran in, narrowed to the files that exist at the
+            task's commit when that is known: only a true duplicate stays ambiguous."""
+            found = tuple(dict.fromkeys(_path(path, d, roots) for d in dirs))
+            real = tuple(c for c in found if listing is not None and c in listing)
+            return real or found
 
         ev.globbed = globbed
         several = tuple(ev.files) if ev.files and not one else ()  # numbered lines: number and text decide
@@ -358,12 +364,18 @@ def _located(ev: Evidence, t: Target, call: Call, strict: bool) -> bool:
     return _mentions(ev.text, t.path) or bool(named)
 
 
-def turns_to_locate(tr: Transcript, found: list[Target], roots: tuple[str, ...] = ()) -> int | None:
+def turns_to_locate(
+    tr: Transcript,
+    found: list[Target],
+    roots: tuple[str, ...] = (),
+    listing: frozenset[str] | set[str] | None = None,
+) -> int | None:
     """The first round trip whose tool results show one of `found`; None if none ever did. `roots` are the run's
-    worktree paths, stripped from absolute paths."""
+    worktree paths, stripped from absolute paths; `listing`, the files at the task's commit, says which directory
+    a relative path was printed from when a command ran in several."""
     cwd = ""
     for call in sorted(tr.calls, key=lambda c: c.round):
-        ev, cwd = evidence(call, cwd, roots)
+        ev, cwd = evidence(call, cwd, roots, listing)
         if any(_located(ev, t, call, bool(roots)) for t in found):
             return call.round
     return None

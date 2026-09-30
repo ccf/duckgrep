@@ -3,6 +3,7 @@ index and Serena warm-up for each worktree, and the pinned rust-analyzer."""
 
 from __future__ import annotations
 
+import functools
 import gzip
 import os
 import shutil
@@ -64,6 +65,20 @@ def reader(cache: Path, repo: str, commit: str):
         return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
 
     return read
+
+
+@functools.lru_cache(maxsize=64)
+def listing(cache: Path, repo: str, commit: str) -> frozenset[str] | None:
+    """The files at `commit`, from the repo's clone; None if the clone or the commit is not there."""
+    bare = cache / "repos" / f"{slug(repo)}.git"
+    r = subprocess.run(
+        ["git", "--git-dir", str(bare), "ls-tree", "-r", "--name-only", "-z", commit],
+        env=git_env(),
+        capture_output=True,
+    )
+    if r.returncode:
+        return None
+    return frozenset(p for p in r.stdout.decode("utf-8", "replace").split("\0") if p)
 
 
 def worktree_path(cache: Path, setup: str, repo: str, commit: str) -> Path:

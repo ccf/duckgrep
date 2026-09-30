@@ -340,3 +340,15 @@ def test_a_glob_leaves_unnumbered_lines_unattributed_but_a_numbered_definition_s
     assert locate.turns_to_locate(run(awk), [needle]) == 1
     other = ("Bash", {"command": "awk '{print NR\": \"$0}' src/a.py src/*.py"}, "4:def other_fn():")
     assert locate.turns_to_locate(run(other), [needle]) is None
+
+
+def test_the_commits_file_list_says_which_directory_printed_a_relative_path():
+    g = Target("tests/a.py", "g", ((7, 7),))
+    cmd = "cd src; grep -rn 'def f' .; cd ../tests; grep -rn 'def g' ."
+    listing = {"src/b.py", "tests/a.py"}  # only tests has an a.py
+    hit = ("Bash", {"command": cmd}, "./a.py:7:    x = g()")  # not the def text, but the file is certain
+    assert locate.turns_to_locate(run(hit), [Target("tests/a.py")], listing=listing) == 1
+    head = ("Bash", {"command": "cd src; head b.py; cd ../tests; head -20 a.py b.py"}, "==> a.py <==\ndef g():")
+    assert locate.turns_to_locate(run(head), [g], listing=listing | {"tests/b.py"}) == 1
+    both = listing | {"src/a.py"}  # a true duplicate stays ambiguous
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, "./a.py:7:    x = g()")), [g], listing=both) is None

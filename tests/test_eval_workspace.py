@@ -258,3 +258,10 @@ def test_a_commit_the_clone_lacks_is_fetched_by_id(tmp_path):
     second = workspace.git("rev-parse", "HEAD", cwd=src).strip()
     wt = workspace.worktree("o/r", second, "baseline", cache, url=str(src))
     assert (wt / "pkg/a.py").read_text() == "def f():\n    return 2\n"
+
+
+def test_listing_gives_the_files_at_a_commit(tmp_path):
+    src, commit = origin(tmp_path, FILES)
+    workspace.clone("o/r", tmp_path / "cache", url=str(src))
+    assert workspace.listing(tmp_path / "cache", "o/r", commit) == {"pkg/__init__.py", "pkg/a.py"}
+    assert workspace.listing(tmp_path / "cache", "o/gone", commit) is None
