@@ -298,6 +298,7 @@ class Batch:
         self.cache, self.out_dir, self.parallel = cache, out_dir, parallel
         self.max_total_usd, self.execute, self.claude, self.log = max_total_usd, execute_fn, claude, log
         self.busy: set[Path] = set()  # the resources of the runs in flight
+        self.analyzers = 0  # runs in flight that start a rust-analyzer: Serena on a Rust task
         self.cond = threading.Condition()
         self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
         # the Claude Code version the batch began on, from its earliest recorded run (None until one has a version)
@@ -306,6 +307,10 @@ class Batch:
         self.interrupted = False
         self.completed = 0
         self.working = 0  # workers still running
+
+    @staticmethod
+    def _starts_rust_analyzer(r: Run) -> bool:
+        return setups.SETUPS[r.setup].base == "serena" and r.task.lang == "rust"
 
     def _resources(self, r: Run) -> set[Path]:
         held = {workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)}
@@ -325,15 +330,20 @@ class Batch:
                 if self.stopped:
                     return None
                 for i, r in enumerate(self.pending):
+                    lsp = self._starts_rust_analyzer(r)
+                    if lsp and self.analyzers >= config.RUST_LSP_LIMIT:
+                        continue  # each rust-analyzer can take several GB
                     held = self._resources(r)
                     if not held & self.busy:
                         self.busy |= held
+                        self.analyzers += lsp
                         return self.pending.pop(i)
                 self.cond.wait()
 
     def _release(self, r: Run) -> None:
         with self.cond:
             self.busy -= self._resources(r)
+            self.analyzers -= self._starts_rust_analyzer(r)
             self.cond.notify_all()
 
     def _record(self, rec: dict) -> None:

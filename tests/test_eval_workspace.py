@@ -428,3 +428,27 @@ def test_prepare_warms_serena_up_once_for_serena_and_serena_hint(tmp_path, monke
     task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
     built = workspace.prepare([task], ["serena-hint", "serena"], cache, log=lambda _: None)
     assert len(warmed) == 1 and [b["setup"] for b in built] == ["serena"]
+
+
+def test_rust_warmups_across_repos_run_at_most_the_limit_at_once(tmp_path, monkeypatch):
+    # each rust-analyzer can take several GB: repos that don't share a cargo target still queue past the limit
+    tasks = parallel_setup(tmp_path, monkeypatch, repos="abcd", lang="rust")
+    monkeypatch.setattr(workspace, "rust_analyzer", lambda cache: None)
+    monkeypatch.setattr(workspace.config, "RUST_LSP_LIMIT", 2)
+    lock, state = threading.Lock(), {"now": 0, "most": 0}
+
+    def warmup(path, repo, lang, cache):
+        with lock:
+            state["now"] += 1
+            state["most"] = max(state["most"], state["now"])
+        time.sleep(0.2)
+        with lock:
+            state["now"] -= 1
+        project = workspace.serena_project_file(cache, path)
+        project.parent.mkdir(parents=True)
+        project.write_text("")
+        return {"serena_seconds": 1.0, "serena_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "serena_warmup", warmup)
+    built = workspace.prepare(tasks, ["serena"], tmp_path / "cache", log=lambda _: None, workers=4)
+    assert len(built) == 4 and state["most"] == 2

@@ -699,3 +699,28 @@ def test_the_files_a_run_could_see_are_the_commits_and_those_it_created(tmp_path
         "src/__pycache__/a.cpython-312.pyc",
     }
     assert runner.visible(cache, task(1, "f" * 40), left) is None  # no commit to list: nothing to narrow by
+
+
+def test_serena_runs_on_rust_across_repos_run_at_most_the_limit_at_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RUST_LSP_LIMIT", 2)
+    serena_runs = [runner.Run(rust_task(i, f"o/r{i}", "a" * 40), "serena", 1) for i in range(4)]  # four cargo targets
+    baselines = [runner.Run(rust_task(10 + i, f"o/r{i}", "a" * 40), "baseline", 1) for i in range(2)]
+    lock, state = threading.Lock(), {"serena": 0, "most": 0, "baseline_during_serena": 0}
+
+    def execute(r, *a):
+        with lock:
+            if r.setup == "serena":
+                state["serena"] += 1
+                state["most"] = max(state["most"], state["serena"])
+            else:
+                state["baseline_during_serena"] += state["serena"] > 0
+        time.sleep(0.1)
+        if r.setup == "serena":
+            with lock:
+                state["serena"] -= 1
+        return fake_record(r, 1)
+
+    batch = runner.Batch(serena_runs + baselines, tmp_path, tmp_path / "out", parallel=4, execute_fn=execute,
+                         log=lambda _: None)  # fmt: skip
+    assert batch.run() is None
+    assert state["most"] == 2 and state["baseline_during_serena"] >= 1 and len(results(tmp_path / "out")) == 6

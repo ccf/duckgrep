@@ -3,7 +3,6 @@ index and Serena warm-up for each worktree, and the pinned rust-analyzer."""
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import gzip
 import os
@@ -236,9 +235,11 @@ def serena_project_file(cache: Path, path: Path) -> Path:
     return cache / "serena-projects" / path.name / ".serena" / "project.yml"
 
 
-def _prepare_pair(repo: str, commit: str, lang: str, bases: list[str], cache: Path, log, save) -> list[dict]:
+def _prepare_pair(
+    repo: str, commit: str, lang: str, bases: list[str], cache: Path, log, save, slots: threading.Semaphore
+) -> list[dict]:
     """One (repo, commit): a worktree per base setup, with its index or warm-up. Each row is saved as soon as it
-    is measured."""
+    is measured. A Rust warm-up holds its repo's cargo target, then one of `slots`: rust-analyzers at once."""
     built = []
     for setup in bases:
         require_space(cache)
@@ -248,7 +249,10 @@ def _prepare_pair(repo: str, commit: str, lang: str, bases: list[str], cache: Pa
             row = index_duckgrep(path)
         elif setup == "serena" and not serena_project_file(cache, path).exists():
             # Serena's rust-analyzer builds in a cargo target directory shared by every commit of the repo
-            with _lock(setups.cargo_target(cache, repo)) if lang == "rust" else contextlib.nullcontext():
+            if lang == "rust":
+                with _lock(setups.cargo_target(cache, repo)), slots:  # the repo's lock first, never the reverse
+                    row = serena_warmup(path, repo, lang, cache)
+            else:
                 row = serena_warmup(path, repo, lang, cache)
         leftover = changes(path)
         if leftover and not (setup == "serena" and row):
@@ -281,7 +285,8 @@ def prepare(
     failures: list[str] = []
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
-        futures = {pool.submit(_prepare_pair, *pair, bases, cache, log, save): i for i, pair in enumerate(todo)}
+        slots = threading.BoundedSemaphore(config.RUST_LSP_LIMIT)
+        futures = {pool.submit(_prepare_pair, *pair, bases, cache, log, save, slots): i for i, pair in enumerate(todo)}
         waiting = set(futures)
         while waiting:  # polling, so Ctrl-C reaches this thread whatever the workers are doing
             finished, waiting = wait(waiting, timeout=0.2)

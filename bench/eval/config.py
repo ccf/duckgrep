@@ -15,6 +15,7 @@ WALL_LIMIT_S = 15 * 60
 RETRY_WAITS_S = (60, 300, 900)  # a transient API error is retried after each wait in turn, then stops the batch
 PARALLEL = 3
 PREPARE_PARALLEL = 6  # repo/commit pairs `prepare` builds at once
+RUST_LSP_LIMIT = 3  # rust-analyzers at once, in runs and in prepare's warm-ups: each can take several GB
 REPETITIONS = 2
 SEED = 20260929
 
