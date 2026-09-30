@@ -34,6 +34,7 @@ class Def:
     line: int  # 1-based line of the name
     col: int  # 0-based column of the name: characters for Python, bytes for Rust
     test: bool = False  # defined in test code
+    head: int = 0  # the def/fn line, which tells apart two functions of one name in one file
 
     @property
     def name(self) -> str:
@@ -46,6 +47,7 @@ class Site:
     line: int
     col: int
     caller: str | None  # qualname of the outermost enclosing function; None at module level
+    caller_head: int | None = None  # that function's def/fn line
 
 
 @dataclass
@@ -86,8 +88,14 @@ class Analysis:
             return None  # a reference that is not a call site we saw: a missed call, or a function value
         return found
 
-    def def_of(self, path: str, qualname: str) -> Def | None:
-        return next((d for d in self.defs if d.path == path and d.qualname == qualname), None)
+    def def_of(self, path: str, qualname: str, head: int | None = None) -> Def | None:
+        return next(
+            (d for d in self.defs if d.path == path and d.qualname == qualname and head in (None, d.head)), None
+        )
+
+
+def _site(path: str, line: int, col: int, caller: gold.Unit | None) -> Site:
+    return Site(path, line, col, caller.qualname if caller else None, caller.head if caller else None)
 
 
 def grep_hits(root: Path, word: str) -> set[tuple[str, int]]:
@@ -165,7 +173,8 @@ def python_analysis(root: Path) -> Analysis:
                 if top is None or top.head != node.lineno:
                     continue  # nested: only its parent calls it
                 text = lines[node.lineno - 1]
-                a.defs.append(Def(rel, top.qualname, node.lineno, text.index(node.name, text.index("def") + 3), test))
+                col = text.index(node.name, text.index("def") + 3)
+                a.defs.append(Def(rel, top.qualname, node.lineno, col, test, node.lineno))
             elif isinstance(node, ast.Call):
                 f = node.func
                 if isinstance(f, ast.Name):
@@ -175,8 +184,7 @@ def python_analysis(root: Path) -> Analysis:
                 else:
                     continue
                 col = len(lines[line - 1].encode()[:bcol].decode("utf-8", "replace"))
-                caller = gold.outermost(units, line)
-                a.calls[name].append(Site(rel, line, col, caller.qualname if caller else None))
+                a.calls[name].append(_site(rel, line, col, gold.outermost(units, line)))
 
     for rel in sources:
         module = python_module(rel)
@@ -307,8 +315,7 @@ def rust_analysis(root: Path, index: Path) -> Analysis:
                 if _macro_call(n):
                     line = n.start_point[0] + 1
                     caller = gold.outermost(units, line, FUNCTION_LIKE)
-                    called = data[n.start_byte : n.end_byte].decode()
-                    a.calls[called].append(Site(rel, line, n.start_point[1], caller.qualname if caller else None))
+                    a.calls[data[n.start_byte : n.end_byte].decode()].append(_site(rel, line, n.start_point[1], caller))
             elif n.type in ("line_comment", "block_comment"):
                 start, end = n.start_point, n.end_point
                 comments[rel].append(((start[0] + 1, start[1]), (end[0] + 1, end[1])))
@@ -317,14 +324,14 @@ def rust_analysis(root: Path, index: Path) -> Analysis:
                 top = gold.outermost(units, name.start_point[0] + 1, FUNCTION_LIKE)
                 if top is not None and top.head == n.start_point[0] + 1:
                     test = test_file or top.kind == "test-fn"
-                    a.defs.append(Def(rel, top.qualname, name.start_point[0] + 1, name.start_point[1], test))
+                    a.defs.append(Def(rel, top.qualname, name.start_point[0] + 1, name.start_point[1], test, top.head))
             elif n.type == "call_expression":
                 ident = _callee(n.child_by_field_name("function"))
                 if ident is not None:
                     line = ident.start_point[0] + 1
                     caller = gold.outermost(units, line, FUNCTION_LIKE)
                     called = data[ident.start_byte : ident.end_byte].decode()
-                    a.calls[called].append(Site(rel, line, ident.start_point[1], caller.qualname if caller else None))
+                    a.calls[called].append(_site(rel, line, ident.start_point[1], caller))
             elif n.type == "use_declaration":
                 uses[rel].append((n.start_point[0] + 1, n.end_point[0] + 1))
             elif n.type == "mod_item" and n.child_by_field_name("body") is None:
@@ -398,7 +405,7 @@ def two_hop_question(a: Analysis, d: Def, lang: str) -> tuple[str, tuple[str, ..
         return None
     key = _entries(direct)
     for s in direct:
-        mid = a.def_of(s.path, s.caller)
+        mid = a.def_of(s.path, s.caller, s.caller_head)
         up = a.callers(mid) if mid else None
         if up is None or not grep_confirms(a.root, mid.name, {(u.path, u.line) for u in up}):
             return None
@@ -432,6 +439,9 @@ def pick(a: Analysis, lang: str, make: Callable, common: int, unique: int, rng: 
     """(def, question, key, is_common) for up to `common` common-name targets and `unique` others; a common one
     that can't be found is replaced by a unique one."""
     names = common_names(a)
+    seen: dict[tuple[str, str], int] = defaultdict(int)
+    for d in a.defs:
+        seen[(d.path, d.qualname)] += 1
     targets = sorted(
         (d for d in a.defs if not d.test and not d.name.startswith("__") and a.calls.get(d.name)),
         key=lambda d: (d.path, d.qualname, d.line),
@@ -443,6 +453,8 @@ def pick(a: Analysis, lang: str, make: Callable, common: int, unique: int, rng: 
         for d in targets:
             if sum(1 for p in picked if p[3] == want_common) >= want:
                 break
+            if seen[(d.path, d.qualname)] > 1:
+                continue  # two functions of that name in the file: a question about it would be ambiguous
             if (d.name in names) == want_common and all(p[0] != d for p in picked):
                 made = make(a, d, lang)
                 if made:

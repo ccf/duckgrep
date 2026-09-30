@@ -234,3 +234,74 @@ def test_rust_calls_inside_macro_invocations_are_call_sites(tmp_path):
 def test_rust_reference_that_is_not_a_call_makes_the_key_untrusted(tmp_path):
     a = st.rust_analysis(*lib_repo(tmp_path, with_value_reference=True))
     assert a.callers(defn(a, "helper")) is None
+
+
+ENTRY_RS = """pub struct Entry;
+
+impl Entry {
+    pub fn kind(&self) -> u32 {
+        self.meta()
+    }
+    fn meta(&self) -> u32 {
+        1
+    }
+}
+
+pub trait Colorable {
+    fn kind(&self) -> u32;
+}
+
+impl Colorable for Entry {
+    fn kind(&self) -> u32 {
+        0
+    }
+}
+
+pub fn show(e: &Entry) -> u32 {
+    e.kind()
+}
+
+pub fn paint(e: &Entry) -> u32 {
+    e.kind() + e.meta()
+}
+"""
+
+KIND = "rust-analyzer cargo demo 0.1.0 Entry#kind()."
+KIND_TRAIT = "rust-analyzer cargo demo 0.1.0 impl#[Entry][Colorable]kind()."
+META = "rust-analyzer cargo demo 0.1.0 Entry#meta()."
+
+
+def entry_repo(tmp_path):
+    """Entry.kind is both an inherent method and a trait impl method, in one file: two functions, one name."""
+    root = repo(tmp_path, {"src/lib.rs": ENTRY_RS})
+    idx = scip_pb2.Index()
+    doc = idx.documents.add()
+    doc.relative_path = "src/lib.rs"
+    occurrence(doc, ENTRY_RS, 3, "kind", KIND, definition=True)
+    occurrence(doc, ENTRY_RS, 4, "meta", META)
+    occurrence(doc, ENTRY_RS, 6, "meta", META, definition=True)
+    occurrence(doc, ENTRY_RS, 12, "kind", "rust-analyzer cargo demo 0.1.0 Colorable#kind().", definition=True)
+    occurrence(doc, ENTRY_RS, 16, "kind", KIND_TRAIT, definition=True)
+    occurrence(doc, ENTRY_RS, 21, "show", "rust-analyzer cargo demo 0.1.0 show().", definition=True)
+    occurrence(doc, ENTRY_RS, 22, "kind", KIND)
+    occurrence(doc, ENTRY_RS, 25, "paint", "rust-analyzer cargo demo 0.1.0 paint().", definition=True)
+    occurrence(doc, ENTRY_RS, 26, "kind", KIND)
+    occurrence(doc, ENTRY_RS, 26, "meta", META)
+    path = tmp_path / "entry.scip"
+    path.write_bytes(idx.SerializeToString())
+    return st.rust_analysis(root, path)
+
+
+def test_a_name_defined_twice_in_its_file_is_never_asked_about(tmp_path):
+    import random
+
+    a = entry_repo(tmp_path)
+    picked = st.pick(a, "rust", st.callers_question, 1, 1, random.Random(0))
+    assert picked and all(d.qualname != "Entry.kind" for d, *_ in picked)
+
+
+def test_two_hop_expands_through_the_right_one_of_two_same_named_functions(tmp_path):
+    a = entry_repo(tmp_path)
+    made = st.two_hop_question(a, defn(a, "Entry.meta"), "rust")
+    assert made is not None
+    assert made[1] == ("src/lib.rs:Entry.kind", "src/lib.rs:paint", "src/lib.rs:show")
