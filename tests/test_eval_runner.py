@@ -237,6 +237,61 @@ def test_runs_sharing_a_worktree_never_overlap(tmp_path):
     assert len(clashes) == 6 and not any(clashes)
 
 
+def rust_task(i, repo, commit):
+    return Task(f"r{i}", "localization", "rust", repo, commit, "p", ("src/a.rs:needle_fn",), "s")
+
+
+def test_serena_runs_on_one_rust_repo_never_overlap_but_other_runs_are_not_held_back(tmp_path):
+    a, b = "a" * 40, "b" * 40
+    serena_runs = [
+        runner.Run(rust_task(1, "o/x", a), "serena", 1),
+        runner.Run(rust_task(2, "o/x", b), "serena-hint", 1),  # another commit and worktree, the same cargo target
+    ]
+    baselines = [runner.Run(rust_task(3, "o/x", a), "baseline", 1), runner.Run(rust_task(4, "o/x", b), "baseline", 1)]
+    lock, serena_on, baselines_done = threading.Lock(), threading.Event(), threading.Event()
+    state = {"serena": 0, "most": 0, "baselines": 0, "overlapped": 0}
+
+    def execute(r, *a):
+        if r.setup == "baseline":
+            assert serena_on.wait(10)  # a baseline run starts while a Serena run is going
+            with lock:
+                state["overlapped"] += state["serena"] > 0
+                state["baselines"] += 1
+                if state["baselines"] == 2:
+                    baselines_done.set()
+        else:
+            with lock:
+                state["serena"] += 1
+                state["most"] = max(state["most"], state["serena"])
+            serena_on.set()
+            assert baselines_done.wait(10)
+            time.sleep(0.05)  # long enough for a second Serena run to start if it could
+            with lock:
+                state["serena"] -= 1
+        return fake_record(r, 1)
+
+    batch = runner.Batch(
+        serena_runs + baselines, tmp_path, tmp_path / "out", parallel=4, execute_fn=execute, log=lambda _: None
+    )
+    assert batch.run() is None
+    assert state["most"] == 1 and state["overlapped"] == 2 and len(results(tmp_path / "out")) == 4
+
+
+def test_only_serena_on_a_rust_task_holds_the_cargo_target(tmp_path):
+    batch = runner.Batch([], tmp_path, tmp_path / "out", log=lambda _: None)
+    wt = workspace.worktree_path(tmp_path, "serena", "o/x", "a" * 40)
+    target = tmp_path / "cargo-target" / "o__x"
+    assert batch._resources(runner.Run(rust_task(1, "o/x", "a" * 40), "serena", 1)) == {wt, target}
+    assert target in batch._resources(runner.Run(rust_task(1, "o/x", "b" * 40), "serena-hint", 1))
+    for setup in ("baseline", "duckgrep", "duckgrep-hint"):
+        assert batch._resources(runner.Run(rust_task(1, "o/x", "a" * 40), setup, 1)) == {
+            workspace.worktree_path(tmp_path, setup, "o/x", "a" * 40)
+        }
+    assert batch._resources(runner.Run(task(1, "a" * 40), "serena", 1)) == {
+        workspace.worktree_path(tmp_path, "serena", "o/r", "a" * 40)
+    }  # Python: Serena has no cargo
+
+
 def fake_claude(tmp_path, stream_lines, extra=""):
     """An executable standing in for `claude`: records its argv and environment, leaves a stray file in its
     working directory, runs `extra` (Python source), and prints a recorded stream."""

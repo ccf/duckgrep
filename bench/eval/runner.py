@@ -275,8 +275,9 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
 
 
 class Batch:
-    """Runs a schedule with `parallel` workers. Runs that share a worktree never overlap. The spending cap covers
-    what earlier invocations of the same batch spent, so resuming never renews it."""
+    """Runs a schedule with `parallel` workers. Runs that share a resource never overlap: a worktree, or the cargo
+    target directory that every Serena run on one Rust repo builds in. The spending cap covers what earlier
+    invocations of the same batch spent, so resuming never renews it."""
 
     def __init__(
         self,
@@ -296,7 +297,7 @@ class Batch:
         self.pending = [r for r in runs if r.key not in done]
         self.cache, self.out_dir, self.parallel = cache, out_dir, parallel
         self.max_total_usd, self.execute, self.claude, self.log = max_total_usd, execute_fn, claude, log
-        self.busy: set[Path] = set()
+        self.busy: set[Path] = set()  # the resources of the runs in flight
         self.cond = threading.Condition()
         self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
         # the Claude Code version the batch began on, from its earliest recorded run (None until one has a version)
@@ -305,6 +306,12 @@ class Batch:
         self.interrupted = False
         self.completed = 0
         self.working = 0  # workers still running
+
+    def _resources(self, r: Run) -> set[Path]:
+        held = {workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)}
+        if setups.SETUPS[r.setup].base == "serena" and r.task.lang == "rust":
+            held.add(setups.cargo_target(self.cache, r.task.repo))
+        return held
 
     def _take(self) -> Run | None:
         with self.cond:
@@ -318,15 +325,15 @@ class Batch:
                 if self.stopped:
                     return None
                 for i, r in enumerate(self.pending):
-                    wt = workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)
-                    if wt not in self.busy:
-                        self.busy.add(wt)
+                    held = self._resources(r)
+                    if not held & self.busy:
+                        self.busy |= held
                         return self.pending.pop(i)
                 self.cond.wait()
 
     def _release(self, r: Run) -> None:
         with self.cond:
-            self.busy.discard(workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit))
+            self.busy -= self._resources(r)
             self.cond.notify_all()
 
     def _record(self, rec: dict) -> None:

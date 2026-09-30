@@ -200,12 +200,17 @@ def mcp_config(setup: Setup, worktree: Path, repo: str, cache: Path, home: Path 
     return {"mcpServers": {"serena": server}}
 
 
+def cargo_target(cache: Path, repo: str) -> Path:
+    """One build directory per repo, shared by every Serena run and warm-up on it."""
+    return cache / "cargo-target" / repo.lower().replace("/", "__")
+
+
 def rust_env(cache: Path, repo: str) -> dict[str, str]:
     """Variables for anything that runs cargo: its caches live in the eval cache, the worktree stays clean, and
     the installed stable toolchain is used whatever the repo pins, so rustup never installs anything."""
     return {
         "PATH": f"{cache / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
         "CARGO_HOME": str(cache / "cargo-home"),
-        "CARGO_TARGET_DIR": str(cache / "cargo-target" / repo.lower().replace("/", "__")),
+        "CARGO_TARGET_DIR": str(cargo_target(cache, repo)),
         "RUSTUP_TOOLCHAIN": "stable",
     }
