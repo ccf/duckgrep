@@ -280,7 +280,8 @@ def summary(records: list[dict]) -> list[str]:
     versions = sorted({str(r["cli_version"]) for r in records})
     models = sorted({str(r["model"]) for r in records})
     return [
-        f"{n} runs: {bad} failed the configuration check twice (excluded), {killed} hit the wall-clock limit, "
+        f"{n} runs: {bad} failed the configuration check twice (excluded), {killed} hit the wall-clock limit "
+        "(their tokens are summed from their API calls, output as a lower bound), "
         f"{errors} ended in an error (turn or budget cap), {dirty} changed their worktree (restored after). "
         f"Cost ${cost:,.2f} at list rates (Claude Code billed ${cli:,.2f}). Claude Code {', '.join(versions)}; "
         f"model {', '.join(models)}.",

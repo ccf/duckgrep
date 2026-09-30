@@ -35,6 +35,7 @@ class Transcript:
     hooks: int = 0
     result: dict = field(default_factory=dict)  # the final result event, {} if the stream was cut off
     api_error: str | None = None  # e.g. "authentication_failed", from a synthetic assistant message
+    usage_by_message: dict[str, dict] = field(default_factory=dict)  # each API call's usage, as streamed
 
 
 def _time(stamp: str | None) -> datetime | None:
@@ -73,6 +74,8 @@ def read(lines: Iterable[str]) -> Transcript:
                 continue
             mid = msg.get("id")
             round_of.setdefault(mid, len(round_of) + 1)
+            if msg.get("usage"):
+                tr.usage_by_message[mid] = msg["usage"]
             for b in msg.get("content") or []:
                 if b.get("type") == "tool_use" and b.get("id") not in calls:
                     calls[b["id"]] = Call(b["id"], b.get("name", ""), round_of[mid], b.get("input") or {})
@@ -97,8 +100,16 @@ def read(lines: Iterable[str]) -> Transcript:
     return tr
 
 
-def tokens(result: dict) -> dict[str, int]:
-    """The session's token classes from the result event (never summed per message)."""
+def tokens(result: dict, messages: dict[str, dict] | None = None) -> dict[str, int]:
+    """The session's token classes, from the result event. A run cut off before it (killed at the wall-clock
+    limit) has none; then they are summed over its API calls (`messages`, from Transcript.usage_by_message).
+    Each call's input side is known when it starts, so only output is then a lower bound."""
+    if not result.get("usage") and messages:
+        total = dict.fromkeys(config.RATES, 0)
+        for usage in messages.values():
+            for k, v in tokens({"usage": usage}).items():
+                total[k] += v
+        return total
     u = result.get("usage") or {}
     split = u.get("cache_creation") or {}
     write = int(u.get("cache_creation_input_tokens") or 0)
@@ -153,7 +164,7 @@ def metrics(tr: Transcript) -> dict:
     counts = Counter(c.name for c in tr.calls)
     total = sum(counts.values())
     mcp = sum(n for name, n in counts.items() if name.startswith("mcp__"))
-    tok = tokens(tr.result)
+    tok = tokens(tr.result, tr.usage_by_message)
     seconds: Counter[str] = Counter()
     for c in tr.calls:
         seconds[c.name] += c.seconds or 0.0
@@ -176,6 +187,7 @@ def metrics(tr: Transcript) -> dict:
         "denied": len(tr.denied),
         "denied_tools": tr.denied,
         "tokens": tok,
+        "usage_complete": bool(res.get("usage")),  # False: summed from the API calls, output a lower bound
         "tokens_total": sum(tok.values()),
         "cost_usd": round(cost(tok), 6),
         "cli_cost_usd": res.get("total_cost_usd"),  # swings with cache warmth; recorded, not used

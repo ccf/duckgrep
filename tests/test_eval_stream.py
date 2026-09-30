@@ -121,3 +121,21 @@ def test_turns_to_locate():
     assert stream.turns_to_locate(run("mcp"), ["src/a.py"]) == 2  # a file-only key needs the path alone
     assert stream.turns_to_locate(run("plain"), ["src/a.py:Other.needle"]) is None
     assert stream.turns_to_locate(run("auth_failure"), ["src/a.py"]) is None
+
+
+def test_a_run_cut_off_before_its_result_is_measured_from_its_messages():
+    import json
+
+    with open(os.path.join(RUNS, "mcp.jsonl")) as f:
+        lines = [line for line in f if json.loads(line).get("type") != "result"]
+    m = stream.metrics(stream.read(lines))
+    # the input side of each API call is known when it starts, so it matches the full run's totals
+    assert {k: m["tokens"][k] for k in ("input", "cache_write_5m", "cache_write_1h", "cache_read")} == {
+        "input": 34,
+        "cache_write_5m": 547,
+        "cache_write_1h": 9633,
+        "cache_read": 29363,
+    }
+    assert 0 < m["tokens"]["output"] < 425  # output only as far as each message had got when it started
+    assert not m["usage_complete"] and m["cost_usd"] > 0
+    assert stream.metrics(run("mcp"))["usage_complete"]
