@@ -116,6 +116,7 @@ def environment(with_user: bool = True, run_id: str | None = None) -> dict[str, 
         env[RUN_MARKER] = run_id
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     env["ENABLE_TOOL_SEARCH"] = "false"  # MCP tools load directly, not through an extra ToolSearch call
+    env["DISABLE_AUTOUPDATER"] = "1"  # Claude Code must not change under a batch
     return env
 
 

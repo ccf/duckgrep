@@ -167,6 +167,44 @@ def test_an_interrupt_ends_a_retry_wait_promptly(tmp_path, monkeypatch):
     assert "interrupted" in stopped and time.monotonic() - t0 < 10 and len(calls) == 1
 
 
+def test_a_run_on_another_claude_code_version_is_recorded_and_then_stops_the_batch(tmp_path):
+    runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 1, seed=1)
+    first = runs[0].key
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "cli_version": "2.1.285" if r.key == first else "2.1.290"}
+
+    stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "2.1.285" in stopped and "2.1.290" in stopped and "Claude Code" in stopped
+    assert len(results(tmp_path / "out")) == 2  # the odd run is kept; the third never starts
+
+
+def test_a_resumed_batch_keeps_the_version_it_began_on(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    with open(out / "results.jsonl", "w") as f:
+        f.write(json.dumps({**fake_record(runner.Run(task(9), "baseline", 1), 1), "cli_version": "2.1.285"}) + "\n")
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "cli_version": "2.1.290"}
+
+    stopped = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "2.1.285" in stopped and len(results(out)) == 2
+
+
+def test_runs_without_a_recorded_version_do_not_set_or_break_the_batchs_version(tmp_path):
+    runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 1, seed=1)
+    versions = iter([None, "2.1.285", None])  # a run killed before its init event has none
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "cli_version": next(versions)}
+
+    assert (
+        runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run() is None
+    )
+
+
 def test_the_spending_cap_stops_new_runs(tmp_path):
     runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 2, seed=1)
     stopped = runner.Batch(
@@ -276,6 +314,7 @@ def test_execute_runs_scores_and_restores(tmp_path, monkeypatch):
         "TMPDIR",
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
         "ENABLE_TOOL_SEARCH",
+        "DISABLE_AUTOUPDATER",
         "CODE_TASKS_RUN",  # the run's marker, so the harness can find every process the run started
     }
     assert got["argv"][got["argv"].index("--model") + 1] == config.MODEL

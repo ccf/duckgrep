@@ -47,7 +47,16 @@ def test_environment_is_scrubbed(monkeypatch):
     monkeypatch.setenv("GIT_DIR", "/elsewhere")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
     env = setups.environment()
-    assert set(env) == {"HOME", "PATH", "USER", "TMPDIR", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "ENABLE_TOOL_SEARCH"}
+    assert set(env) == {
+        "HOME",
+        "PATH",
+        "USER",
+        "TMPDIR",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+        "ENABLE_TOOL_SEARCH",
+        "DISABLE_AUTOUPDATER",
+    }
+    assert env["DISABLE_AUTOUPDATER"] == "1"  # Claude Code never replaces itself under a batch
     assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1" and env["ENABLE_TOOL_SEARCH"] == "false"
     assert "USER" not in setups.environment(with_user=False)
 

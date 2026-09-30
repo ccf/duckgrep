@@ -299,6 +299,8 @@ class Batch:
         self.busy: set[Path] = set()
         self.cond = threading.Condition()
         self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
+        # the Claude Code version the batch began on, from its earliest recorded run (None until one has a version)
+        self.cli_version = next((r["cli_version"] for r in earlier if r.get("cli_version")), None)
         self.stopped: str | None = None
         self.interrupted = False
         self.completed = 0
@@ -335,6 +337,15 @@ class Batch:
                 os.fsync(f.fileno())
             self.spent += charged(rec)
             self.completed += 1
+            version = rec.get("cli_version")  # a run cut off before its init event has none
+            if version and self.cli_version is None:
+                self.cli_version = version
+            elif version and version != self.cli_version:  # kept, but the batch no longer measures one version
+                self.stopped = self.stopped or (
+                    f"Claude Code changed mid-batch: {rec['task']} {rec['setup']}-{rec['rep']} ran {version}, "
+                    f"the batch began on {self.cli_version}"
+                )
+                self.cond.notify_all()
 
     def _charge_unrecorded(self, r: Run, cost: float, why: str) -> None:
         """Count what a run spent that no results line will show, so a resume counts it too."""
