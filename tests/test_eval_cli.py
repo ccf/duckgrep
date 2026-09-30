@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 
 import pytest
 
@@ -97,7 +98,7 @@ def test_prepare_takes_a_worker_count_and_saves_whole_rows_from_several_threads(
 
 def test_run_rejects_unknown_task_ids(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
-    monkeypatch.setattr(cli, "claude_path", lambda: "claude")
+    monkeypatch.setattr(cli, "claude_path", lambda given=None: "claude")
     suite.save(
         tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
     )
@@ -107,7 +108,7 @@ def test_run_rejects_unknown_task_ids(tmp_path, monkeypatch):
 def test_run_stops_before_spending_when_a_setup_is_misconfigured(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
-    monkeypatch.setattr(cli, "claude_path", lambda: "true")
+    monkeypatch.setattr(cli, "claude_path", lambda given=None: "true")
     monkeypatch.setattr(
         cli.runner,
         "probe",
@@ -146,7 +147,7 @@ def test_each_run_invocation_is_kept_in_meta_with_the_harness_commit(tmp_path, m
     monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
-    monkeypatch.setattr(cli, "claude_path", lambda: "true")
+    monkeypatch.setattr(cli, "claude_path", lambda given=None: "true")
     monkeypatch.setattr(cli.runner, "probe", lambda task, setup, cache, claude: [])
 
     class Batch:
@@ -165,6 +166,7 @@ def test_each_run_invocation_is_kept_in_meta_with_the_harness_commit(tmp_path, m
     meta = json.loads((tmp_path / "runs" / "x" / "meta.json").read_text())
     assert [m["reps"] for m in meta] == [2, 3]
     assert all(len(m["harness"]["commit"]) == 40 and "dirty" in m["harness"] and m["started"] for m in meta)
+    assert all(m["claude_path"] == "true" for m in meta)
 
 
 def test_harness_reports_its_commit_and_any_difference_from_it(tmp_path):
@@ -185,3 +187,72 @@ def test_build_drops_the_tasks_its_curation_file_lists(tmp_path, monkeypatch):
     (tmp_path / "x-curation.jsonl").write_text(json.dumps({"id": "bundled", "reason": "an unrelated feature"}) + "\n")
     assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 0
     assert [t.id for t in suite.load(tmp_path / "x-localization.jsonl")] == ["keep"]
+
+
+def fake_cli(path, version):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\necho '{version} (Claude Code)'\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_claude_is_the_binary_the_installers_link_points_at_now(tmp_path, monkeypatch):
+    versions = tmp_path / ".local" / "share" / "claude" / "versions"
+    fake_cli(versions / "2.1.286", "2.1.286")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "claude").symlink_to(versions / "2.1.286")  # the native installer moves this link
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    assert cli.claude_path() == os.path.realpath(versions / "2.1.286")
+    assert cli.claude_path(str(fake_cli(versions / "2.1.285", "2.1.285"))) == os.path.realpath(versions / "2.1.285")
+
+
+def resumable(tmp_path, monkeypatch, version):
+    """A batch named x whose earliest recorded run ran Claude Code `version`; the probes and the batch recorded."""
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    out = tmp_path / "runs" / "x"
+    out.mkdir(parents=True)
+    rows = [{"task": "t0", "setup": "baseline", "rep": 1}, {"task": "t0", "setup": "baseline", "rep": 2}]
+    rows[1]["cli_version"] = version  # the first has no version: cut off before its init event
+    (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    seen = {"probes": [], "batches": 0}
+    monkeypatch.setattr(cli.runner, "probe", lambda task, setup, cache, claude: seen["probes"].append(claude) or [])
+    monkeypatch.setattr(cli.runner, "unprepared", lambda runs, cache: [], raising=False)
+
+    class Batch:
+        def __init__(self, *a, **k):
+            seen["batches"] += 1
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(cli.runner, "Batch", Batch)
+    return seen
+
+
+def test_a_resume_refuses_another_claude_code_version_and_names_the_one_to_pass(tmp_path, monkeypatch, capsys):
+    seen = resumable(tmp_path, monkeypatch, "2.1.285")
+    kept = fake_cli(tmp_path / "home" / ".local" / "share" / "claude" / "versions" / "2.1.285", "2.1.285")
+    updated = fake_cli(tmp_path / "bin" / "claude", "2.1.286")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    assert cli.main(["run", "--name", "x"]) == 1
+    said = capsys.readouterr()
+    assert "2.1.285" in said.err and "2.1.286" in said.err and f"--claude {kept}" in said.err
+    assert seen == {"probes": [], "batches": 0}  # before the probes too
+    assert cli.main(["run", "--name", "x", "--claude", str(kept)]) == 0
+    assert seen["batches"] == 1 and set(seen["probes"]) == {os.path.realpath(kept)}
+    meta = json.loads((tmp_path / "runs" / "x" / "meta.json").read_text())
+    assert meta[-1]["claude_path"] == os.path.realpath(kept) and meta[-1]["claude"].startswith("2.1.285")
+    assert updated.exists()
+
+
+def test_check_takes_the_claude_to_probe(tmp_path, monkeypatch):
+    seen = resumable(tmp_path, monkeypatch, "2.1.285")
+    kept = fake_cli(tmp_path / "v" / "2.1.284", "2.1.284")
+    assert cli.main(["check", "--claude", str(kept)]) == 0  # check spends nothing: no version to hold it to
+    assert set(seen["probes"]) == {os.path.realpath(kept)}

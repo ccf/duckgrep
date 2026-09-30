@@ -77,6 +77,21 @@ def recorded(results: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def started_on(results: Path) -> str | None:
+    """The Claude Code version a batch began on: its earliest recorded run's. None until a run has one."""
+    if not results.exists():
+        return None
+    with open(results) as f:
+        for line in f:
+            try:
+                version = json.loads(line).get("cli_version")
+            except json.JSONDecodeError:
+                continue  # a last line cut off mid-write; the batch cuts it when it starts
+            if version:
+                return version
+    return None
+
+
 def finished(results: Path) -> set[tuple[str, str, int]]:
     return {(r["task"], r["setup"], r["rep"]) for r in recorded(results)}
 
