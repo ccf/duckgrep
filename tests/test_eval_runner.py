@@ -907,3 +907,47 @@ def test_serena_runs_on_rust_across_repos_run_at_most_the_limit_at_once(tmp_path
                          log=lambda _: None)  # fmt: skip
     assert batch.run() is None
     assert state["most"] == 2 and state["baseline_during_serena"] >= 1 and len(results(tmp_path / "out")) == 6
+
+
+def test_a_second_invocation_on_one_results_directory_refuses_to_start(tmp_path):
+    import subprocess
+
+    out = tmp_path / "out"
+    out.mkdir()
+    holder = subprocess.Popen(  # another `run` on the same results, in a process of its own
+        [sys.executable, "-c", "import fcntl, sys, time\n"
+         f"f = open({str(out / '.lock')!r}, 'a'); fcntl.flock(f, fcntl.LOCK_EX)\n"
+         "print('held', flush=True); time.sleep(30)"],
+        stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+        with pytest.raises(runner.Busy, match="another"):
+            runner.Batch(runs, tmp_path, out, execute_fn=lambda *a: pytest.fail("ran"), log=lambda _: None)
+    finally:
+        holder.kill()
+        holder.wait()
+    batch = runner.Batch(runs, tmp_path, out, execute_fn=lambda r, *a: fake_record(r, 1), log=lambda _: None)
+    assert batch.run() is None and len(results(out)) == 1
+    again = runner.Batch(runs, tmp_path, out, log=lambda _: None)  # run() let go of it
+    assert again.pending == []
+
+
+@pytest.mark.parametrize("name", ["results.jsonl", "unrecorded.jsonl"])
+def test_a_partly_written_last_line_is_cut_and_its_run_charged_at_the_cap(tmp_path, name):
+    out = tmp_path / "out"
+    out.mkdir()
+    done = fake_record(runner.Run(task(1), "baseline", 1), 1)
+    whole = {"results.jsonl": done, "unrecorded.jsonl": {"task": "t9", "why": "interrupted", "cost_usd": 0.2}}
+    (out / name).write_text(json.dumps(whole[name]) + "\n" + json.dumps(done)[:40])  # the harness killed mid-write
+    logged = []
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    batch = runner.Batch(runs, tmp_path, out, execute_fn=lambda r, *a: fake_record(r, 1), log=logged.append)
+    assert (out / name).read_text().splitlines()[0] == json.dumps(whole[name])
+    assert unrecorded(out)[-1]["why"] == "partial record" and unrecorded(out)[-1]["cost_usd"] == config.MAX_BUDGET_USD
+    earlier = {"results.jsonl": 0.01, "unrecorded.jsonl": 0.2}[name]
+    assert batch.spent == pytest.approx(earlier + config.MAX_BUDGET_USD) and any(name in m for m in logged)
+    assert batch.run() is None
+    assert {r["task"] for r in results(out)} == {"t1", "t2"}  # every line whole again
+    assert runner.Batch(runs, tmp_path, out, log=lambda _: None).spent == pytest.approx(batch.spent)  # charged once

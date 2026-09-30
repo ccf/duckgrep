@@ -6,6 +6,7 @@ stream is kept as runs/<name>/<task>/<setup>-<rep>.jsonl.gz.
 
 from __future__ import annotations
 
+import fcntl
 import gzip
 import json
 import os
@@ -39,6 +40,10 @@ class InfrastructureError(RuntimeError):
 
 class Interrupted(RuntimeError):
     """The batch was interrupted before the run started: nothing ran, nothing was spent."""
+
+
+class Busy(RuntimeError):
+    """Another process is running a batch on the same results directory."""
 
 
 PROBE_TIMEOUT_S = 300
@@ -95,6 +100,27 @@ def started_on(results: Path) -> str | None:
             if version:
                 return version
     return None
+
+
+def cut_partial_line(path: Path) -> int:
+    """Cut a last line the harness left partly written (killed mid-append) back to the last whole line, so that
+    reading never fails and the next append starts a line of its own. Returns the bytes cut."""
+    if not path.exists():
+        return 0
+    with open(path, "rb+") as f:
+        size = end = f.seek(0, os.SEEK_END)
+        keep = 0
+        while end > 0:
+            start = max(0, end - (1 << 16))
+            f.seek(start)
+            newline = f.read(end - start).rfind(b"\n")
+            if newline >= 0:
+                keep = start + newline + 1
+                break
+            end = start
+        if keep < size:
+            f.truncate(keep)
+    return size - keep
 
 
 def finished(results: Path) -> set[tuple[str, str, int]]:
@@ -322,7 +348,15 @@ class Batch:
     ):
         self.results = out_dir / "results.jsonl"
         self.unrecorded = out_dir / "unrecorded.jsonl"  # spend of runs never recorded: interrupted, failed
-        earlier = recorded(self.results)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.lock = _hold(out_dir / ".lock")  # until run() ends: two batches on one directory pay twice
+        try:
+            self._cut_partial_lines(log)
+            earlier = recorded(self.results)
+            unrecorded = recorded(self.unrecorded)
+        except BaseException:
+            self.lock.close()
+            raise
         done = {(r["task"], r["setup"], r["rep"]) for r in earlier}
         self.pending = [r for r in runs if r.key not in done]
         self.cache, self.out_dir, self.parallel = cache, out_dir, parallel
@@ -330,7 +364,7 @@ class Batch:
         self.busy: set[Path] = set()  # the resources of the runs in flight
         self.analyzers = 0  # runs in flight that start a rust-analyzer: Serena on a Rust task
         self.cond = threading.Condition()
-        self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
+        self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in unrecorded)
         # the Claude Code version the batch began on, from its earliest recorded run (None until one has a version)
         self.cli_version = next((r["cli_version"] for r in earlier if r.get("cli_version")), None)
         # recorded runs in a row, up to the latest, that ended on an API error; a resume continues the streak
@@ -339,6 +373,19 @@ class Batch:
         self.interrupted = False
         self.completed = 0
         self.working = 0  # workers still running
+
+    def _cut_partial_lines(self, log: Callable[[str], None]) -> None:
+        """A line cut off mid-write is dropped; its run's cost is unknown, so it is charged at the per-run cap, and
+        a record's run is redone."""
+        for path in (self.unrecorded, self.results):
+            cut = cut_partial_line(path)
+            if cut:
+                row = dict.fromkeys(("task", "setup", "rep")) | {"why": "partial record", "file": path.name}
+                with open(self.unrecorded, "a") as f:
+                    f.write(json.dumps({**row, "cost_usd": config.MAX_BUDGET_USD}) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                log(f"cut {cut} bytes of a partly written last line from {path}; charged ${config.MAX_BUDGET_USD:.2f}")
 
     @staticmethod
     def _starts_rust_analyzer(r: Run) -> bool:
@@ -570,7 +617,26 @@ class Batch:
                 signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
             if not self.working:
                 _stopping.clear()  # the interrupt is over; runs executed after this batch must start
+                self.lock.close()  # and another invocation may take the directory
         return self.stopped
+
+
+def _hold(path: Path):
+    """An exclusive lock on `path`, held while the returned file stays open. Busy if another process holds it."""
+    f = open(path, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.seek(0)
+        holder = f.read().strip()
+        f.close()
+        raise Busy(
+            f"another run is using {path.parent}" + (f" (pid {holder})" if holder else "") + "; wait for it or stop it"
+        ) from None
+    f.truncate(0)
+    f.write(str(os.getpid()))
+    f.flush()
+    return f
 
 
 def _raise_interrupt(signum, frame) -> None:

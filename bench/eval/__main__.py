@@ -191,6 +191,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     workspace.require_space(cache)
     out.mkdir(parents=True, exist_ok=True)
+    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
+    try:
+        batch = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude)  # holds `out` from here
+    except runner.Busy as e:
+        print(f"refusing to start: {e}", file=sys.stderr)
+        return 1
     meta = {
         "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "harness": harness(),
@@ -210,9 +216,8 @@ def main(argv: list[str] | None = None) -> int:
     earlier = json.loads(path.read_text()) if path.exists() else []
     earlier = [earlier] if isinstance(earlier, dict) else earlier
     path.write_text(json.dumps(earlier + [meta], indent=2) + "\n")
-    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
     print(f"{len(runs)} runs, results in {out}")
-    stopped = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude).run()
+    stopped = batch.run()
     if stopped:
         print(f"stopped early: {stopped}; rerun the same command to resume")
         return 1

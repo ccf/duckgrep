@@ -256,3 +256,16 @@ def test_check_takes_the_claude_to_probe(tmp_path, monkeypatch):
     kept = fake_cli(tmp_path / "v" / "2.1.284", "2.1.284")
     assert cli.main(["check", "--claude", str(kept)]) == 0  # check spends nothing: no version to hold it to
     assert set(seen["probes"]) == {os.path.realpath(kept)}
+
+
+def test_run_refuses_a_results_directory_another_run_holds_and_leaves_no_trace(tmp_path, monkeypatch, capsys):
+    resumable(tmp_path, monkeypatch, "2.1.285")
+    monkeypatch.setattr(cli, "claude_path", lambda given=None: str(fake_cli(tmp_path / "bin" / "claude", "2.1.285")))
+
+    def busy(*a, **k):
+        raise cli.runner.Busy("another run is using runs/x (pid 1)")
+
+    monkeypatch.setattr(cli.runner, "Batch", busy)
+    assert cli.main(["run", "--name", "x"]) == 1
+    assert "another run is using" in capsys.readouterr().err
+    assert not (tmp_path / "runs" / "x" / "meta.json").exists()  # its meta would name an invocation that never ran
