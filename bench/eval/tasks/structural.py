@@ -64,6 +64,8 @@ class Analysis:
     modules: list[Module] = field(default_factory=list)
     resolve: Callable[[Site], set | None] = lambda site: None  # what a site refers to; None when unknown
     identity: Callable[[Def], object] = lambda d: None  # what `resolve` returns for a site that calls d
+    # (path, line, column) of every reference to d that must be one of its call sites; None when unknown
+    references: Callable[[Def], set | None] = lambda d: set()
 
     def callers(self, d: Def) -> set[Site] | None:
         """The call sites of `d`; None when the set can't be trusted to be complete."""
@@ -79,6 +81,9 @@ class Analysis:
                 if len(got) > 1 or site.caller is None:
                     return None  # ambiguous, or a call from module level, which no function answers
                 found.add(site)
+        refs = self.references(d)
+        if refs is None or refs - {(s.path, s.line, s.col) for s in found}:
+            return None  # a reference that is not a call site we saw: a missed call, or a function value
         return found
 
     def def_of(self, path: str, qualname: str) -> Def | None:
@@ -251,6 +256,13 @@ def _callee(node):
     return None
 
 
+def _macro_call(ident) -> bool:
+    """An identifier in a macro's arguments followed by a parenthesised token tree: `f(x)` in `assert_eq!(f(x), 1)`.
+    tree-sitter leaves macro arguments as token trees, so these calls are no call_expression."""
+    nxt = ident.next_sibling
+    return nxt is not None and nxt.type == "token_tree" and nxt.child_count > 0 and nxt.children[0].type == "("
+
+
 def _mod_file(path: str, name: str, root: Path) -> str | None:
     """The file `mod name;` in `path` loads: <dir>/name.rs or <dir>/name/mod.rs."""
     p = Path(path)
@@ -267,13 +279,17 @@ def rust_analysis(root: Path, index: Path) -> Analysis:
     idx = scip_pb2.Index()
     idx.ParseFromString(index.read_bytes())
     at: dict[tuple[str, int, int], set[str]] = defaultdict(set)  # (path, line, column) -> symbols there
-    where: dict[str, list[tuple[str, int]]] = defaultdict(list)  # symbol -> (path, line) of its occurrences
+    where: dict[str, list[tuple[str, int, int, bool]]] = defaultdict(list)  # symbol -> (path, line, col, is_def)
     for doc in idx.documents:
         for o in doc.occurrences:
-            at[(doc.relative_path, o.range[0] + 1, o.range[1])].add(o.symbol)
-            where[o.symbol].append((doc.relative_path, o.range[0] + 1))
+            line, col = o.range[0] + 1, o.range[1]
+            at[(doc.relative_path, line, col)].add(o.symbol)
+            where[o.symbol].append(
+                (doc.relative_path, line, col, bool(o.symbol_roles & scip_pb2.SymbolRole.Definition))
+            )
     a = Analysis(root)
     uses: dict[str, list[tuple[int, int]]] = {}
+    comments: dict[str, list[tuple[tuple[int, int], tuple[int, int]]]] = defaultdict(list)  # 1-based line, column
     mods: list[tuple[str, str, str]] = []  # (symbol, module file, module name)
     for rel in [f for f in workspace.git("ls-files", "*.rs", cwd=root).splitlines() if f]:
         src = (root / rel).read_text(encoding="utf-8", errors="replace")
@@ -281,11 +297,22 @@ def rust_analysis(root: Path, index: Path) -> Analysis:
         units = gold.rust_units(src)
         test_file = gold.is_test_path(rel, "rust")
         uses[rel] = []
-        stack = [gold.rust_parser().parse(data).root_node]
+        stack = [(gold.rust_parser().parse(data).root_node, False)]
         while stack:
-            n = stack.pop()
-            stack.extend(n.children)
-            if n.type == "function_item":
+            n, in_macro = stack.pop()
+            if n.type == "macro_definition":
+                continue  # a macro_rules! body is a template, not code
+            stack.extend((c, in_macro or n.type == "macro_invocation") for c in n.children)
+            if in_macro and n.type == "identifier" and n.parent is not None and n.parent.type == "token_tree":
+                if _macro_call(n):
+                    line = n.start_point[0] + 1
+                    caller = gold.outermost(units, line, FUNCTION_LIKE)
+                    called = data[n.start_byte : n.end_byte].decode()
+                    a.calls[called].append(Site(rel, line, n.start_point[1], caller.qualname if caller else None))
+            elif n.type in ("line_comment", "block_comment"):
+                start, end = n.start_point, n.end_point
+                comments[rel].append(((start[0] + 1, start[1]), (end[0] + 1, end[1])))
+            elif n.type == "function_item":
                 name = n.child_by_field_name("name")
                 top = gold.outermost(units, name.start_point[0] + 1, FUNCTION_LIKE)
                 if top is not None and top.head == n.start_point[0] + 1:
@@ -307,10 +334,14 @@ def rust_analysis(root: Path, index: Path) -> Analysis:
                 target = _mod_file(rel, word, root)
                 if len(symbols) == 1 and target:
                     mods.append((next(iter(symbols)), target, word))
+
+    def in_use(path: str, line: int) -> bool:
+        return any(s <= line <= e for s, e in uses.get(path, []))
+
     for symbol, file, word in mods:
         found: dict[str, list[int]] = defaultdict(list)
-        for path, line in where.get(symbol, []):
-            if path != file and any(s <= line <= e for s, e in uses.get(path, [])):
+        for path, line, _, _ in where.get(symbol, []):
+            if path != file and in_use(path, line):
                 found[path].append(line)
         a.modules.append(Module(file, f"the module defined in `{file}`", word, dict(found)))
 
@@ -318,8 +349,22 @@ def rust_analysis(root: Path, index: Path) -> Analysis:
         symbols = at.get((d.path, d.line, d.col), set())
         return next(iter(symbols)) if len(symbols) == 1 else None
 
+    def references(d: Def) -> set | None:
+        """Where rust-analyzer saw d used, except its definition, `use` lines and comments (intra-doc links)."""
+        symbol = identity(d)
+        if symbol is None:
+            return None
+        return {
+            (path, line, col)
+            for path, line, col, is_def in where.get(symbol, [])
+            if not is_def
+            and not in_use(path, line)
+            and not any(s <= (line, col) < e for s, e in comments.get(path, []))
+        }
+
     a.resolve = lambda site: at.get((site.path, site.line, site.col)) or None
     a.identity = identity
+    a.references = references
     return a
 
 

@@ -179,3 +179,58 @@ def test_rust_module_importers(tmp_path):
     [module] = a.modules
     assert (module.file, module.grep, module.importers) == ("src/walk.rs", "walk", {"src/main.rs": [2]})
     assert st.importers_question(a, module, "rust") is None  # one importer is too few
+
+
+LIB_RS = """pub fn helper() -> u32 {
+    1
+}
+
+/// Calls [helper] once.
+pub fn user() -> u32 {
+    helper()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(super::helper(), 1);
+    }
+}
+"""
+
+KEEPS_RS = """
+pub fn keeps() -> fn() -> u32 {
+    let f = helper;
+    f
+}
+"""
+
+LIB_HELPER = "rust-analyzer cargo demo 0.1.0 helper()."
+
+
+def lib_repo(tmp_path, with_value_reference):
+    text = LIB_RS + (KEEPS_RS if with_value_reference else "")
+    root = repo(tmp_path, {"src/lib.rs": text})
+    idx = scip_pb2.Index()
+    doc = idx.documents.add()
+    doc.relative_path = "src/lib.rs"
+    occurrence(doc, text, 0, "helper", LIB_HELPER, definition=True)
+    occurrence(doc, text, 4, "helper", LIB_HELPER)  # an intra-doc link, in a comment
+    occurrence(doc, text, 6, "helper", LIB_HELPER)
+    occurrence(doc, text, 13, "helper", LIB_HELPER)  # inside assert_eq!(...)
+    if with_value_reference:
+        occurrence(doc, text, 18, "helper", LIB_HELPER)  # `let f = helper;`: a reference, not a call
+    path = tmp_path / "lib.scip"
+    path.write_bytes(idx.SerializeToString())
+    return root, path
+
+
+def test_rust_calls_inside_macro_invocations_are_call_sites(tmp_path):
+    a = st.rust_analysis(*lib_repo(tmp_path, with_value_reference=False))
+    assert st._entries(a.callers(defn(a, "helper"))) == {"src/lib.rs:user", "src/lib.rs:it_works"}
+
+
+def test_rust_reference_that_is_not_a_call_makes_the_key_untrusted(tmp_path):
+    a = st.rust_analysis(*lib_repo(tmp_path, with_value_reference=True))
+    assert a.callers(defn(a, "helper")) is None
