@@ -184,6 +184,7 @@ def test_execute_runs_scores_and_restores(tmp_path, monkeypatch):
         "TMPDIR",
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
         "ENABLE_TOOL_SEARCH",
+        "CODE_TASKS_RUN",  # the run's marker, so the harness can find every process the run started
     }
     assert got["argv"][got["argv"].index("--model") + 1] == config.MODEL
 
@@ -256,3 +257,32 @@ def test_the_wall_clock_limit_kills_the_run_and_its_children(tmp_path, monkeypat
     time.sleep(0.2)
     with pytest.raises(ProcessLookupError):
         os.kill(child, 0)
+
+
+def test_a_run_leaves_no_process_behind_even_in_a_session_of_its_own(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": "x = 1\n"})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    pidfile = tmp_path / "server.pid"
+    escape = (  # like Serena starting a language server with start_new_session=True
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))"
+    )
+    exe, _ = fake_claude(tmp_path, recorded_stream("no answer"), extra=escape)
+    runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
+    child = int(pidfile.read_text())
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("the process escaped the run's process group and outlived the run")
+    finally:
+        try:
+            os.kill(child, 9)
+        except ProcessLookupError:
+            pass

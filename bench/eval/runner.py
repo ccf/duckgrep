@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,31 @@ def _kill_group(proc: subprocess.Popen) -> None:
         time.sleep(0.5)
 
 
+def _sweep(run_id: str) -> None:
+    """Kill every process that still carries the run's marker. Serena starts each language server in a session
+    of its own, so killing the run's process group does not reach them."""
+    import psutil
+
+    marked = []
+    for p in psutil.process_iter():
+        try:
+            if p.environ().get(setups.RUN_MARKER) == run_id:
+                marked.append(p)
+        except (psutil.Error, OSError):
+            continue  # gone, a zombie, or another user's
+    for p in marked:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(marked, timeout=5)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+
+
 def _mcp_file(setup: setups.Setup, task: Task, wt: Path, cache: Path, tmp: Path) -> Path | None:
     """Write the run's --mcp-config file (and its own SERENA_HOME) into `tmp`; None for the baseline."""
     home = setups.serena_home(tmp / "serena-home", cache) if setup.name == "serena" else None
@@ -86,17 +112,21 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
     if not (wt / ".git").exists():
         return [f"{wt} is missing: run `prepare` first"]
     (cache / "tmp").mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex
     with tempfile.TemporaryDirectory(dir=cache / "tmp") as tmp:
         argv = setups.command(setup, task.prompt, _mcp_file(setup, task, wt, cache, Path(tmp)), claude=claude)
-        out = subprocess.run(
-            argv,
-            cwd=wt,
-            env=setups.environment(with_user=False),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        try:
+            out = subprocess.run(
+                argv,
+                cwd=wt,
+                env=setups.environment(with_user=False, run_id=run_id),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        finally:
+            _sweep(run_id)  # Serena starts its language server even when no tool is called
     tr = stream.read(out.stdout.splitlines())
     problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
     if tr.api_error != "authentication_failed":
@@ -121,11 +151,12 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             argv = setups.command(setup, task.prompt, _mcp_file(setup, task, wt, cache, Path(tmp)), claude=claude)
             started = time.monotonic()
             killed = False
+            run_id = uuid.uuid4().hex
             with open(raw, "w") as out, open(run_dir / f"{run.setup}-{run.rep}.stderr", "w") as err:
                 proc = subprocess.Popen(
                     argv,
                     cwd=wt,
-                    env=setups.environment(),
+                    env=setups.environment(run_id=run_id),
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=err,
@@ -137,6 +168,7 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                     killed = True
                 finally:
                     _kill_group(proc)
+                    _sweep(run_id)
             wall = time.monotonic() - started
         with open(raw) as f:
             tr = stream.read(f)

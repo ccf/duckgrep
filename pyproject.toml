@@ -39,6 +39,7 @@ eval = [
     "jedi>=0.20.0",
     "numpy>=2.0",
     "protobuf>=7.35.1,<8",  # bench/eval/scip_pb2.py was generated for protobuf 7.35.1
+    "psutil>=6.0",  # finds processes a run started outside its process group
     "scipy>=1.13",
     "unidiff>=1.0",
 ]

@@ -53,12 +53,18 @@ def agent_path() -> str:
     return os.pathsep.join(keep)
 
 
-def environment(with_user: bool = True) -> dict[str, str]:
+RUN_MARKER = "CODE_TASKS_RUN"  # inherited by everything a run starts, so the harness can find it afterwards
+
+
+def environment(with_user: bool = True, run_id: str | None = None) -> dict[str, str]:
     """A run's entire environment, as `env -i` would give it: nothing of the parent session leaks in. USER is
-    what the keychain login needs; without it a run fails at login, before any model call."""
+    what the keychain login needs; without it a run fails at login, before any model call. `run_id` marks
+    every process the run starts, including those that leave its process group."""
     env = {"HOME": os.environ["HOME"], "PATH": agent_path(), "TMPDIR": os.environ.get("TMPDIR", "/tmp")}
     if with_user:
         env["USER"] = os.environ["USER"]
+    if run_id:
+        env[RUN_MARKER] = run_id
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     env["ENABLE_TOOL_SEARCH"] = "false"  # MCP tools load directly, not through an extra ToolSearch call
     return env
