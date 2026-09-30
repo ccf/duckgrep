@@ -143,14 +143,14 @@ def main(argv: list[str] | None = None) -> int:
         out = config.RUNS_DIR / a.suite
         out.mkdir(parents=True, exist_ok=True)
         lock = threading.Lock()  # prepare calls save from several threads
-        with open(out / "prepare.jsonl", "a") as f:
 
-            def save(row: dict) -> None:  # as each is measured: preparing takes an hour, and a later step can fail
-                with lock:
-                    f.write(json.dumps(row) + "\n")
-                    f.flush()
+        def save(row: dict) -> None:
+            # as each is measured, since preparing takes hours and a later step can fail; and into a file opened
+            # for the row, since a pair still building when prepare gives up saves after it has returned
+            with lock, open(out / "prepare.jsonl", "a") as f:
+                f.write(json.dumps(row) + "\n")
 
-            workspace.prepare(tasks, a.setups, cache, save=save, workers=a.parallel)
+        workspace.prepare(tasks, a.setups, cache, save=save, workers=a.parallel)
         return 0
     wanted = a.tasks.split(",") if getattr(a, "tasks", None) else None
     chosen = [t for t in tasks if wanted is None or t.id in wanted]

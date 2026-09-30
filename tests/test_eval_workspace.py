@@ -387,6 +387,24 @@ def test_ctrl_c_cancels_the_pairs_not_yet_started(tmp_path, monkeypatch):
     assert len(indexed) == 1
 
 
+def test_ctrl_c_waits_for_the_pairs_in_flight_and_saves_their_rows(tmp_path, monkeypatch):
+    import _thread
+
+    tasks = parallel_setup(tmp_path, monkeypatch, repos="abc")
+
+    def index(path):
+        _thread.interrupt_main()
+        time.sleep(0.3)
+        return {"index_seconds": 1.0, "index_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "index_duckgrep", index)
+    saved, said = [], []
+    with pytest.raises(KeyboardInterrupt):
+        workspace.prepare(tasks, ["duckgrep"], tmp_path / "cache", log=said.append, save=saved.append, workers=1)
+    assert [r["repo"] for r in saved] == ["o/a"]  # before prepare gave up: the caller's file is still open
+    assert any("in flight" in s for s in said)
+
+
 def test_a_hinted_setup_shares_its_bases_worktree(tmp_path):
     for base in ("duckgrep", "serena"):
         assert workspace.worktree_path(tmp_path, f"{base}-hint", "o/r", "c" * 40) == workspace.worktree_path(

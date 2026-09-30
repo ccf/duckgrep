@@ -297,8 +297,9 @@ def prepare(
                 except Exception as e:
                     repo, commit, _ = todo[i]
                     failures.append(f"{repo}@{commit[:12]}: {e}")
-    except KeyboardInterrupt:  # the pairs not yet started are dropped; those running finish, as their builds clean up
-        pool.shutdown(wait=False, cancel_futures=True)
+    except KeyboardInterrupt:  # the pairs not yet started are dropped; those running finish and save their rows
+        log(f"interrupted: waiting for the {sum(f.running() for f in futures)} repo/commit pairs in flight")
+        pool.shutdown(wait=True, cancel_futures=True)
         raise
     pool.shutdown()
     if failures:

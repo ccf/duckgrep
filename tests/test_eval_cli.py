@@ -40,6 +40,32 @@ def test_prepare_writes_each_row_as_soon_as_it_is_measured(tmp_path, monkeypatch
     assert saved.exists() and [json.loads(line) for line in saved.read_text().splitlines()] == [row]
 
 
+def test_prepare_keeps_a_row_saved_after_it_gave_up(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    row = {"setup": "duckgrep", "repo": "o/r", "commit": "c", "index_seconds": 1.0, "index_mb": 0.1}
+    late = []
+
+    def prepare(tasks, setups, cache, log=print, save=lambda row: None, workers=1):
+        # a pair still building after a second Ctrl-C: the interpreter waits for it at exit, and it saves then
+        late.append(threading.Timer(0.2, save, args=(row,)))
+        late[0].start()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.workspace, "prepare", prepare)
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["prepare", "--setups", "duckgrep"])
+    late[0].join()
+    saved = tmp_path / "runs" / "pilot" / "prepare.jsonl"
+    assert [json.loads(line) for line in saved.read_text().splitlines()] == [row]
+
+
 def test_prepare_takes_a_worker_count_and_saves_whole_rows_from_several_threads(tmp_path, monkeypatch):
     import threading
 
