@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import os
 import random
+import re
 import subprocess
 import sysconfig
 from collections import defaultdict
@@ -70,6 +71,9 @@ class Analysis:
     identity: Callable[[Def], object] = lambda d: None  # what `resolve` returns for a site that calls d
     # (path, line, column) of every reference to d that must be one of its call sites; None when unknown
     references: Callable[[Def], set | None] = lambda d: set()
+    # whether a call that resolves elsewhere (to `got`) can still reach d at run time: through a base class's
+    # method or a trait's, or a receiver the resolver narrowed to another class
+    may_reach: Callable[[Site, Def, set], bool] = lambda site, d, got: False
 
     def callers(self, d: Def) -> set[Site] | None:
         """The call sites of `d`; None when the set can't be trusted to be complete."""
@@ -85,6 +89,8 @@ class Analysis:
                 if len(got) > 1 or site.caller is None:
                     return None  # ambiguous, or a call from module level, which no function answers
                 found.add(site)
+            elif self.may_reach(site, d, got):
+                return None  # it resolves elsewhere, but dispatch can take it to d
         refs = self.references(d)
         if refs is None or refs - {(s.path, s.line, s.col) for s in found}:
             return None  # a reference that is not a call site we saw: a missed call, or a function value
@@ -152,12 +158,37 @@ def _imported(tree: ast.AST, rel: str) -> list[tuple[str, int]]:
     return out
 
 
+def _base_names(node: ast.ClassDef) -> set[str]:
+    """The simple names of a class's bases: `Field`, `fields.Field` and `typing.Mapping[str, str]` alike."""
+    out = set()
+    for b in node.bases:
+        b = b.value if isinstance(b, ast.Subscript) else b
+        if isinstance(b, ast.Attribute):
+            out.add(b.attr)
+        elif isinstance(b, ast.Name):
+            out.add(b.id)
+    return out
+
+
+def _reachable(links: dict[str, set[str]], start: str) -> set[str]:
+    """Every class `links` leads to from `start`, transitively: its ancestors, given each class's bases."""
+    seen: set[str] = set()
+    todo = [start]
+    while todo:
+        for c in links.get(todo.pop(), ()):
+            if c not in seen:
+                seen.add(c)
+                todo.append(c)
+    return seen
+
+
 def python_analysis(root: Path) -> Analysis:
     import jedi
 
     a = Analysis(root)
     sources: dict[str, str] = {}
     imports: dict[str, list[tuple[str, int]]] = {}
+    bases: dict[str, set[str]] = defaultdict(set)  # class name -> its bases' names, by simple name across the repo
     for rel in [f for f in workspace.git("ls-files", "*.py", cwd=root).splitlines() if f]:
         src = (root / rel).read_text(encoding="utf-8", errors="replace")
         try:
@@ -187,6 +218,16 @@ def python_analysis(root: Path) -> Analysis:
                     continue
                 col = len(lines[line - 1].encode()[:bcol].decode("utf-8", "replace"))
                 a.calls[name].append(_site(rel, line, col, gold.outermost(units, line)))
+            elif isinstance(node, ast.ClassDef):
+                bases[node.name] |= _base_names(node)
+    subclasses: dict[str, set[str]] = defaultdict(set)
+    for cls, parents in bases.items():
+        for b in parents:
+            subclasses[b].add(cls)
+    methods: dict[str, set[str]] = defaultdict(set)  # class name -> the names of the methods it defines
+    for d in a.defs:
+        if "." in d.qualname:
+            methods[d.qualname.split(".")[-2]].add(d.name)
 
     for rel in sources:
         module = python_module(rel)
@@ -208,6 +249,7 @@ def python_analysis(root: Path) -> Analysis:
     project = jedi.Project(str(root), sys_path=sys_path, smart_sys_path=False)
     scripts: dict[str, jedi.Script] = {}
     memo: dict[Site, set | None] = {}
+    owners: dict[Site, set[str]] = {}  # the classes whose methods a site resolves to
 
     def resolve(site: Site) -> set | None:
         if site not in memo:
@@ -216,14 +258,59 @@ def python_analysis(root: Path) -> Analysis:
             except Exception:
                 names = []
             got = set()
+            owners[site] = set()
             for n in names:
                 try:
                     where = str(Path(n.module_path).relative_to(root)) if n.module_path else "<builtin>"
                 except ValueError:
                     where = "<external>"
                 got.add((where, n.line))
+                try:
+                    parent = n.parent()
+                except Exception:
+                    parent = None
+                if parent is not None and parent.type == "class":
+                    owners[site].add(parent.name)
             memo[site] = got or None
         return memo[site]
+
+    assigned: dict[Site, set[str]] = {}
+
+    def receiver_types(site: Site) -> set[str]:
+        """The classes jedi infers for every assignment of a call's receiver (`x` in `x.m()`, `h` in `self.h.m()`):
+        in the receiver's own scope for a local, anywhere in the file for an attribute."""
+        if site not in assigned:
+            assigned[site] = set()
+            line = sources[site.path].split("\n")[site.line - 1]
+            end = start = site.col - 1
+            while start > 0 and (line[start - 1].isalnum() or line[start - 1] == "_"):
+                start -= 1
+            if 0 <= start < end and line[end] == ".":
+                try:
+                    s = script(site.path)
+                    here = s.goto(site.line, start)
+                    defs = [r for r in s.get_references(site.line, start, scope="file") if r.is_definition()]
+                    if here and not (start and line[start - 1] == "."):  # a local: its scope's assignments
+                        scope = here[0].parent()
+                        defs = [r for r in defs if (p := r.parent()) and scope and p.line == scope.line]
+                    assigned[site] = {t.name for r in defs for t in r.infer()}
+                except Exception:
+                    pass
+        return assigned[site]
+
+    def may_reach(site: Site, d: Def, got: set) -> bool:
+        """Whether dispatch can take a call jedi resolved elsewhere to d, a method: the call resolves to a base
+        class's method (`self.run()` in Base, `m.keys()` on a typing.Mapping), or its receiver is also assigned
+        an instance of d's class somewhere jedi's typing didn't follow (pytest's `rewrite_hook`)."""
+        if "." not in d.qualname:
+            return False  # a function: nothing dispatches to it
+        cls = d.qualname.split(".")[-2]
+        if owners.get(site, set()) & _reachable(bases, cls):
+            return True
+        if not any(where in sources for where, _ in got):
+            return False  # a builtin's or a library's own method, not a base class's
+        inheriting = {c for c in _reachable(subclasses, cls) if d.name not in methods.get(c, ())}
+        return bool(receiver_types(site) & ({cls} | inheriting))
 
     import_lines = {rel: gold.python_import_lines(src) for rel, src in sources.items()}
     refs_memo: dict[Def, set | None] = {}
@@ -259,6 +346,7 @@ def python_analysis(root: Path) -> Analysis:
     a.resolve = resolve
     a.identity = lambda d: (d.path, d.line)
     a.references = references
+    a.may_reach = may_reach
     return a
 
 
@@ -401,9 +489,19 @@ def rust_analysis(root: Path, index: Path) -> Analysis:
             and not any(s <= (line, col) < e for s, e in comments.get(path, []))
         }
 
+    def may_reach(site: Site, d: Def, got: set) -> bool:
+        """Whether a call resolved elsewhere can reach d, a method of a trait implementation: a call through a
+        generic or `dyn` resolves to the trait's own method (`Greet#hi().` for `impl#[Dog][Greet]hi().`)."""
+        implemented = re.search(r"\]\[`?(\w+)[^\]]*\]" + re.escape(d.name) + r"\(\)\.$", identity(d) or "")
+        if implemented is None:
+            return False
+        trait = re.compile(rf"(?:^|[ /]){implemented.group(1)}#{re.escape(d.name)}\(\)\.$")
+        return any(trait.search(symbol) for symbol in got)
+
     a.resolve = lambda site: at.get((site.path, site.line, site.col)) or None
     a.identity = identity
     a.references = references
+    a.may_reach = may_reach
     return a
 
 

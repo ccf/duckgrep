@@ -93,6 +93,94 @@ def test_python_questions(tmp_path):
     assert key == ("pkg/other.py", "tests/test_core.py")
 
 
+DISPATCH = """import typing
+
+
+class Base:
+    def run(self):
+        return 0
+
+    def go(self):
+        return self.run()
+
+
+class Child(Base):
+    def run(self):
+        return 1
+
+
+def use(b: Base):
+    return b.run()
+
+
+def direct(c: Child):
+    return c.run()
+
+
+class Params(typing.Mapping):
+    def keys(self):
+        return []
+
+
+def own(p: Params):
+    return p.keys()
+
+
+def plain(d: dict):
+    return d.keys()
+"""
+
+
+def dispatch_repo(tmp_path, extra=""):
+    return repo(tmp_path, {"pkg/__init__.py": "", "pkg/shapes.py": DISPATCH + extra})
+
+
+def test_a_method_that_a_call_to_its_base_class_method_can_reach_is_not_asked_about(tmp_path):
+    # `b.run()` and `self.run()` resolve to Base.run, and dispatch takes them to Child.run for a Child
+    a = st.python_analysis(dispatch_repo(tmp_path))
+    assert a.callers(defn(a, "Child.run")) is None
+    assert st._entries(a.callers(defn(a, "Base.run"))) == {"pkg/shapes.py:Base.go", "pkg/shapes.py:use"}
+    assert st._entries(a.callers(defn(a, "Params.keys"))) == {"pkg/shapes.py:own"}  # a dict's keys is never Params'
+    generic = "\n\ndef generic(m: typing.Mapping):\n    return m.keys()\n"  # but a Mapping's may be
+    a = st.python_analysis(dispatch_repo(tmp_path / "g", generic))
+    assert a.callers(defn(a, "Params.keys")) is None
+
+
+HOOKS = """class Real:
+    def mark(self):
+        return 1
+
+
+class Dummy:
+    def mark(self):
+        return 0
+
+
+class Manager:
+    def __init__(self):
+        self.hook = Dummy()
+
+    def use(self):
+        return self.hook.mark()
+
+
+def install(m: Manager, hook: Real):
+    m.hook = hook
+
+
+def direct(r: Real):
+    return r.mark()
+"""
+
+
+def test_a_method_reachable_through_a_receiver_jedi_narrowed_to_another_class_is_not_asked_about(tmp_path):
+    # pytest: jedi types `self.rewrite_hook` by its first assignment, a DummyRewriteHook, though another assigns
+    # the AssertionRewritingHook whose callers are asked about
+    a = st.python_analysis(repo(tmp_path, {"pkg/__init__.py": "", "pkg/hooks.py": HOOKS}))
+    assert a.callers(defn(a, "Real.mark")) is None
+    assert st._entries(a.callers(defn(a, "Dummy.mark"))) == {"pkg/hooks.py:Manager.use"}
+
+
 def test_a_python_function_also_used_as_a_value_is_not_asked_about(tmp_path):
     # a callback is a reference but not a call: whether its user "calls" it is ambiguous
     a = st.python_analysis(python_repo(tmp_path))
@@ -259,6 +347,54 @@ def lib_repo(tmp_path, with_value_reference):
     path = tmp_path / "lib.scip"
     path.write_bytes(idx.SerializeToString())
     return root, path
+
+
+GREET_RS = """pub trait Greet {
+    fn hi(&self) -> u32;
+}
+
+pub struct Dog;
+
+impl Greet for Dog {
+    fn hi(&self) -> u32 {
+        1
+    }
+}
+
+pub fn direct(d: &Dog) -> u32 {
+    d.hi()
+}
+
+pub fn generic<T: Greet>(t: &T) -> u32 {
+    t.hi()
+}
+"""
+
+
+def test_a_trait_method_a_generic_call_can_reach_is_not_asked_about(tmp_path):
+    # `t.hi()` resolves to the trait's method, and a Dog passed as T runs Dog's
+    trait_hi, dog_hi = (
+        "rust-analyzer cargo demo 0.1.0 Greet#hi().",
+        "rust-analyzer cargo demo 0.1.0 impl#[Dog][Greet]hi().",
+    )
+
+    def analysis(root, source, generic):
+        idx = scip_pb2.Index()
+        doc = idx.documents.add()
+        doc.relative_path = "src/lib.rs"
+        occurrence(doc, source, 1, "hi", trait_hi, definition=True)
+        occurrence(doc, source, 7, "hi", dog_hi, definition=True)
+        occurrence(doc, source, 13, "hi", dog_hi)
+        if generic:
+            occurrence(doc, source, 17, "hi", trait_hi)
+        (root / "index.scip").write_bytes(idx.SerializeToString())
+        return st.rust_analysis(root, root / "index.scip")
+
+    a = analysis(repo(tmp_path, {"src/lib.rs": GREET_RS}), GREET_RS, generic=True)
+    assert a.callers(defn(a, "Dog.hi")) is None
+    alone = GREET_RS.split("pub fn generic")[0]
+    a = analysis(repo(tmp_path / "alone", {"src/lib.rs": alone}), alone, generic=False)
+    assert st._entries(a.callers(defn(a, "Dog.hi"))) == {"src/lib.rs:direct"}
 
 
 def test_rust_calls_inside_macro_invocations_are_call_sites(tmp_path):
