@@ -80,6 +80,27 @@ def test_auth_failure_reports_success_but_is_an_infrastructure_error():
     assert tr.rounds == 0 and m["tool_calls"] == 0 and m["cost_usd"] == 0.0
 
 
+@pytest.mark.parametrize(
+    "error, permanent",
+    [
+        ("authentication_failed", True),
+        ("billing_error", True),
+        ("invalid_request", True),
+        ("Unauthorized", True),  # any value naming auth or billing
+        ("out_of_billing_credits", True),
+        ("rate_limit", False),
+        ("overloaded", False),
+        ("server_error", False),
+        ("unknown", False),
+        ("synthetic", False),  # a synthetic message that says nothing
+        (None, False),  # terminal_reason "api_error" with no error value
+    ],
+)
+def test_an_api_error_is_permanent_only_when_a_retry_cannot_help(error, permanent):
+    tr = stream.Transcript(api_error=error, result={"terminal_reason": "api_error"})
+    assert stream.infrastructure_error(tr) and stream.permanent_error(tr) is permanent
+
+
 def test_truncated_stream_is_an_error():
     with open(os.path.join(RUNS, "plain.jsonl")) as f:
         lines = f.readlines()[:-1] + ['{"type": "resu']

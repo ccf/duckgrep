@@ -64,6 +64,11 @@ def test_batch_records_every_run_once_and_resumes(tmp_path):
     assert again.pending == [] and again.run() is None
 
 
+@pytest.fixture(autouse=True)
+def tiny_retry_waits(monkeypatch):
+    monkeypatch.setattr(config, "RETRY_WAITS_S", (0.01, 0.01, 0.01))
+
+
 def test_a_failed_configuration_check_is_retried_once(tmp_path):
     runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
     batch = runner.Batch(
@@ -78,21 +83,88 @@ def test_a_failed_configuration_check_is_retried_once(tmp_path):
     assert rec["attempt"] == 2 and rec["config_ok"]
 
 
-def test_an_infrastructure_error_stops_the_batch_without_recording(tmp_path):
+def test_a_permanent_infrastructure_error_stops_the_batch_at_once_without_recording(tmp_path):
     runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    calls = []
 
     def execute(r, *a):
-        if r.task.id == "t1":
-            raise runner.InfrastructureError("authentication_failed")
-        return fake_record(r, 1)
+        calls.append(r.task.id)
+        raise runner.InfrastructureError("authentication_failed", cost=0.3, permanent=True)
 
     stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
     assert "authentication_failed" in stopped
-    assert (
-        "t1" not in [x["task"] for x in results(tmp_path / "out")]
-        if (tmp_path / "out/results.jsonl").exists()
-        else True
-    )
+    assert len(calls) == 1 and not (tmp_path / "out/results.jsonl").exists()  # no retry, no second run
+
+
+def unrecorded(out):
+    with open(out / "unrecorded.jsonl") as f:
+        return [json.loads(line) for line in f]
+
+
+def test_a_transient_error_is_retried_and_its_attempt_charged(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(r.task.id)
+        if len(calls) == 1:
+            raise runner.InfrastructureError("overloaded", cost=0.3)
+        return fake_record(r, a[2])
+
+    batch = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None)
+    assert batch.run() is None
+    [rec] = results(tmp_path / "out")
+    assert rec["task"] == "t1" and len(calls) == 2
+    assert [u["cost_usd"] for u in unrecorded(tmp_path / "out")] == [0.3]
+    assert batch.spent == pytest.approx(0.3 + 0.01)
+
+
+def test_a_transient_error_waits_as_long_as_the_configuration_says_and_then_stops_the_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RETRY_WAITS_S", (0.01, 0.02, 0.03))
+    waits = []
+    original = runner.Batch._pause
+    monkeypatch.setattr(runner.Batch, "_pause", lambda self, s: waits.append(s) or original(self, s))
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(r.task.id)
+        raise runner.InfrastructureError("rate_limit", cost=0.1)
+
+    batch = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None)
+    stopped = batch.run()
+    assert "rate_limit" in stopped and waits == [0.01, 0.02, 0.03]
+    assert calls == [runs[0].task.id] * 4  # the first try and three retries; the other task never starts
+    assert len(unrecorded(tmp_path / "out")) == 4 and batch.spent == pytest.approx(0.4)
+    assert not (tmp_path / "out/results.jsonl").exists()
+
+
+def test_a_permanent_error_on_a_retry_stops_the_batch_at_once(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(1)
+        raise runner.InfrastructureError("overloaded" if len(calls) == 1 else "billing_error", permanent=len(calls) > 1)
+
+    stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "billing_error" in stopped and len(calls) == 2
+
+
+def test_an_interrupt_ends_a_retry_wait_promptly(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RETRY_WAITS_S", (60,))
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(1)
+        raise runner.InfrastructureError("overloaded", cost=0.1)
+
+    batch = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None)
+    threading.Timer(0.3, batch.interrupt).start()
+    t0 = time.monotonic()
+    stopped = batch.run()
+    assert "interrupted" in stopped and time.monotonic() - t0 < 10 and len(calls) == 1
 
 
 def test_the_spending_cap_stops_new_runs(tmp_path):
@@ -443,10 +515,10 @@ def test_spend_of_runs_that_were_never_recorded_counts_after_a_resume(tmp_path):
 def test_an_infrastructure_error_and_a_failed_retry_count_their_spend(tmp_path):
     def execute(r, c, o, attempt, cl):
         if r.task.id == "t1":
-            raise runner.InfrastructureError("rate limited", cost=0.3)
+            raise runner.InfrastructureError("rate limited", cost=0.3, permanent=True)
         if attempt == 1:
             return fake_record(r, attempt, ok=False, cost=0.2)  # t2's first attempt fails its check
-        raise runner.InfrastructureError("overloaded", cost=0.0)
+        raise runner.InfrastructureError("overloaded", cost=0.0, permanent=True)
 
     out = tmp_path / "out"
     for t in (task(1), task(2)):

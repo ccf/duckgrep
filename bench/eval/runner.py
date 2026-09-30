@@ -27,12 +27,14 @@ from .suite import Task
 
 
 class InfrastructureError(RuntimeError):
-    """The run failed outside the agent (login, rate limit, API outage). The batch stops; the run is redone later.
-    `cost` is what the run spent before it failed, which still counts against the batch's cap."""
+    """The run failed outside the agent (login, rate limit, API outage). The run is not recorded. A transient
+    error is retried; a permanent one (login, billing, a bad request) stops the batch. `cost` is what the run
+    spent before it failed, which still counts against the batch's cap."""
 
-    def __init__(self, message: str, cost: float = 0.0):
+    def __init__(self, message: str, cost: float = 0.0, permanent: bool = False):
         super().__init__(message)
         self.cost = cost
+        self.permanent = permanent
 
 
 PROBE_TIMEOUT_S = 300
@@ -248,7 +250,9 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             if spent is None:
                 spent = stream.cost(stream.tokens(tr.result, tr.usage_by_message))
             raise InfrastructureError(
-                f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}", cost=spent
+                f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}",
+                cost=spent,
+                permanent=stream.permanent_error(tr),
             )
         record = {
             "task": task.id,
@@ -343,15 +347,42 @@ class Batch:
                 os.fsync(f.fileno())
             self.spent += cost
 
+    def _pause(self, seconds: float) -> bool:
+        """Wait on the batch's condition, so an interrupt (or any stop) ends the wait; False if it was cut short."""
+        deadline = time.monotonic() + seconds
+        with self.cond:
+            while not self.stopped:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return True
+                self.cond.wait(left)
+        return False
+
+    def _attempt(self, r: Run, attempt: int) -> dict:
+        """One execution, redone after each of RETRY_WAITS_S while it fails with a transient API error. Every
+        failed try is charged as unrecorded spend; the last failure, a permanent one, or one after the batch
+        stopped is raised."""
+        for wait in (*config.RETRY_WAITS_S, None):
+            try:
+                return self.execute(r, self.cache, self.out_dir, attempt, self.claude)
+            except InfrastructureError as e:
+                self._charge_unrecorded(r, e.cost, "infrastructure error")
+                if e.permanent or wait is None:
+                    raise
+                self.log(f"transient API error, retrying {r.key} in {wait:g} s: {e}")
+                if not self._pause(wait):
+                    raise
+        raise AssertionError("unreachable")
+
     def _worker(self) -> None:
         while (r := self._take()) is not None:
             try:
-                rec = self.execute(r, self.cache, self.out_dir, 1, self.claude)
+                rec = self._attempt(r, 1)
                 if not rec["config_ok"] and not self.interrupted:  # discard, and retry once
                     self.log(f"config check failed, retrying: {r.key} {rec['config_problems']}")
                     first = rec
                     try:
-                        rec = self.execute(r, self.cache, self.out_dir, 2, self.claude)
+                        rec = self._attempt(r, 2)
                     except BaseException:
                         self._charge_unrecorded(r, charged(first), "discarded attempt")
                         raise
@@ -364,8 +395,7 @@ class Batch:
                     f"[{self.completed}] {r.task.id} {r.setup}-{r.rep}: {rec['tool_calls']} calls, "
                     f"${rec['cost_usd']:.3f}, success={rec['score']['success']}"
                 )
-            except InfrastructureError as e:
-                self._charge_unrecorded(r, e.cost, "infrastructure error")
+            except InfrastructureError as e:  # already charged; retries are spent
                 with self.cond:
                     self.stopped = self.stopped or f"infrastructure error: {e}"
                     self.cond.notify_all()

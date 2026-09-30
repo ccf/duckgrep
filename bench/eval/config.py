@@ -12,6 +12,7 @@ BUILTIN_TOOLS = ("Bash", "Read", "Grep", "Glob")  # Grep and Glob named: the mac
 MAX_TURNS = 40
 MAX_BUDGET_USD = 1.50
 WALL_LIMIT_S = 15 * 60
+RETRY_WAITS_S = (60, 300, 900)  # a transient API error is retried after each wait in turn, then stops the batch
 PARALLEL = 3
 REPETITIONS = 2
 SEED = 20260929
