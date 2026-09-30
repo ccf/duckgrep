@@ -473,7 +473,16 @@ class Batch:
         raise AssertionError("unreachable")
 
     def _worker(self) -> None:
-        while (r := self._take()) is not None:
+        while True:
+            try:
+                r = self._take()
+            except Exception as e:  # the cache's volume unreadable, say: never let the batch look finished
+                with self.cond:
+                    self.stopped = self.stopped or f"could not start another run: {e!r}"
+                    self.cond.notify_all()
+                return
+            if r is None:
+                return
             try:
                 rec = self._attempt(r, 1)
                 if not rec["config_ok"] and not self.interrupted:  # discard, and retry once

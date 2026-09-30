@@ -519,6 +519,18 @@ def test_low_disk_stops_the_batch_before_the_next_run(tmp_path, monkeypatch):
     assert "GB free" in stopped
 
 
+def test_a_lost_cache_volume_stops_the_batch_instead_of_ending_it_as_finished(tmp_path, monkeypatch):
+    def unreadable(path):
+        raise PermissionError(1, "Operation not permitted", str(path))  # a privacy-service outage, say
+
+    monkeypatch.setattr(workspace, "free_gb", unreadable)
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=2, execute_fn=lambda *a: pytest.fail("ran"), log=lambda _: None
+    ).run()
+    assert stopped and "Operation not permitted" in stopped
+
+
 def test_a_harness_fault_stops_the_batch(tmp_path):
     runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
 
