@@ -39,4 +39,4 @@ repos:
         entry: uv run --frozen pytest -q
         language: system
         pass_filenames: false
-        files: ^(src/|tests/|pyproject\.toml$|uv\.lock$)
+        files: ^(src/|tests/|bench/|pyproject\.toml$|uv\.lock$)

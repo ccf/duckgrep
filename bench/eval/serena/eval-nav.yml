@@ -1,0 +1,14 @@
+description: Navigation only; a single project, and no editing, memory, onboarding or shell tools
+prompt: |
+  Serena's code-intelligence tools are available for locating and reading code symbolically
+  (get_symbols_overview, find_symbol, find_referencing_symbols, find_declaration, find_implementations).
+fixed_tools:
+  - initial_instructions
+  - get_symbols_overview
+  - find_symbol
+  - find_referencing_symbols
+  - find_declaration
+  - find_implementations
+  - search_for_pattern
+single_project: true
+structured_tool_output: false
