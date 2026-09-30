@@ -1,8 +1,21 @@
 # duckgrep
 
-A DuckDB index of your codebase for coding agents. It holds symbols, references, imports, a call graph, full text and git history, all queryable with SQL.
+**Grep finds strings. duckgrep answers questions.**
 
-Agents locate code with chains of `grep` → read file → `grep` again. That works for "where is this string" but is slow and token-hungry for structural questions: *who calls this, what does it call, what breaks if I change it, what's dead*. duckgrep parses the repo with tree-sitter into a single DuckDB file and exposes it as **one read-only `query(sql)` MCP tool** whose description carries the whole schema. The agent can write a correct query on its first call.
+Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so questions that take dozens of greps take one query.
+
+## Why it matters
+
+Coding agents find their way around a codebase with chains of `grep` → read file → `grep` again. That works for "where is this string." But the questions that matter when changing code are structural: *who calls this, what does it call, what breaks if I change it, what's dead*. Each one turns into a loop of searches, file reads and guesses, paid for in turns and tokens.
+
+- **It answers structural questions, not text matches.** "Who calls this, and from which function?" is one query, not a search loop. On django, finding every call to `get_or_create` and the function it sits in took 22 grep calls and 58 KB of output, most of it docs, comments and whole files. duckgrep answered it in one query and 9 KB.
+- **It answers questions no tool author anticipated.** Code-navigation tools give agents a fixed menu: find definition, find references. duckgrep gives them a query language. "Public functions in `pricing/` with no callers outside their module" isn't a feature anyone built; the agent just writes the query.
+- **It joins code with its history.** The call graph, git churn and authorship sit in the same place, so an agent can ask "what's risky to change here," which text search can't answer.
+- **It's trustworthy mid-edit.** The index refreshes before every query, so it reflects the agent's latest edits. Every call-graph edge says how it was resolved, so the agent knows when to trust the graph and when to go read the code.
+
+## How it works
+
+duckgrep parses the repo with tree-sitter into a single DuckDB file and exposes it as **one read-only `query(sql)` MCP tool**. The tool's description carries the whole schema, so the agent can write a correct query on its first call.
 
 ```sql
 SELECT * FROM callers('Session.request') WHERE resolution <> 'name';
