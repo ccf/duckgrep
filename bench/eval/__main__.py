@@ -61,17 +61,25 @@ def parser() -> argparse.ArgumentParser:
 
 def build(a) -> int:
     """Draw the suite's tasks by its profile (an unknown name draws like the pilot), minus those its curation
-    file, <suite>-curation.jsonl, drops: one {"id", "reason"} per line."""
+    file, <suite>-curation.jsonl, drops: one {"id", "reason"} per line, with "kind" when it isn't localization.
+    Every id must name a task this build draws: a typo, or a task a filter already rejects, fails the build."""
     cache = config.cache_dir()
     profile = config.PROFILES.get(a.suite, config.PROFILES["pilot"])
     curation = config.SUITES_DIR / f"{a.suite}-curation.jsonl"
-    dropped = {r["id"]: r["reason"] for r in report.load(curation)}
+    rows = report.load(curation)
+    dropped = {r["id"] for r in rows}
     from .tasks import localization, structural
 
+    drawn = {}
     for kind, builder in (("localization", localization), ("structural", structural)):
-        if a.kind not in (kind, "all"):
-            continue
-        tasks = builder.build(seed=a.seed, profile=profile, cache=cache)
+        if a.kind in (kind, "all"):
+            drawn[kind] = builder.build(seed=a.seed, profile=profile, cache=cache)
+    ids = {t.id for tasks in drawn.values() for t in tasks}
+    stale = sorted(r["id"] for r in rows if r.get("kind", "localization") in drawn and r["id"] not in ids)
+    if stale:
+        print(f"{curation.name} names tasks this build did not draw: {stale}", file=sys.stderr)
+        return 2
+    for kind, tasks in drawn.items():
         kept = [t for t in tasks if t.id not in dropped]
         suite.save(config.SUITES_DIR / f"{a.suite}-{kind}.jsonl", kept)
         print(

@@ -7,3 +7,6 @@
 {"id": "tokio-rs__axum-682", "lang": "rust", "reason": "redirect.rs changes only in docs and a deprecation the issue never asks for; the fix is Router.call"}
 {"id": "uutils__coreutils-8433", "lang": "rust", "reason": "format_f32's width change aligns 32-bit floats, which the issue about 16-bit precision never mentions"}
 {"id": "pallets__flask-4045", "lang": "python", "reason": "Blueprint.add_url_rule only turns existing asserts into ValueError, a cleanup the issue gives no reason for; the fix is Blueprint.__init__"}
+{"id": "scikit-learn__scikit-learn-15512", "lang": "python", "reason": "AffinityPropagation.predict only gains an input check (check_array) the issue about non-converged results gives no reason for; the fix is affinity_propagation"}
+{"id": "Automattic__harper-2973", "lang": "rust", "reason": "a near-duplicate of Automattic__harper-2962: another phrase added to the same lint_group registry, at the same base commit"}
+{"id": "Automattic__harper-2976", "lang": "rust", "reason": "a near-duplicate of Automattic__harper-2962: another phrase added to the same lint_group registry"}

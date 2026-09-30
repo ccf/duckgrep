@@ -185,3 +185,21 @@ def test_build_drops_the_tasks_its_curation_file_lists(tmp_path, monkeypatch):
     (tmp_path / "x-curation.jsonl").write_text(json.dumps({"id": "bundled", "reason": "an unrelated feature"}) + "\n")
     assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 0
     assert [t.id for t in suite.load(tmp_path / "x-localization.jsonl")] == ["keep"]
+
+
+def test_build_refuses_a_curation_file_that_names_a_task_it_did_not_draw(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    from bench.eval.tasks import localization
+
+    made = [Task(i, "localization", "rust", "o/r", "c", "p", ("a.rs:f",), "s") for i in ("keep", "bundled")]
+    monkeypatch.setattr(localization, "build", lambda **kw: made)
+    rows = [
+        {"id": "bundled", "reason": "an unrelated feature"},
+        {"id": "Bundled", "reason": "a typo, or a task a filter already drops"},
+        {"id": "o-callers-f", "kind": "structural", "reason": "not built this time, so not checked"},
+    ]
+    (tmp_path / "x-curation.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 2
+    err = capsys.readouterr().err
+    assert "Bundled" in err and "bundled'" not in err and "o-callers-f" not in err
+    assert not (tmp_path / "x-localization.jsonl").exists()
