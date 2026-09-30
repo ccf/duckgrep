@@ -53,7 +53,7 @@ def test_holm():
     assert report.holm([0.5, 0.9]) == pytest.approx([1.0, 1.0])
 
 
-def test_task_means_average_repetitions_and_drop_incomplete_tasks():
+def test_task_means_average_repetitions_and_skip_failed_configurations():
     rows = [
         rec("a", "baseline", 1, calls=10),
         rec("a", "baseline", 2, calls=20),
@@ -61,7 +61,24 @@ def test_task_means_average_repetitions_and_drop_incomplete_tasks():
         rec("c", "baseline", ok=False),
     ]
     assert report.task_means(rows, M["tool calls"]) == {("a", "baseline"): 15.0, ("b", "baseline"): 10.0}
-    assert report.task_means(rows, M["turns to locate"]) == {("a", "baseline"): 2.0}
+    assert report.task_means(rows, M["turns to locate"]) == {("a", "baseline"): 2.0, ("b", "baseline"): 12.0}
+
+
+def test_a_run_that_never_located_counts_as_its_rounds_plus_one():
+    rows = [
+        rec("a", "baseline", located=3),
+        rec("a", "duckgrep", 1, located=2),
+        rec("a", "duckgrep", 2, located=None, calls=5),  # 6 rounds, never saw the answer
+        rec("b", "baseline", located=4),
+        rec("b", "duckgrep", located=2),
+    ]
+    assert report.task_means(rows, M["turns to locate"])[("a", "duckgrep")] == (2 + 7) / 2
+    assert report.task_means(rows, M["located"]) == {
+        ("a", "baseline"): 1.0,
+        ("a", "duckgrep"): 0.5,
+        ("b", "baseline"): 1.0,
+        ("b", "duckgrep"): 1.0,
+    }
 
 
 def test_compare_on_a_log_scale():

@@ -43,7 +43,15 @@ METRICS = (
     Metric("round trips", lambda r: r["rounds"], "log1p", True),
     Metric("tokens", lambda r: r["tokens_total"], "log", True),
     Metric("cost ($)", lambda r: r["cost_usd"], "log", True),
-    Metric("turns to locate", lambda r: r["turns_to_locate"], "diff", True),
+    # a run that never saw a key location counts as its rounds + 1, rather than dropping the task (which would
+    # compare a setup that often fails to locate only on its easy tasks); "located" reports how often that was
+    Metric(
+        "turns to locate",
+        lambda r: r["rounds"] + 1 if r["turns_to_locate"] is None else r["turns_to_locate"],
+        "diff",
+        True,
+    ),
+    Metric("located", lambda r: float(r["turns_to_locate"] is not None), "diff", False),
     Metric("success", lambda r: float(r["score"]["success"]), "diff", False),
     Metric("F1", lambda r: r["score"]["f1"], "diff", False),
 )
