@@ -139,5 +139,6 @@ def test_serenas_instructions_alone_are_not_adoption():
 
     m = stream.metrics(calls("mcp__serena__initial_instructions", "Grep"))
     assert not m["adopted"] and m["mcp_calls"] == 1  # it still costs a call and its tokens
+    assert m["mcp_share"] == 0.0  # and is no share of using the tool
     assert stream.metrics(calls("mcp__serena__initial_instructions", "mcp__serena__find_symbol"))["adopted"]
     assert stream.metrics(calls("mcp__duckgrep__query"))["adopted"]

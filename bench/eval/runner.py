@@ -151,7 +151,7 @@ def measure(tr: stream.Transcript, task: Task, setup_name: str, cache: Path) -> 
         **m,
         "answer": answer,
         "score": score.score(answer, task.gold, task.answer, (str(wt), os.path.realpath(wt))).as_dict(),
-        "turns_to_locate": locate.turns_to_locate(tr, found),
+        "turns_to_locate": locate.turns_to_locate(tr, found, (str(wt), os.path.realpath(wt))),
     }
 
 

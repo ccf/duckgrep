@@ -110,3 +110,12 @@ def test_each_run_invocation_is_kept_in_meta_with_the_harness_commit(tmp_path, m
     meta = json.loads((tmp_path / "runs" / "x" / "meta.json").read_text())
     assert [m["reps"] for m in meta] == [2, 3]
     assert all(len(m["harness"]["commit"]) == 40 and "dirty" in m["harness"] and m["started"] for m in meta)
+
+
+def test_harness_reports_its_commit_and_any_difference_from_it(tmp_path):
+    from eval_helpers import origin
+
+    repo, commit = origin(tmp_path, {"a.py": "x = 1\n"})
+    assert cli.harness(repo) == {"commit": commit, "dirty": False}
+    (repo / "new.py").write_text("")  # an untracked module changes what runs, too
+    assert cli.harness(repo)["dirty"]

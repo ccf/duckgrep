@@ -60,9 +60,10 @@ def test_a_read_that_shows_the_definition_line_locates_it():
     assert locate.turns_to_locate(run(read), [send]) == 1
 
 
-def test_a_decorator_line_counts_as_the_definition():
-    cached = Target("pkg/m.py", "A.f", ((10, 11),))  # @property on line 10, def f on line 11
-    assert locate.turns_to_locate(run(("Grep", {"pattern": "property"}, "pkg/m.py:10:    @property")), [cached]) == 1
+def test_a_decorator_or_attribute_line_alone_does_not_locate_it():
+    cached = Target("pkg/m.py", "A.f", ((11, 11),))  # @property on line 10, def f on line 11
+    assert locate.turns_to_locate(run(("Grep", {"pattern": "property"}, "pkg/m.py:10:    @property")), [cached]) is None
+    assert locate.turns_to_locate(run(("Grep", {"pattern": "def f"}, "pkg/m.py:11:    def f(self):")), [cached]) == 1
 
 
 def test_duckgrep_rows_locate_by_qualified_name_despite_escaped_tabs():
@@ -153,13 +154,13 @@ def test_targets_find_each_definition_at_the_commit():
     sources = {"m.py": py, "lib.rs": rs}
     got = locate.targets(["m.py:A.f", "m.py:g", "m.py:A", "m.py", "m.py:missing", "lib.rs:Foo.bar", "gone.py:x"],
                          sources.get)  # fmt: skip
-    assert got == [
-        Target("m.py", "A.f", ((2, 3),)),
+    assert got == [  # the def/fn/class line; decorators and attributes above it do not count
+        Target("m.py", "A.f", ((3, 3),)),
         Target("m.py", "g", ((7, 7),)),
         Target("m.py", "A", ((1, 1),), "class"),
         Target("m.py"),
         Target("m.py", "missing"),
-        Target("lib.rs", "Foo.bar", ((3, 4),)),
+        Target("lib.rs", "Foo.bar", ((4, 4),)),
         Target("gone.py", "x"),
     ]
 
@@ -168,3 +169,57 @@ def test_a_class_key_is_located_by_its_class_line():
     cls = Target("pkg/m.py", "Config", ((12, 12),), "class")
     out = "class Config(Base):\n    x = 1"
     assert locate.turns_to_locate(run(("Bash", {"command": "cat pkg/m.py"}, out)), [cls]) == 1
+
+
+def test_an_inner_line_number_is_the_line_awk_printed():
+    # awk printing the line it was asked about, then the enclosing def's own number and text
+    tuples = Target("tests/test_requests.py", "test_data_argument_accepts_tuples", ((2605, 2605),))
+    cmd = 'cd tests; for l in 2610 2550; do awk -v l=$l \'NR<=l && /def /{s=NR": "$0} NR==l{print l": "s}\' test_requests.py; done'
+    out = "2610: 2605: def test_data_argument_accepts_tuples(data):\n2550: 2546: def test_json_encodes_as_bytes():"
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, out)), [tuples]) == 1
+
+
+def test_a_same_named_method_of_another_type_is_not_the_function():
+    test_fn = Target("crates/ignore/src/walk.rs", "max_depth", ((1900, 1900),))  # a test fn inside mod tests
+    rows = "path\tqualname\tstart_line\ncrates/ignore/src/walk.rs\tWalkBuilder.max_depth\t800"
+    call = ("mcp__duckgrep__query", {"sql": "SELECT * FROM defs('max_depth')"}, json.dumps({"result": rows}))
+    assert locate.turns_to_locate(run(call), [test_fn]) is None
+    serena = [{"name_path": "tests/max_depth", "relative_path": "crates/ignore/src/walk.rs"}]  # a module prefix is fine
+    assert locate.turns_to_locate(run(("mcp__serena__find_symbol", {}, json.dumps(serena))), [test_fn]) == 1
+
+
+def test_the_working_directory_carries_across_bash_calls_and_paths_are_normalised():
+    tuples = Target("tests/test_requests.py", "test_data_argument_accepts_tuples", ((2605, 2605),))
+    first = ("Bash", {"command": "cd tests; ls"}, "test_requests.py")
+    again = ("Bash", {"command": "cd ../tests && grep -n 'def test_data' ./test_requests.py"},
+             "2605:def test_data_argument_accepts_tuples(data):")  # fmt: skip
+    assert locate.turns_to_locate(run(first, again), [tuples]) == 2
+    haystack = Target("crates/core/haystack.rs", "Haystack.is_explicit", ((131, 131),))
+    up = ("Bash", {"command": "cd crates/ignore/src; grep -n 'fn is_explicit' ../../core/haystack.rs"},
+          "131:    pub(crate) fn is_explicit(&self) -> bool {")  # fmt: skip
+    assert locate.turns_to_locate(run(up), [haystack]) == 1
+
+
+def test_a_deeper_file_with_the_same_ending_is_another_file():
+    conftest = Target("conftest.py", "fixture", ((5, 5),))
+    shown = ("Grep", {"pattern": "def fixture"}, "testing/conftest.py:5:def fixture():")
+    assert locate.turns_to_locate(run(shown), [conftest]) is None
+    root = ("Read", {"file_path": "/wt/conftest.py", "offset": 4, "limit": 2}, "5\tdef fixture():")
+    assert locate.turns_to_locate(run(root), [conftest], roots=("/wt",)) == 1
+
+
+def test_output_without_line_numbers_counts_only_for_a_file_the_call_names():
+    helper = Target("pkg/a/utils.py", "helper", ((3, 3),))
+    other = ("Bash", {"command": "cat pkg/b/utils.py"}, "def helper(x):\n    return x")
+    assert locate.turns_to_locate(run(other), [helper]) is None
+    this = ("Bash", {"command": "cd pkg/a; cat utils.py"}, "def helper(x):\n    return x")
+    assert locate.turns_to_locate(run(this), [helper]) == 1
+
+
+def test_a_glob_is_not_a_file():
+    # a glob beside one named file: its numbered lines may come from any of them, so they are not pinned to it
+    other = Target("src/a.py", "other", ((4, 4),))
+    both = ("Bash", {"command": "awk '{print NR\": \"$0}' src/a.py src/*.py"}, "4: x = 1")
+    ev, _ = locate.evidence(stream.Call("1", *both[:1], 1, both[1], both[2]))
+    assert ev.files == ["src/a.py"] and ev.pairs == []
+    assert locate.turns_to_locate(run(both), [other]) is None

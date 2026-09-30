@@ -1,18 +1,22 @@
 """Turns-to-locate: the first round trip whose tool results show a gold location.
 
-A function key counts as located when a result shows its definition, in any of three ways:
-- its `def`/`fn`/`class` line (or a decorator or attribute above it), by line number in its file, as Read, Grep,
-  grep -n, sed -n and Serena's symbol locations show it;
+A function key counts as located when a result identifies it, in any of three ways:
+- its `def`/`fn`/`class` line, by line number in its file, as Read, Grep, grep -n, sed -n and Serena's symbol
+  locations show it;
 - its qualified name in its file, from a structured result (a duckgrep row, a Serena symbol);
 - in output without usable line numbers, its definition line, when the call names its file or, naming no file,
   the function itself.
-A call to it, a docstring, or another function with the same name does not count. A file key counts as located
-when a call or its result names the file.
+A call to it, a docstring, a decorator, or another function with the same name does not count. A file key counts
+as located when a call or its result names the file.
+
+Paths are compared relative to the repository root: a run's worktree root is stripped, and relative paths are
+resolved against the directory its shell has `cd`-ed to, which persists across Bash calls.
 """
 
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -21,12 +25,14 @@ from . import gold
 from .stream import Call, Transcript
 
 EXTENSIONS = ("py", "pyi", "rs")
-SOURCE = rf"[\w./@+-]*?\.(?:{'|'.join(EXTENSIONS)})"
+SOURCE = rf"[\w./@+*-]*?\.(?:{'|'.join(EXTENSIONS)})"
 PATH_LINE = re.compile(rf"^\s*(?P<path>{SOURCE})[:-](?P<n>\d+)[:-]")  # grep -rn, rg -n, Grep across files
 LEAD = re.compile(r"^\s*(?P<n>\d+)(?:\t|:|-)")  # one file: Read, grep -n, cat -n
-FILE = re.compile(rf"(?<![\w/.@+-])({SOURCE})(?![\w.])")
+INNER = re.compile(r"^\s*\d+(?:\t|:|-)\s*(?P<n>\d+)(?:\t|:|-)")  # awk printing a line number before another
+FILE = re.compile(rf"(?<![\w/.@+*-])({SOURCE})(?![\w.])")
 SED = re.compile(r"\bsed\s+-n\s+['\"]?(\d+),(\d+)p")
-CD = re.compile(r"^\s*cd\s+(\S+)\s*(?:;|&&)")
+CD = re.compile(r"^\s*cd\s+(\S+)\s*$")
+SEPARATORS = re.compile(r"&&|\|\||;|\||\n")
 SERENA_MARK = re.compile(r"^\s*>\s*(\d+):")  # a reference line in Serena's content_around_reference
 GENERIC = {"__init__.py", "__main__.py", "mod.rs", "lib.rs", "main.rs"}  # file names that need their directory
 
@@ -35,7 +41,7 @@ GENERIC = {"__init__.py", "__main__.py", "mod.rs", "lib.rs", "main.rs"}  # file 
 class Target:
     path: str
     qualname: str = ""  # "" for a file key
-    spans: tuple[tuple[int, int], ...] = ()  # (first line, def line) per definition; () when not found
+    spans: tuple[tuple[int, int], ...] = ()  # the def lines, as (first, last) ranges; () when not found
     kind: str = "function"
 
 
@@ -56,7 +62,8 @@ def targets(entries: Iterable[str], read: Callable[[str], str | None]) -> list[T
                 units = []
         found = [u for u in units if u.qualname == qual]
         kind = "class" if any(u.kind == "class" for u in found) else "function"
-        out.append(Target(path, qual, tuple((u.start, u.head or u.start) for u in found), kind))
+        heads = tuple((u.head or u.start, u.head or u.start) for u in found)
+        out.append(Target(path, qual, heads, kind))
     return out
 
 
@@ -69,18 +76,50 @@ class Evidence:
     text: str = ""  # the call's input and result
 
 
-def _join(cwd: str | None, path: str) -> str:
-    return f"{cwd.rstrip('/')}/{path}" if cwd and not path.startswith("/") else path
+def _path(path: str, cwd: str, roots: tuple[str, ...]) -> str:
+    """A path as the repository sees it: relative ones resolved against the shell's directory, the worktree's
+    root stripped, normalised. An absolute path outside every root stays absolute."""
+    path = path.strip().strip("'\"")
+    if not path.startswith("/"):
+        path = posixpath.join(cwd, path) if cwd else path
+    path = posixpath.normpath(path)
+    for root in roots:
+        root = posixpath.normpath(root)
+        if path == root:
+            return ""
+        if path.startswith(root + "/"):
+            return path[len(root) + 1 :]
+    return "" if path == "." else path
 
 
-def _input_files(call: Call) -> tuple[list[str], str | None]:
-    """The source files a call's input names, relative ones joined to a leading `cd`, and that directory."""
-    if call.name == "Bash":
-        command = call.input.get("command", "")
-        cd = CD.match(command)
-        cwd = cd.group(1).strip("'\"") if cd else None
-        return sorted({_join(cwd, f) for f in FILE.findall(command)}), cwd
-    return sorted({f for v in call.input.values() if isinstance(v, str) for f in FILE.findall(v)}), None
+def same_path(shown: str, path: str) -> bool:
+    """`shown` names `path`: equal, or, for an absolute path outside the known roots, ending with it."""
+    return shown == path or (shown.startswith("/") and shown.endswith("/" + path))
+
+
+def _is_glob(token: str) -> bool:
+    name = token.rsplit("/", 1)[-1]
+    return "*" in token or name.startswith(".")
+
+
+def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bool, str, str]:
+    """The files a command names (resolved), whether it names a glob, the directory its output paths are
+    relative to, and the shell's directory after it."""
+    files: list[str] = []
+    globbed = False
+    here = None
+    for part in SEPARATORS.split(command):
+        if m := CD.match(part):
+            cwd = _path(m.group(1), cwd, roots)
+            continue
+        if here is None and part.strip():
+            here = cwd  # output paths are relative to where the first command ran
+        for token in FILE.findall(part):
+            if _is_glob(token):
+                globbed = True
+            else:
+                files.append(_path(token, cwd, roots))
+    return sorted(set(files)), globbed, cwd if here is None else here, cwd
 
 
 def _duckgrep(result: str, ev: Evidence) -> None:
@@ -139,15 +178,28 @@ def _serena(node, path: str | None, ev: Evidence) -> None:
                 _serena(value, path, ev)
 
 
-def evidence(call: Call) -> Evidence:
-    """What one tool call showed: numbered lines placed in files, symbols it named, and the rest."""
-    files, cwd = _input_files(call)
-    ev = Evidence(files=files, text=json.dumps(call.input) + "\n" + call.result)
+def _number(line: str) -> int | None:
+    """The line number a numbered output line gives: the inner one when awk prints one before another."""
+    m = INNER.match(line) or LEAD.match(line)
+    return int(m.group("n")) if m else None
+
+
+def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Evidence, str]:
+    """What one tool call showed: numbered lines placed in files, symbols it named, and the rest; and the shell's
+    directory after it."""
+    ev = Evidence(text=json.dumps(call.input) + "\n" + call.result)
+    if call.name == "Bash":
+        ev.files, globbed, here, cwd = _bash(call.input.get("command", ""), cwd, roots)
+    else:
+        tokens = [t for v in call.input.values() if isinstance(v, str) for t in FILE.findall(v)]
+        globbed = any(_is_glob(t) for t in tokens)
+        ev.files = sorted({_path(t, "", roots) for t in tokens if not _is_glob(t)})
+        here = ""
     if call.name == "Read":
-        path = call.input.get("file_path", "")
+        path = _path(call.input.get("file_path", ""), "", roots)
         for line in call.result.splitlines():
-            if m := LEAD.match(line):
-                ev.pairs.append((path, int(m.group("n"))))
+            if (n := _number(line)) is not None:
+                ev.pairs.append((path, n))
     elif call.name.startswith("mcp__duckgrep"):
         _duckgrep(call.result, ev)
     elif call.name.startswith("mcp__serena"):
@@ -158,23 +210,22 @@ def evidence(call: Call) -> Evidence:
         else:
             _serena(data, call.input.get("relative_path") or None, ev)
     else:  # Grep, Bash, Glob and anything else: text
-        one = files[0] if len(files) == 1 else None
+        one = ev.files[0] if len(ev.files) == 1 and not globbed else None
         for line in call.result.splitlines():
             if m := PATH_LINE.match(line):
-                ev.pairs.append((_join(cwd, m.group("path")), int(m.group("n"))))
-            elif one and (m := LEAD.match(line)):
-                ev.pairs.append((one, int(m.group("n"))))
+                ev.pairs.append((_path(m.group("path"), here, roots), int(m.group("n"))))
+            elif one and (n := _number(line)) is not None:
+                ev.pairs.append((one, n))
             else:
                 ev.loose.append(line)
         if one and call.name == "Bash":
             for a, b in SED.findall(call.input.get("command", "")):
                 ev.pairs += [(one, n) for n in range(int(a), int(b) + 1)]
-    return ev
+    return ev, cwd
 
 
-def same_path(shown: str, path: str) -> bool:
-    shown = shown.strip().strip("'\"").removeprefix("./")
-    return shown == path or shown.endswith("/" + path)
+def _names_path(text: str, path: str) -> bool:
+    return bool(re.search(rf"(?<![\w.@-]){re.escape(path)}(?!\w)", text))
 
 
 def _mentions(text: str, path: str) -> bool:
@@ -183,9 +234,9 @@ def _mentions(text: str, path: str) -> bool:
         return True
     parts = path.split("/")
     name = parts[-1]
-    if not re.search(rf"(?<![\w.@-]){re.escape(name)}(?!\w)", text):
+    if not _names_path(text, name):
         return False
-    return name not in GENERIC or (len(parts) > 1 and re.search(rf"(?<![\w.@-]){re.escape(parts[-2])}(?!\w)", text))
+    return name not in GENERIC or (len(parts) > 1 and _names_path(text, parts[-2]))
 
 
 def canon(name_path: str) -> str:
@@ -202,6 +253,17 @@ def canon(name_path: str) -> str:
     return ".".join(parts)
 
 
+def _same_symbol(name: str, qualname: str) -> bool:
+    """A structured tool's name for the gold function: its qualified name, or that name under module segments
+    (Serena's `tests/test_fn` for a test inside `mod tests`), never under another type's name."""
+    name, want = canon(name), canon(qualname)
+    if name == want:
+        return True
+    if not name.endswith("." + want):
+        return False
+    return all(seg[:1].islower() or seg[:1] == "_" for seg in name[: -len(want) - 1].split("."))
+
+
 def definition(target: Target) -> re.Pattern | None:
     name = re.escape(target.qualname.split(".")[-1])
     if target.kind == "class" and target.path.endswith((".py", ".pyi")):
@@ -213,32 +275,29 @@ def definition(target: Target) -> re.Pattern | None:
     return None
 
 
-def _names_path(text: str, path: str) -> bool:
-    return bool(re.search(rf"(?<![\w.@-]){re.escape(path)}(?!\w)", text))
-
-
 def _located(ev: Evidence, t: Target, call: Call) -> bool:
     if not t.qualname:
         shown = ev.files + [p for p, _ in ev.pairs]
         return _names_path(ev.text, t.path) or any(same_path(p, t.path) for p in shown)
     if any(same_path(p, t.path) and any(a <= n <= b for a, b in t.spans) for p, n in ev.pairs):
         return True
-    want = canon(t.qualname)
-    if any(same_path(p, t.path) and (canon(n) == want or canon(n).endswith("." + want)) for p, n in ev.names):
+    if any(same_path(p, t.path) and _same_symbol(n, t.qualname) for p, n in ev.names):
         return True
     pattern = definition(t)
     if pattern is None or not any(pattern.search(line) for line in ev.loose):
         return False
-    if _mentions(ev.text, t.path):
-        return True
+    if ev.files:  # the definition must come from a file the call names
+        return any(same_path(f, t.path) for f in ev.files)
     named = re.search(rf"(?<![\w.]){re.escape(t.qualname)}(?!\w)", json.dumps(call.input))
-    return not ev.files and bool(named)
+    return _mentions(ev.text, t.path) or bool(named)
 
 
-def turns_to_locate(tr: Transcript, found: list[Target]) -> int | None:
-    """The first round trip whose tool results show one of `found`; None if none ever did."""
+def turns_to_locate(tr: Transcript, found: list[Target], roots: tuple[str, ...] = ()) -> int | None:
+    """The first round trip whose tool results show one of `found`; None if none ever did. `roots` are the run's
+    worktree paths, stripped from absolute paths."""
+    cwd = ""
     for call in sorted(tr.calls, key=lambda c: c.round):
-        ev = evidence(call)
+        ev, cwd = evidence(call, cwd, roots)
         if any(_located(ev, t, call) for t in found):
             return call.round
     return None

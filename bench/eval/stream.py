@@ -185,7 +185,7 @@ def metrics(tr: Transcript) -> dict:
         "read_calls": counts.get("Read", 0),
         "mcp_calls": mcp,
         "adopted": used > 0,
-        "mcp_share": mcp / total if total else 0.0,
+        "mcp_share": used / total if total else 0.0,
         "denied": len(tr.denied),
         "denied_tools": tr.denied,
         "tokens": tok,

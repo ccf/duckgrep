@@ -18,6 +18,8 @@ from pathlib import Path
 from . import config, report, runner, suite, workspace
 from .setups import SETUPS
 
+REPO = Path(__file__).resolve().parents[2]
+
 
 def setup_list(value: str) -> list[str]:
     names = [s for s in value.split(",") if s]
@@ -84,11 +86,11 @@ def check(tasks: list, setup_names: list[str], cache, claude: str) -> bool:
     return ok
 
 
-def harness() -> dict:
-    """The commit of this repo that measures the runs, and whether its tracked files differ from it."""
-    root = Path(__file__).resolve().parents[2]
+def harness(root: Path = REPO) -> dict:
+    """The commit of this repo that measures the runs, and whether the working tree differs from it (a new,
+    uncommitted module counts)."""
     commit = workspace.git("rev-parse", "HEAD", cwd=root).strip()
-    dirty = bool(workspace.git("status", "--porcelain", "--untracked-files=no", cwd=root).strip())
+    dirty = bool(workspace.git("status", "--porcelain", cwd=root).strip())
     return {"commit": commit, "dirty": dirty}
 
 
@@ -123,9 +125,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no results in {out}")
             return 1
         changed = runner.rescore(out, tasks, cache)
+        missing = changed.pop("missing", 0)
         print(f"rescored {out / 'results.jsonl'} (the first version is results.orig.jsonl); records changed by field:")
         for field, n in sorted(changed.items()):
             print(f"  {field}: {n}")
+        if missing:
+            print(f"{missing} records have no transcript or task and were kept as recorded")
         return 0
     if a.cmd == "prepare":
         out = config.RUNS_DIR / a.suite
