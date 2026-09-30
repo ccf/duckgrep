@@ -179,10 +179,12 @@ def test_by_repo_splits_task_kinds_and_ignores_case():
 
 def test_the_summary_names_what_happened_and_skips_what_did_not():
     rows = [rec("a", "baseline"), {**rec("a", "serena"), "worktree_changes": ["!! Cargo.lock"]}]
-    rows.append({**rec("b", "baseline"), "worktree_changes": ["!! pkg/__pycache__/m.cpython-312.pyc"]})
+    bytecode = ["!! pkg/__pycache__/m.cpython-312.pyc", "!! pkg/sub/__pycache__/n.cpython-312.pyc"]
+    rows.append({**rec("b", "baseline"), "worktree_changes": bytecode})
     text = "\n".join(report.summary(rows))
     assert "wall-clock" not in text and "configuration check" not in text
-    assert "2 left files in their worktree" in text and "Cargo.lock" in text and "pkg/__pycache__/" in text
+    assert "2 left files in their worktree" in text and "Cargo.lock (1 run)" in text
+    assert "Python bytecode (1 run)" in text and "pkg/" not in text  # every __pycache__ is one item
 
 
 def test_setup_costs_show_a_dash_where_a_size_was_not_recorded():

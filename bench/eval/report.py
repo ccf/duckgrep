@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -315,7 +314,7 @@ def setup_costs(prepared: list[dict]) -> list[str]:
 
 def _changed(path: str) -> str:
     path = path[3:] if len(path) > 3 and path[2] == " " else path  # the porcelain status
-    return re.sub(r"__pycache__/.*", "__pycache__/", path)
+    return "Python bytecode" if "__pycache__/" in path or path.endswith(".pyc") else path
 
 
 def summary(records: list[dict]) -> list[str]:

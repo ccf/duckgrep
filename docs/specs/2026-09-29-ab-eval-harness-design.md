@@ -194,6 +194,8 @@ Claude Code's own `total_cost_usd` is recorded but not used, because it swings w
 
 **Turns-to-locate:** the index of the first round trip whose tool results contain a gold location. A match is the gold file together with the gold function's name, or the gold path alone for file keys.
 
+Amended 2026-09-30, after the pilot: the gold function's name counts only where it identifies the function. That means its definition line, by line number in its file (or, in output without line numbers, as a definition in a call that names its file), or its qualified name in its file from duckgrep or Serena. A call, a docstring or a same-named token does not count. The pilot's transcripts showed the looser rule firing early on such mentions and missing duckgrep's escaped rows. The implementation is `bench/eval/locate.py`.
+
 ## Scoring
 
 **Localization:**
