@@ -1,6 +1,6 @@
 """The A/B evaluation of duckgrep against plain Claude Code and Serena.
 
-    uv run python -m bench.eval [--suite pilot] build | prepare | check | run | report
+    uv run python -m bench.eval [--suite pilot] build | prepare | check | run | rescore | report
 
 `build` needs the network; `check` is free; `run` spends money (see --max-total-usd).
 """
@@ -12,9 +12,13 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import config, report, runner, suite, workspace
 from .setups import SETUPS
+
+REPO = Path(__file__).resolve().parents[2]
 
 
 def setup_list(value: str) -> list[str]:
@@ -45,6 +49,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--tasks", help="comma-separated task ids (default: every task)")
     r.add_argument("--name", help="results directory under bench/eval/runs (default: the suite name)")
     r.add_argument("--max-total-usd", type=float, default=200.0, help="stop starting runs past this spend")
+    rs = sub.add_parser("rescore", help="recompute each run's measurements from its transcript, free")
+    rs.add_argument("--name", help="results directory (default: the suite name)")
     rp = sub.add_parser("report", help="write the report")
     rp.add_argument("--name", help="results directory (default: the suite name)")
     rp.add_argument("--write", action="store_true", help="also put it into bench/RESULTS.md")
@@ -80,6 +86,14 @@ def check(tasks: list, setup_names: list[str], cache, claude: str) -> bool:
     return ok
 
 
+def harness(root: Path = REPO) -> dict:
+    """The commit of this repo that measures the runs, and whether the working tree differs from it (a new,
+    uncommitted module counts)."""
+    commit = workspace.git("rev-parse", "HEAD", cwd=root).strip()
+    dirty = bool(workspace.git("status", "--porcelain", cwd=root).strip())
+    return {"commit": commit, "dirty": dirty}
+
+
 def claude_path() -> str:
     found = shutil.which("claude")
     if not found:
@@ -105,6 +119,19 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
         return 0
     tasks = suite.load_suite(a.suite, config.SUITES_DIR)
+    if a.cmd == "rescore":
+        out = config.RUNS_DIR / (a.name or a.suite)
+        if not (out / "results.jsonl").exists():
+            print(f"no results in {out}")
+            return 1
+        changed = runner.rescore(out, tasks, cache)
+        missing = changed.pop("missing", 0)
+        print(f"rescored {out / 'results.jsonl'} (the first version is results.orig.jsonl); records changed by field:")
+        for field, n in sorted(changed.items()):
+            print(f"  {field}: {n}")
+        if missing:
+            print(f"{missing} records have no transcript or task and were kept as recorded")
+        return 0
     if a.cmd == "prepare":
         out = config.RUNS_DIR / a.suite
         out.mkdir(parents=True, exist_ok=True)
@@ -132,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
     out = config.RUNS_DIR / (a.name or a.suite)
     out.mkdir(parents=True, exist_ok=True)
     meta = {
+        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "harness": harness(),
         "suite": a.suite,
         "tasks": len(chosen),
         "setups": a.setups,
@@ -143,7 +172,10 @@ def main(argv: list[str] | None = None) -> int:
         "max_turns": config.MAX_TURNS,
         "max_budget_usd": config.MAX_BUDGET_USD,
     }
-    (out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    path = out / "meta.json"  # one entry per invocation: a resumed batch keeps what started it
+    earlier = json.loads(path.read_text()) if path.exists() else []
+    earlier = [earlier] if isinstance(earlier, dict) else earlier
+    path.write_text(json.dumps(earlier + [meta], indent=2) + "\n")
     runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
     print(f"{len(runs)} runs, results in {out}")
     stopped = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude).run()

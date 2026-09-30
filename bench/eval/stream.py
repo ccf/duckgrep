@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -12,6 +11,7 @@ from datetime import datetime
 from . import config
 
 SEARCH_TOOLS = frozenset({"Grep", "Glob", "Bash"})
+NOT_USE = frozenset({"mcp__serena__initial_instructions"})  # MCP calls that are not using the tool
 BUILTIN_PLUGINS = frozenset({"cc-plugin-agents-md", "cc-plugin-telemetry"})  # cannot be removed; same in every setup
 
 
@@ -164,6 +164,8 @@ def metrics(tr: Transcript) -> dict:
     counts = Counter(c.name for c in tr.calls)
     total = sum(counts.values())
     mcp = sum(n for name, n in counts.items() if name.startswith("mcp__"))
+    # Serena's instructions are a manual, not a lookup: calling only them is not using the tool
+    used = sum(n for name, n in counts.items() if name.startswith("mcp__") and name not in NOT_USE)
     tok = tokens(tr.result, tr.usage_by_message)
     seconds: Counter[str] = Counter()
     for c in tr.calls:
@@ -182,8 +184,8 @@ def metrics(tr: Transcript) -> dict:
         "search_calls": sum(n for name, n in counts.items() if name in SEARCH_TOOLS),
         "read_calls": counts.get("Read", 0),
         "mcp_calls": mcp,
-        "adopted": mcp > 0,
-        "mcp_share": mcp / total if total else 0.0,
+        "adopted": used > 0,
+        "mcp_share": used / total if total else 0.0,
         "denied": len(tr.denied),
         "denied_tools": tr.denied,
         "tokens": tok,
@@ -196,19 +198,3 @@ def metrics(tr: Transcript) -> dict:
         "tool_seconds": {k: round(v, 3) for k, v in seconds.items()},
         "final_text": res.get("result") or "",
     }
-
-
-def turns_to_locate(tr: Transcript, gold: tuple[str, ...] | list[str]) -> int | None:
-    """The first round whose tool results show a key location: the key's path (in the call or its result) with
-    the function's name in the result, or the path alone for a file-only key. None if none ever did."""
-    keys = []
-    for entry in gold:
-        path, _, qual = entry.partition(":")
-        last = qual.split(".")[-1] if qual else ""
-        keys.append((path, re.compile(rf"(?<!\w){re.escape(last)}(?!\w)") if last else None))
-    for call in sorted(tr.calls, key=lambda c: c.round):
-        seen = json.dumps(call.input) + "\n" + call.result
-        for path, name in keys:
-            if path in seen and (name is None or name.search(call.result)):
-                return call.round
-    return None

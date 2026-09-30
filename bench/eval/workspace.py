@@ -3,6 +3,7 @@ index and Serena warm-up for each worktree, and the pinned rust-analyzer."""
 
 from __future__ import annotations
 
+import functools
 import gzip
 import os
 import shutil
@@ -50,6 +51,34 @@ def clone(repo: str, cache: Path, url: str | None = None) -> Path:
 
 # The agent sees its working directory, so the path to a worktree must not name the setup or the tool under test.
 GROUPS = {"baseline": "t1", "duckgrep": "t2", "serena": "t3"}
+
+
+def reader(cache: Path, repo: str, commit: str):
+    """A function giving a file's text at `commit` (None if absent), read from the repo's clone, so what a run did
+    to its worktree cannot change it."""
+    bare = cache / "repos" / f"{slug(repo)}.git"
+
+    def read(path: str) -> str | None:
+        r = subprocess.run(
+            ["git", "--git-dir", str(bare), "show", f"{commit}:{path}"], env=git_env(), capture_output=True
+        )
+        return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
+
+    return read
+
+
+@functools.lru_cache(maxsize=64)
+def listing(cache: Path, repo: str, commit: str) -> frozenset[str] | None:
+    """The files at `commit`, from the repo's clone; None if the clone or the commit is not there."""
+    bare = cache / "repos" / f"{slug(repo)}.git"
+    r = subprocess.run(
+        ["git", "--git-dir", str(bare), "ls-tree", "-r", "--name-only", "-z", commit],
+        env=git_env(),
+        capture_output=True,
+    )
+    if r.returncode:
+        return None
+    return frozenset(p for p in r.stdout.decode("utf-8", "replace").split("\0") if p)
 
 
 def worktree_path(cache: Path, setup: str, repo: str, commit: str) -> Path:
@@ -182,7 +211,8 @@ def serena_warmup(path: Path, repo: str, lang: str, cache: Path) -> dict:
         argv += ["--language", lang, "--log-level", "WARNING"]
         project = serena_project_file(cache, path).parent.parent
         _build(f"warming Serena up on {path}", argv, env, project, timeout=SERENA_TIMEOUT_S)
-    return {"serena_seconds": round(time.monotonic() - started, 1)}
+    size = sum(f.stat().st_size for f in project.rglob("*") if f.is_file())
+    return {"serena_seconds": round(time.monotonic() - started, 1), "serena_mb": round(size / 1e6, 1)}
 
 
 def serena_project_file(cache: Path, path: Path) -> Path:

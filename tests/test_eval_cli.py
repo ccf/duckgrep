@@ -63,3 +63,59 @@ def test_run_stops_before_spending_when_a_setup_is_misconfigured(tmp_path, monke
         tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
     )
     assert cli.main(["run"]) == 1
+
+
+def test_rescore_rewrites_the_named_results(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    assert cli.main(["rescore", "--name", "smoke"]) == 1  # nothing to rescore
+    (tmp_path / "runs" / "smoke").mkdir(parents=True)
+    (tmp_path / "runs" / "smoke" / "results.jsonl").write_text("{}\n")
+    seen = {}
+
+    def rescore(out, tasks, cache):
+        seen.update(out=out, tasks=[t.id for t in tasks], cache=cache)
+        return {"turns_to_locate": 3}
+
+    monkeypatch.setattr(cli.runner, "rescore", rescore)
+    assert cli.main(["rescore", "--name", "smoke"]) == 0
+    assert seen == {"out": tmp_path / "runs" / "smoke", "tasks": ["t1"], "cache": tmp_path / "cache"}
+    assert "turns_to_locate: 3" in capsys.readouterr().out
+
+
+def test_each_run_invocation_is_kept_in_meta_with_the_harness_commit(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(cli, "claude_path", lambda: "true")
+    monkeypatch.setattr(cli.runner, "probe", lambda task, setup, cache, claude: [])
+
+    class Batch:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(cli.runner, "Batch", Batch)
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    assert cli.main(["run", "--name", "x"]) == 0
+    assert cli.main(["run", "--name", "x", "--reps", "3"]) == 0  # resuming, say
+    meta = json.loads((tmp_path / "runs" / "x" / "meta.json").read_text())
+    assert [m["reps"] for m in meta] == [2, 3]
+    assert all(len(m["harness"]["commit"]) == 40 and "dirty" in m["harness"] and m["started"] for m in meta)
+
+
+def test_harness_reports_its_commit_and_any_difference_from_it(tmp_path):
+    from eval_helpers import origin
+
+    repo, commit = origin(tmp_path, {"a.py": "x = 1\n"})
+    assert cli.harness(repo) == {"commit": commit, "dirty": False}
+    (repo / "new.py").write_text("")  # an untracked module changes what runs, too
+    assert cli.harness(repo)["dirty"]

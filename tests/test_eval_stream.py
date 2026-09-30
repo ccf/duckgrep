@@ -115,14 +115,6 @@ def test_config_check_on_the_free_probe_sees_the_setup_before_the_login_fails():
     assert stream.config_problems(tr, BUILTINS | {"mcp__tiny__ping"}, {"tiny"}, model="claude-sonnet-5-5") == []
 
 
-def test_turns_to_locate():
-    assert stream.turns_to_locate(run("plain"), ["src/a.py:needle_fn"]) == 1  # grep content shows path and name
-    assert stream.turns_to_locate(run("mcp"), ["src/a.py:needle_fn"]) == 3  # file list first, then the read
-    assert stream.turns_to_locate(run("mcp"), ["src/a.py"]) == 2  # a file-only key needs the path alone
-    assert stream.turns_to_locate(run("plain"), ["src/a.py:Other.needle"]) is None
-    assert stream.turns_to_locate(run("auth_failure"), ["src/a.py"]) is None
-
-
 def test_a_run_cut_off_before_its_result_is_measured_from_its_messages():
     import json
 
@@ -139,3 +131,14 @@ def test_a_run_cut_off_before_its_result_is_measured_from_its_messages():
     assert 0 < m["tokens"]["output"] < 425  # output only as far as each message had got when it started
     assert not m["usage_complete"] and m["cost_usd"] > 0
     assert stream.metrics(run("mcp"))["usage_complete"]
+
+
+def test_serenas_instructions_alone_are_not_adoption():
+    def calls(*names):
+        return stream.Transcript(calls=[stream.Call(str(i), n, i, {}) for i, n in enumerate(names, 1)])
+
+    m = stream.metrics(calls("mcp__serena__initial_instructions", "Grep"))
+    assert not m["adopted"] and m["mcp_calls"] == 1  # it still costs a call and its tokens
+    assert m["mcp_share"] == 0.0  # and is no share of using the tool
+    assert stream.metrics(calls("mcp__serena__initial_instructions", "mcp__serena__find_symbol"))["adopted"]
+    assert stream.metrics(calls("mcp__duckgrep__query"))["adopted"]

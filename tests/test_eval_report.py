@@ -142,3 +142,58 @@ def test_setups_are_compared_on_the_repetitions_both_have():
         rows += [rec(f"t{i}", "duckgrep", 1, calls=10)]
     [c] = [c for c in report.comparisons(rows) if c.setup == "duckgrep" and c.metric.name == "tool calls"]
     assert c.effect == pytest.approx(1.0) and c.n == 3
+
+
+def test_tables_show_raw_and_corrected_p_and_say_when_nothing_can_pass():
+    text = report.build(records(), [], "pilot")
+    assert "| p | p (Holm) |" in text
+    # 6 tasks: the smallest two-sided Wilcoxon p is 2/2^6, and Holm multiplies it by the number of comparisons
+    assert "no comparison can reach p < 0.05" in text
+
+
+def test_shares_read_as_percentages_and_their_differences_as_points():
+    rows = []
+    for i in range(4):
+        rows.append(rec(f"t{i}", "baseline", success=i < 2))
+        rows.append(rec(f"t{i}", "duckgrep", success=True))
+    text = report.build(rows, [], "x")
+    line = next(ln for ln in text.splitlines() if ln.startswith("| success |") and "duckgrep" in ln)
+    assert "| 50% |" in line and "duckgrep 100%" in line and "+50 pp [" in line
+
+
+def test_the_report_says_how_count_ratios_are_taken():
+    assert "1 + n" in report.build(records(), [], "x")
+
+
+def test_by_repo_splits_task_kinds_and_ignores_case():
+    rows = [
+        rec("a", "baseline", repo="BurntSushi/ripgrep", kind="structural"),
+        rec("b", "baseline", repo="burntsushi/ripgrep", kind="structural"),
+        rec("c", "baseline", repo="burntsushi/ripgrep", kind="localization"),
+    ]
+    table = report.repo_table(rows)
+    assert table[2].startswith("| kind | repo |")
+    body = [ln for ln in table if ln.startswith("| localization") or ln.startswith("| structural")]
+    assert len(body) == 2 and any("| structural | burntsushi/ripgrep | baseline | 2 |" in ln.lower() for ln in body)
+
+
+def test_the_summary_names_what_happened_and_skips_what_did_not():
+    rows = [rec("a", "baseline"), {**rec("a", "serena"), "worktree_changes": ["!! Cargo.lock"]}]
+    bytecode = ["!! pkg/__pycache__/m.cpython-312.pyc", "!! pkg/sub/__pycache__/n.cpython-312.pyc"]
+    rows.append({**rec("b", "baseline"), "worktree_changes": bytecode})
+    text = "\n".join(report.summary(rows))
+    assert "wall-clock" not in text and "configuration check" not in text
+    assert "2 left files in their worktree" in text and "Cargo.lock (1 run)" in text
+    assert "Python bytecode (1 run)" in text and "pkg/" not in text  # every __pycache__ is one item
+
+
+def test_setup_costs_show_a_dash_where_a_size_was_not_recorded():
+    rows = [
+        {"setup": "duckgrep", "index_seconds": 2.0, "index_mb": 5.0},
+        {"setup": "serena", "serena_seconds": 3.0},
+    ]
+    table = report.setup_costs(rows)
+    assert "| duckgrep | 1 | 2 | 5 |" in table and "| serena | 1 | 3 | – |" in table
+    assert "| serena | 1 | 3 | 7 |" in report.setup_costs(
+        [{"setup": "serena", "serena_seconds": 3.0, "serena_mb": 7.0}]
+    )

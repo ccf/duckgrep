@@ -17,11 +17,12 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, score, setups, stream, workspace
+from . import config, locate, score, setups, stream, workspace
 from .suite import Task
 
 
@@ -135,6 +136,68 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
     return problems
 
 
+def visible(cache: Path, task: Task, left: list[str]) -> set[str] | None:
+    """The files a run could see: those at the task's commit and those it created (`left`, its worktree changes
+    in porcelain form). None when the commit cannot be listed."""
+    files = workspace.listing(cache, task.repo, task.commit)
+    if files is None:
+        return None
+    return set(files) | {c[3:] for c in left if c[:2] in ("??", "!!")}
+
+
+def measure(tr: stream.Transcript, task: Task, setup_name: str, cache: Path, left: list[str] | tuple = ()) -> dict:
+    """What a record takes from a run's transcript: the configuration check, the metrics, the answer and its
+    score, and turns to locate. `left` is what the run left in its worktree. `rescore` recomputes exactly
+    these."""
+    setup = setups.SETUPS[setup_name]
+    wt = workspace.worktree_path(cache, setup_name, task.repo, task.commit)
+    m = stream.metrics(tr)
+    answer = score.parse_answer(m["final_text"])
+    problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
+    found = locate.targets(task.gold, workspace.reader(cache, task.repo, task.commit))
+    return {
+        "config_ok": not problems,
+        "config_problems": problems,
+        **m,
+        "answer": answer,
+        "score": score.score(answer, task.gold, task.answer, (str(wt), os.path.realpath(wt))).as_dict(),
+        "turns_to_locate": locate.turns_to_locate(
+            tr, found, (str(wt), os.path.realpath(wt)), visible(cache, task, list(left))
+        ),
+    }
+
+
+def rescore(out_dir: Path, tasks: list[Task], cache: Path) -> Counter:
+    """Recompute every record's `measure` from its saved transcript, after a change to how runs are measured.
+    The results as first written are kept in results.orig.jsonl. Returns how many records each field changed in,
+    and under "missing" how many were kept as recorded, lacking their transcript, task or source."""
+    results = out_dir / "results.jsonl"
+    original = out_dir / "results.orig.jsonl"
+    if not original.exists():
+        shutil.copyfile(results, original)
+    by_id = {t.id: t for t in tasks}
+    changed: Counter = Counter()
+    rows = []
+    for rec in recorded(results):
+        transcript = out_dir / rec["task"] / f"{rec['setup']}-{rec['rep']}.jsonl.gz"
+        task = by_id.get(rec["task"])
+        read = workspace.reader(cache, task.repo, task.commit) if task else None
+        # without the task's source at its commit, turns to locate would lose its definition lines: keep the record
+        sources = task is not None and all(read(e.partition(":")[0]) is not None for e in task.gold)
+        if sources and transcript.exists():
+            with gzip.open(transcript, "rt") as f:
+                new = measure(stream.read(f), task, rec["setup"], cache, rec.get("worktree_changes") or [])
+            changed.update(k for k, v in new.items() if rec.get(k) != v)
+            rec = {**rec, **new}
+        else:
+            changed["missing"] += 1
+        rows.append(rec)
+    tmp = results.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    tmp.replace(results)
+    return changed
+
+
 def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> dict:
     """One run: start claude in the setup's worktree, capture the stream, score it. The worktree is put back at
     the task's commit before the run and after it, however the run ends."""
@@ -187,10 +250,6 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             raise InfrastructureError(
                 f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}", cost=spent
             )
-        m = stream.metrics(tr)
-        answer = score.parse_answer(m["final_text"])
-        roots = (str(wt), os.path.realpath(wt))
-        problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
         record = {
             "task": task.id,
             "setup": run.setup,
@@ -201,14 +260,9 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             "lang": task.lang,
             "repo": task.repo,
             "stratum": task.stratum,
-            "config_ok": not problems,
-            "config_problems": problems,
             "killed": killed,
             "wall_s": round(wall, 1),
-            **m,
-            "answer": answer,
-            "score": score.score(answer, task.gold, task.answer, roots).as_dict(),
-            "turns_to_locate": stream.turns_to_locate(tr, task.gold),
+            **measure(tr, task, run.setup, cache, workspace.changes(wt)),
         }
     finally:
         changed, moved = workspace.reset(wt, task.commit)

@@ -215,7 +215,8 @@ def test_a_serena_warmup_leaves_no_process_and_keeps_only_a_finished_project(tmp
             with pytest.raises(RuntimeError, match="the language server crashed"):
                 workspace.serena_warmup(wt, "o/r", "python", cache)
         else:
-            assert workspace.serena_warmup(wt, "o/r", "python", cache)["serena_seconds"] >= 0
+            row = workspace.serena_warmup(wt, "o/r", "python", cache)
+            assert row["serena_seconds"] >= 0 and row["serena_mb"] >= 0  # the symbol cache it left
         # the server holds Serena's output open, which must not keep the warm-up waiting for it
         assert time.monotonic() - started < 30
         assert project.exists() is not fails  # a half-built project would pass for a finished one next time
@@ -257,3 +258,10 @@ def test_a_commit_the_clone_lacks_is_fetched_by_id(tmp_path):
     second = workspace.git("rev-parse", "HEAD", cwd=src).strip()
     wt = workspace.worktree("o/r", second, "baseline", cache, url=str(src))
     assert (wt / "pkg/a.py").read_text() == "def f():\n    return 2\n"
+
+
+def test_listing_gives_the_files_at_a_commit(tmp_path):
+    src, commit = origin(tmp_path, FILES)
+    workspace.clone("o/r", tmp_path / "cache", url=str(src))
+    assert workspace.listing(tmp_path / "cache", "o/r", commit) == {"pkg/__init__.py", "pkg/a.py"}
+    assert workspace.listing(tmp_path / "cache", "o/gone", commit) is None
