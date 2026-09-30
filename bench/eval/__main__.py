@@ -106,11 +106,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     tasks = suite.load_suite(a.suite, config.SUITES_DIR)
     if a.cmd == "prepare":
-        built = workspace.prepare(tasks, a.setups, cache)
         out = config.RUNS_DIR / a.suite
         out.mkdir(parents=True, exist_ok=True)
         with open(out / "prepare.jsonl", "a") as f:
-            f.writelines(json.dumps(row) + "\n" for row in built)
+
+            def save(row: dict) -> None:  # as each is measured: preparing takes an hour, and a later step can fail
+                f.write(json.dumps(row) + "\n")
+                f.flush()
+
+            workspace.prepare(tasks, a.setups, cache, save=save)
         return 0
     wanted = a.tasks.split(",") if getattr(a, "tasks", None) else None
     chosen = [t for t in tasks if wanted is None or t.id in wanted]

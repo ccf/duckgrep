@@ -1,3 +1,9 @@
+import os
+import shutil
+import subprocess
+import sys
+import time
+
 import pytest
 from eval_helpers import origin
 
@@ -77,6 +83,136 @@ def test_prepare_builds_the_duckgrep_index_once(tmp_path, monkeypatch):
     wt = workspace.worktree_path(tmp_path / "cache", "duckgrep", "o/r", commit)
     assert (wt / ".duckgrep" / "index.duckdb").exists() and workspace.changes(wt) == []
     assert workspace.prepare([task], ["baseline", "duckgrep"], tmp_path / "cache", log=lambda _: None) == []
+
+
+def test_prepare_saves_each_row_before_a_later_step_fails(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, FILES)
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+
+    def index(path):
+        if path.name.startswith("o__b"):
+            raise RuntimeError("indexing o/b failed")
+        return {"index_seconds": 1.0, "index_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "index_duckgrep", index)
+    tasks = [Task(r, "localization", "python", f"o/{r}", commit, "p", ("pkg/a.py:f",), "s") for r in "ab"]
+    saved = []
+    with pytest.raises(RuntimeError, match="indexing o/b failed"):
+        workspace.prepare(tasks, ["duckgrep"], tmp_path / "cache", log=lambda _: None, save=saved.append)
+    assert [(r["setup"], r["repo"], r["index_seconds"]) for r in saved] == [("duckgrep", "o/a", 1.0)]
+
+
+def fake_uvx(tmp_path, monkeypatch, body: str) -> None:
+    """A `uvx` first on PATH that runs `body`, with the warmed-up worktree as `path`, in place of Serena."""
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    exe = bindir / "uvx"
+    exe.write_text(
+        f"#!{sys.executable}\nimport pathlib, subprocess, sys\n"
+        "path = pathlib.Path(sys.argv[sys.argv.index('index') + 1])\n" + body + "\n"
+    )
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+
+def gone(pid: int, within: float = 5.0) -> bool:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_a_serena_warmup_that_leaves_a_file_behind_is_restored_and_noted(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, FILES)
+    cache = tmp_path / "cache"
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    wt = workspace.worktree_path(cache, "serena", "o/r", commit)
+    project = workspace.serena_project_file(cache, wt)
+    fake_uvx(  # like rust-analyzer's cargo writing a Cargo.lock into a repo that commits none
+        tmp_path,
+        monkeypatch,
+        f"p = pathlib.Path({str(project)!r}); p.parent.mkdir(parents=True); p.write_text('')\n"
+        "(path / 'Cargo.lock').write_text('')",
+    )
+    task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
+    built = workspace.prepare([task], ["serena"], cache, log=lambda _: None)
+    assert built[0]["restored"] == ["?? Cargo.lock"] and "serena_seconds" in built[0]
+    assert workspace.changes(wt) == []
+
+
+def test_a_duckgrep_worktree_that_preparing_changed_is_an_error(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, FILES)
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+
+    def index(path):
+        (path / "stray.txt").write_text("")
+        return {"index_seconds": 1.0, "index_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "index_duckgrep", index)
+    task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
+    with pytest.raises(RuntimeError, match="stray.txt"):
+        workspace.prepare([task], ["duckgrep"], tmp_path / "cache", log=lambda _: None)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_a_serena_warmup_leaves_no_process_and_keeps_only_a_finished_project(tmp_path, monkeypatch, fails):
+    src, commit = origin(tmp_path, FILES)
+    cache = tmp_path / "cache"
+    wt = workspace.worktree("o/r", commit, "serena", cache, url=str(src))
+    project = workspace.serena_project_file(cache, wt)
+    pidfile = tmp_path / "server.pid"
+    fake_uvx(
+        tmp_path,
+        monkeypatch,
+        f"p = pathlib.Path({str(project)!r}); p.parent.mkdir(parents=True); p.write_text('')\n"
+        # like Serena starting its language server in a session of its own
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(90)'], start_new_session=True)\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        + ("sys.exit('the language server crashed')" if fails else ""),
+    )
+    started = time.monotonic()
+    try:
+        if fails:
+            with pytest.raises(RuntimeError, match="the language server crashed"):
+                workspace.serena_warmup(wt, "o/r", "python", cache)
+        else:
+            assert workspace.serena_warmup(wt, "o/r", "python", cache)["serena_seconds"] >= 0
+        # the server holds Serena's output open, which must not keep the warm-up waiting for it
+        assert time.monotonic() - started < 30
+        assert project.exists() is not fails  # a half-built project would pass for a finished one next time
+        assert gone(int(pidfile.read_text())), "the language server outlived the warm-up"
+    finally:
+        try:
+            os.kill(int(pidfile.read_text()), 9)
+        except (ProcessLookupError, FileNotFoundError):
+            pass
+
+
+@pytest.mark.skipif(shutil.which("git-lfs") is None, reason="needs git-lfs")
+def test_a_worktree_checks_out_lfs_files_as_their_pointers(tmp_path):
+    # a worktree has no remote to download LFS content from, and no task needs it (lakehq/sail tracks images)
+    src = tmp_path / "origin"
+    src.mkdir()
+    (src / ".gitattributes").write_text("*.png filter=lfs diff=lfs merge=lfs -text\n")
+    (src / "banner.png").write_bytes(b"\x89PNG not really")
+    (src / "a.py").write_text("x = 1\n")
+    lfs = [f"filter.lfs.{k}={v}" for k, v in (("clean", "git-lfs clean -- %f"), ("smudge", "git-lfs smudge -- %f"))]
+    lfs += ["filter.lfs.process=git-lfs filter-process", "filter.lfs.required=true"]
+    git = ["git", "-C", str(src), "-c", "user.name=t", "-c", "user.email=t@t"] + [a for c in lfs for a in ("-c", c)]
+    subprocess.run(["git", "init", "-q", str(src)], check=True)
+    subprocess.run(git + ["add", "-A"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "init"], check=True)
+    commit = workspace.git("rev-parse", "HEAD", cwd=src).strip()
+    wt = workspace.worktree("o/r", commit, "baseline", tmp_path / "cache", url=str(src))
+    assert (wt / "banner.png").read_text().startswith("version https://git-lfs.github.com/spec/v1")
+    assert workspace.changes(wt) == []
 
 
 def test_a_commit_the_clone_lacks_is_fetched_by_id(tmp_path):

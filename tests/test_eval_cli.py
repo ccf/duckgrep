@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import pytest
 
@@ -17,6 +18,26 @@ def test_report_without_results(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
     assert cli.main(["--suite", "nothing", "report"]) == 1
     assert "no results" in capsys.readouterr().out
+
+
+def test_prepare_writes_each_row_as_soon_as_it_is_measured(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    row = {"setup": "duckgrep", "repo": "o/r", "commit": "c", "index_seconds": 1.0, "index_mb": 0.1}
+
+    def prepare(tasks, setups, cache, log=print, save=lambda row: None):
+        save(row)
+        raise RuntimeError("the next repo failed")  # an hour in, say
+
+    monkeypatch.setattr(cli.workspace, "prepare", prepare)
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    with pytest.raises(RuntimeError, match="the next repo failed"):
+        cli.main(["prepare", "--setups", "duckgrep"])
+    saved = tmp_path / "runs" / "pilot" / "prepare.jsonl"
+    assert saved.exists() and [json.loads(line) for line in saved.read_text().splitlines()] == [row]
 
 
 def test_run_rejects_unknown_task_ids(tmp_path, monkeypatch):

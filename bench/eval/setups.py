@@ -56,6 +56,31 @@ def agent_path() -> str:
 RUN_MARKER = "CODE_TASKS_RUN"  # inherited by everything a run starts, so the harness can find it afterwards
 
 
+def sweep(run_id: str) -> None:
+    """Kill every process that still carries the run's marker. Serena starts each language server in a session
+    of its own, so killing the run's process group does not reach them."""
+    import psutil
+
+    marked = []
+    for p in psutil.process_iter():
+        try:
+            if p.environ().get(RUN_MARKER) == run_id:
+                marked.append(p)
+        except (psutil.Error, OSError):
+            continue  # gone, a zombie, or another user's
+    for p in marked:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(marked, timeout=5)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+
+
 def environment(with_user: bool = True, run_id: str | None = None) -> dict[str, str]:
     """A run's entire environment, as `env -i` would give it: nothing of the parent session leaks in. USER is
     what the keychain login needs; without it a run fails at login, before any model call. `run_id` marks
