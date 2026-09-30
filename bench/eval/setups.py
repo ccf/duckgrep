@@ -39,10 +39,24 @@ SETUPS = {
 }
 
 
+def agent_path() -> str:
+    """PATH without the harness's own environment: this repo and the virtualenv running the harness. Otherwise
+    every setup's shell, the baseline's too, could run duckgrep."""
+    own = [config.EVAL_DIR.parents[1].resolve()]
+    if sys.prefix != sys.base_prefix:
+        own.append(Path(sys.prefix).resolve())
+    keep = []
+    for entry in os.environ["PATH"].split(os.pathsep):
+        where = Path(entry).resolve()
+        if entry and not any(where == o or o in where.parents for o in own):
+            keep.append(entry)
+    return os.pathsep.join(keep)
+
+
 def environment(with_user: bool = True) -> dict[str, str]:
     """A run's entire environment, as `env -i` would give it: nothing of the parent session leaks in. USER is
     what the keychain login needs; without it a run fails at login, before any model call."""
-    env = {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"], "TMPDIR": os.environ.get("TMPDIR", "/tmp")}
+    env = {"HOME": os.environ["HOME"], "PATH": agent_path(), "TMPDIR": os.environ.get("TMPDIR", "/tmp")}
     if with_user:
         env["USER"] = os.environ["USER"]
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"

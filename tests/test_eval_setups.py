@@ -106,3 +106,13 @@ def test_serena_home_is_rendered(tmp_path):
     assert "projects: []" in text and "@PROJECTS@" not in text
     context = (home / "contexts" / "eval-nav.yml").read_text()
     assert all(f"  - {tool}" in context for tool in config.SERENA_TOOLS)
+
+
+def test_the_harness_environment_is_off_the_agents_path(monkeypatch):
+    import os
+    from pathlib import Path
+
+    venv_bin = str(Path(sys.prefix) / "bin")  # the tests run in the repo's virtualenv, like the harness
+    inside_repo = str(config.EVAL_DIR.parents[1] / "scripts")
+    monkeypatch.setenv("PATH", os.pathsep.join([venv_bin, inside_repo, "/usr/bin", "/bin"]))
+    assert setups.environment()["PATH"] == os.pathsep.join(["/usr/bin", "/bin"])
