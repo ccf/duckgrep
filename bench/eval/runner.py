@@ -29,6 +29,18 @@ class InfrastructureError(RuntimeError):
     """The run failed outside the agent (login, rate limit, API outage). The batch stops; the run is redone later."""
 
 
+INTERRUPTED = "interrupted; rerun the same command to resume"
+_live: dict[subprocess.Popen, str] = {}  # the runs in flight (process -> run id), for an interrupt
+_live_lock = threading.Lock()
+
+
+def charged(rec: dict) -> float:
+    """What a recorded run may have cost: Claude Code's own total, or the per-run cap when the run left none
+    (a killed run), plus the attempt a failed configuration check discarded."""
+    cost = rec.get("cli_cost_usd")
+    return (config.MAX_BUDGET_USD if cost is None else cost) + (rec.get("discarded_cost_usd") or 0.0)
+
+
 @dataclass(frozen=True)
 class Run:
     task: Task
@@ -47,11 +59,15 @@ def schedule(tasks: list[Task], setup_names: list[str], reps: int, seed: int) ->
     return runs
 
 
-def finished(results: Path) -> set[tuple[str, str, int]]:
+def recorded(results: Path) -> list[dict]:
     if not results.exists():
-        return set()
+        return []
     with open(results) as f:
-        return {(r["task"], r["setup"], r["rep"]) for r in map(json.loads, filter(str.strip, f))}
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def finished(results: Path) -> set[tuple[str, str, int]]:
+    return {(r["task"], r["setup"], r["rep"]) for r in recorded(results)}
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -162,6 +178,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                     stderr=err,
                     start_new_session=True,
                 )
+                with _live_lock:
+                    _live[proc] = run_id
                 try:
                     proc.wait(timeout=config.WALL_LIMIT_S)
                 except subprocess.TimeoutExpired:
@@ -169,6 +187,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                 finally:
                     _kill_group(proc)
                     _sweep(run_id)
+                    with _live_lock:
+                        _live.pop(proc, None)
             wall = time.monotonic() - started
         with open(raw) as f:
             tr = stream.read(f)
@@ -207,7 +227,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
 
 
 class Batch:
-    """Runs a schedule with `parallel` workers. Runs that share a worktree never overlap."""
+    """Runs a schedule with `parallel` workers. Runs that share a worktree never overlap. The spending cap covers
+    what earlier invocations of the same batch spent, so resuming never renews it."""
 
     def __init__(
         self,
@@ -221,19 +242,24 @@ class Batch:
         log: Callable[[str], None] = print,
     ):
         self.results = out_dir / "results.jsonl"
-        done = finished(self.results)
+        earlier = recorded(self.results)
+        done = {(r["task"], r["setup"], r["rep"]) for r in earlier}
         self.pending = [r for r in runs if r.key not in done]
         self.cache, self.out_dir, self.parallel = cache, out_dir, parallel
         self.max_total_usd, self.execute, self.claude, self.log = max_total_usd, execute_fn, claude, log
         self.busy: set[Path] = set()
         self.cond = threading.Condition()
-        self.spent = 0.0
+        self.spent = sum(charged(r) for r in earlier)
         self.stopped: str | None = None
+        self.interrupted = False
         self.completed = 0
+        self.working = 0  # workers still running
 
     def _take(self) -> Run | None:
         with self.cond:
             while True:
+                if not self.stopped and self.spent >= self.max_total_usd:
+                    self.stopped = f"spent ${self.spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
                 if not self.stopped and workspace.free_gb(self.cache) < config.MIN_FREE_GB:
                     self.stopped = f"less than {config.MIN_FREE_GB} GB free under {self.cache}"
                 if self.stopped or not self.pending:
@@ -256,7 +282,7 @@ class Batch:
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
-            self.spent += rec.get("cli_cost_usd") or 0.0
+            self.spent += charged(rec)
             self.completed += 1
             if self.spent >= self.max_total_usd and not self.stopped:
                 self.stopped = f"spent ${self.spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
@@ -265,9 +291,13 @@ class Batch:
         while (r := self._take()) is not None:
             try:
                 rec = self.execute(r, self.cache, self.out_dir, 1, self.claude)
-                if not rec["config_ok"]:  # discard, and retry once
+                if not rec["config_ok"] and not self.interrupted:  # discard, and retry once
                     self.log(f"config check failed, retrying: {r.key} {rec['config_problems']}")
+                    first = rec
                     rec = self.execute(r, self.cache, self.out_dir, 2, self.claude)
+                    rec["discarded_cost_usd"] = charged(first)
+                if self.interrupted:
+                    continue  # a run the interrupt cut short is redone on resume, never scored
                 self._record(rec)
                 self.log(
                     f"[{self.completed}] {r.task.id} {r.setup}-{r.rep}: {rec['tool_calls']} calls, "
@@ -284,12 +314,56 @@ class Batch:
             finally:
                 self._release(r)
 
+    def interrupt(self) -> None:
+        """Stop now: start nothing more and kill the runs in flight. They reset their worktrees as they unwind
+        and are not recorded, so a resume redoes them."""
+        with self.cond:
+            self.interrupted = True
+            self.stopped = INTERRUPTED
+            self.cond.notify_all()
+        with _live_lock:
+            live = list(_live.items())
+        for proc, run_id in live:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            _sweep(run_id)
+
+    def _work(self) -> None:
+        try:
+            self._worker()
+        finally:
+            with self.cond:
+                self.working -= 1
+                self.cond.notify_all()
+
+    def _wait(self) -> None:
+        # not Thread.join: in CPython 3.12 a KeyboardInterrupt inside join() marks the thread stopped while it
+        # still runs, so a second join() would return before the worker had reset its worktree
+        with self.cond:
+            while self.working:
+                self.cond.wait(0.2)
+
     def run(self) -> str | None:
-        """Run everything pending; return why the batch stopped early, or None if it finished."""
+        """Run everything pending; return why the batch stopped early, or None if it finished. Ctrl-C and
+        SIGTERM interrupt it cleanly."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        workers = [threading.Thread(target=self._worker, daemon=True) for _ in range(self.parallel)]
-        for w in workers:
-            w.start()
-        for w in workers:
-            w.join()
+        self.working = self.parallel
+        for _ in range(self.parallel):
+            threading.Thread(target=self._work, daemon=True).start()
+        main = threading.current_thread() is threading.main_thread()
+        previous = signal.signal(signal.SIGTERM, _raise_interrupt) if main else None
+        try:
+            self._wait()
+        except KeyboardInterrupt:
+            self.interrupt()
+            self._wait()
+        finally:
+            if main:
+                signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
         return self.stopped
+
+
+def _raise_interrupt(signum, frame) -> None:
+    raise KeyboardInterrupt

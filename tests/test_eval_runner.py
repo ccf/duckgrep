@@ -286,3 +286,103 @@ def test_a_run_leaves_no_process_behind_even_in_a_session_of_its_own(tmp_path):
             os.kill(child, 9)
         except ProcessLookupError:
             pass
+
+
+def test_the_spending_cap_counts_what_earlier_invocations_spent(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    with open(out / "results.jsonl", "w") as f:
+        for rep in (1, 2, 3):
+            f.write(json.dumps(fake_record(runner.Run(task(9), "baseline", rep), 1, cost=0.01)) + "\n")
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 2, seed=1)
+    stopped = runner.Batch(
+        runs,
+        tmp_path,
+        out,
+        parallel=1,
+        max_total_usd=0.035,
+        execute_fn=lambda r, *a: fake_record(r, 1),
+        log=lambda _: None,
+    ).run()
+    assert "cap" in stopped and len(results(out)) == 4  # one new run takes the total to $0.04
+
+
+def test_a_discarded_attempt_counts_against_the_cap(tmp_path):
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs,
+        tmp_path,
+        tmp_path / "out",
+        parallel=1,
+        max_total_usd=0.035,
+        execute_fn=lambda r, c, o, attempt, cl: fake_record(r, attempt, ok=attempt == 2, cost=0.02),
+        log=lambda _: None,
+    ).run()
+    [rec] = results(tmp_path / "out")
+    assert rec["discarded_cost_usd"] == 0.02 and "cap" in stopped
+
+
+def test_a_killed_run_counts_at_the_per_run_cap(tmp_path):
+    def killed(r, *a):
+        return {**fake_record(r, 1), "killed": True, "cli_cost_usd": None}
+
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, max_total_usd=1.0, execute_fn=killed, log=lambda _: None
+    ).run()
+    assert "cap" in stopped and len(results(tmp_path / "out")) == 1
+
+
+def slow_batch(tmp_path):
+    """A batch of one run whose fake claude signals that it started, leaves a stray file, then hangs."""
+    src, commit = origin(tmp_path, {"src/a.py": "x = 1\n"})
+    cache = tmp_path / "cache"
+    wt = workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    started = tmp_path / "started"
+    hang = f"open({str(started)!r}, 'w').write('1'); import time; time.sleep(20)"
+    exe, _ = fake_claude(tmp_path, recorded_stream("no answer"), extra=hang)
+    runs = runner.schedule([task(1, commit)], ["baseline"], 1, seed=1)
+    return runner.Batch(runs, cache, tmp_path / "out", claude=exe, log=lambda _: None), wt, started
+
+
+def once_started(started, action):
+    def wait_then_act():
+        deadline = time.monotonic() + 20
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        action()
+
+    threading.Thread(target=wait_then_act, daemon=True).start()
+
+
+def test_ctrl_c_stops_live_runs_restores_them_and_records_nothing(tmp_path):
+    import _thread
+
+    batch, wt, started = slow_batch(tmp_path)
+    once_started(started, _thread.interrupt_main)
+    t0 = time.monotonic()
+    try:
+        stopped = batch.run()
+    except KeyboardInterrupt:
+        pytest.fail("Ctrl-C escaped the batch with its runs still going")
+    assert "interrupted" in stopped and time.monotonic() - t0 < 15
+    assert not (tmp_path / "out" / "results.jsonl").exists()
+    assert not (wt / "stray.txt").exists()
+
+
+def test_sigterm_stops_the_batch_like_ctrl_c(tmp_path):
+    import signal
+
+    batch, wt, started = slow_batch(tmp_path)
+    seen = {}
+
+    def terminate():
+        seen["handler"] = signal.getsignal(signal.SIGTERM)
+        if seen["handler"] is not signal.SIG_DFL:  # never kill the test runner itself
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    once_started(started, terminate)
+    stopped = batch.run()
+    assert seen["handler"] is not signal.SIG_DFL, "run() installs no SIGTERM handler"
+    assert "interrupted" in stopped and not (wt / "stray.txt").exists()
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # restored afterwards
