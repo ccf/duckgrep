@@ -63,3 +63,25 @@ def test_run_stops_before_spending_when_a_setup_is_misconfigured(tmp_path, monke
         tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
     )
     assert cli.main(["run"]) == 1
+
+
+def test_rescore_rewrites_the_named_results(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    assert cli.main(["rescore", "--name", "smoke"]) == 1  # nothing to rescore
+    (tmp_path / "runs" / "smoke").mkdir(parents=True)
+    (tmp_path / "runs" / "smoke" / "results.jsonl").write_text("{}\n")
+    seen = {}
+
+    def rescore(out, tasks, cache):
+        seen.update(out=out, tasks=[t.id for t in tasks], cache=cache)
+        return {"turns_to_locate": 3}
+
+    monkeypatch.setattr(cli.runner, "rescore", rescore)
+    assert cli.main(["rescore", "--name", "smoke"]) == 0
+    assert seen == {"out": tmp_path / "runs" / "smoke", "tasks": ["t1"], "cache": tmp_path / "cache"}
+    assert "turns_to_locate: 3" in capsys.readouterr().out

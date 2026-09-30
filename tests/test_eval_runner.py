@@ -471,3 +471,22 @@ def test_a_probe_that_times_out_is_reported_not_raised(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "PROBE_TIMEOUT_S", 1)
     problems = runner.probe(task(1, commit), "baseline", cache, exe)
     assert any("within 1 s" in p for p in problems)
+
+
+def test_rescore_recomputes_what_a_transcript_gives_and_keeps_the_original(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache, out = tmp_path / "cache", tmp_path / "out"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    exe, _ = fake_claude(tmp_path, recorded_stream('```json\n{"locations": ["src/a.py:needle_fn"]}\n```'))
+    t = task(1, commit)
+    rec = runner.execute(runner.Run(t, "baseline", 1), cache, out, 1, exe)
+    stale = {**rec, "turns_to_locate": None, "adopted": True, "score": {"success": False}, "wall_s": 12.5}
+    (out / "results.jsonl").write_text(json.dumps(stale) + "\n")
+    changed = runner.rescore(out, [t], cache)
+    new = json.loads((out / "results.jsonl").read_text())
+    assert new["turns_to_locate"] == 1 and not new["adopted"] and new["score"]["success"]
+    assert new["wall_s"] == 12.5 and new["worktree_changes"] == rec["worktree_changes"]  # not from the transcript
+    assert changed["turns_to_locate"] == 1 and changed["adopted"] == 1
+    assert json.loads((out / "results.orig.jsonl").read_text()) == stale
+    runner.rescore(out, [t], cache)  # again: the original stays the first version
+    assert json.loads((out / "results.orig.jsonl").read_text()) == stale

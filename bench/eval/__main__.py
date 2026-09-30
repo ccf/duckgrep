@@ -1,6 +1,6 @@
 """The A/B evaluation of duckgrep against plain Claude Code and Serena.
 
-    uv run python -m bench.eval [--suite pilot] build | prepare | check | run | report
+    uv run python -m bench.eval [--suite pilot] build | prepare | check | run | rescore | report
 
 `build` needs the network; `check` is free; `run` spends money (see --max-total-usd).
 """
@@ -45,6 +45,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--tasks", help="comma-separated task ids (default: every task)")
     r.add_argument("--name", help="results directory under bench/eval/runs (default: the suite name)")
     r.add_argument("--max-total-usd", type=float, default=200.0, help="stop starting runs past this spend")
+    rs = sub.add_parser("rescore", help="recompute each run's measurements from its transcript, free")
+    rs.add_argument("--name", help="results directory (default: the suite name)")
     rp = sub.add_parser("report", help="write the report")
     rp.add_argument("--name", help="results directory (default: the suite name)")
     rp.add_argument("--write", action="store_true", help="also put it into bench/RESULTS.md")
@@ -105,6 +107,16 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
         return 0
     tasks = suite.load_suite(a.suite, config.SUITES_DIR)
+    if a.cmd == "rescore":
+        out = config.RUNS_DIR / (a.name or a.suite)
+        if not (out / "results.jsonl").exists():
+            print(f"no results in {out}")
+            return 1
+        changed = runner.rescore(out, tasks, cache)
+        print(f"rescored {out / 'results.jsonl'} (the first version is results.orig.jsonl); records changed by field:")
+        for field, n in sorted(changed.items()):
+            print(f"  {field}: {n}")
+        return 0
     if a.cmd == "prepare":
         out = config.RUNS_DIR / a.suite
         out.mkdir(parents=True, exist_ok=True)

@@ -11,6 +11,7 @@ from datetime import datetime
 from . import config
 
 SEARCH_TOOLS = frozenset({"Grep", "Glob", "Bash"})
+NOT_USE = frozenset({"mcp__serena__initial_instructions"})  # MCP calls that are not using the tool
 BUILTIN_PLUGINS = frozenset({"cc-plugin-agents-md", "cc-plugin-telemetry"})  # cannot be removed; same in every setup
 
 
@@ -163,6 +164,8 @@ def metrics(tr: Transcript) -> dict:
     counts = Counter(c.name for c in tr.calls)
     total = sum(counts.values())
     mcp = sum(n for name, n in counts.items() if name.startswith("mcp__"))
+    # Serena's instructions are a manual, not a lookup: calling only them is not using the tool
+    used = sum(n for name, n in counts.items() if name.startswith("mcp__") and name not in NOT_USE)
     tok = tokens(tr.result, tr.usage_by_message)
     seconds: Counter[str] = Counter()
     for c in tr.calls:
@@ -181,7 +184,7 @@ def metrics(tr: Transcript) -> dict:
         "search_calls": sum(n for name, n in counts.items() if name in SEARCH_TOOLS),
         "read_calls": counts.get("Read", 0),
         "mcp_calls": mcp,
-        "adopted": mcp > 0,
+        "adopted": used > 0,
         "mcp_share": mcp / total if total else 0.0,
         "denied": len(tr.denied),
         "denied_tools": tr.denied,

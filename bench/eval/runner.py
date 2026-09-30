@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,6 +136,51 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
     return problems
 
 
+def measure(tr: stream.Transcript, task: Task, setup_name: str, cache: Path) -> dict:
+    """What a record takes from a run's transcript: the configuration check, the metrics, the answer and its
+    score, and turns to locate. `rescore` recomputes exactly these."""
+    setup = setups.SETUPS[setup_name]
+    wt = workspace.worktree_path(cache, setup_name, task.repo, task.commit)
+    m = stream.metrics(tr)
+    answer = score.parse_answer(m["final_text"])
+    problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
+    found = locate.targets(task.gold, workspace.reader(cache, task.repo, task.commit))
+    return {
+        "config_ok": not problems,
+        "config_problems": problems,
+        **m,
+        "answer": answer,
+        "score": score.score(answer, task.gold, task.answer, (str(wt), os.path.realpath(wt))).as_dict(),
+        "turns_to_locate": locate.turns_to_locate(tr, found),
+    }
+
+
+def rescore(out_dir: Path, tasks: list[Task], cache: Path) -> Counter:
+    """Recompute every record's `measure` from its saved transcript, after a change to how runs are measured.
+    The results as first written are kept in results.orig.jsonl. Returns how many records each field changed in."""
+    results = out_dir / "results.jsonl"
+    original = out_dir / "results.orig.jsonl"
+    if not original.exists():
+        shutil.copyfile(results, original)
+    by_id = {t.id: t for t in tasks}
+    changed: Counter = Counter()
+    rows = []
+    for rec in recorded(results):
+        transcript = out_dir / rec["task"] / f"{rec['setup']}-{rec['rep']}.jsonl.gz"
+        if rec["task"] in by_id and transcript.exists():
+            with gzip.open(transcript, "rt") as f:
+                new = measure(stream.read(f), by_id[rec["task"]], rec["setup"], cache)
+            changed.update(k for k, v in new.items() if rec.get(k) != v)
+            rec = {**rec, **new}
+        else:
+            changed["missing"] += 1
+        rows.append(rec)
+    tmp = results.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    tmp.replace(results)
+    return changed
+
+
 def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> dict:
     """One run: start claude in the setup's worktree, capture the stream, score it. The worktree is put back at
     the task's commit before the run and after it, however the run ends."""
@@ -187,10 +233,6 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             raise InfrastructureError(
                 f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}", cost=spent
             )
-        m = stream.metrics(tr)
-        answer = score.parse_answer(m["final_text"])
-        roots = (str(wt), os.path.realpath(wt))
-        problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
         record = {
             "task": task.id,
             "setup": run.setup,
@@ -201,16 +243,9 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             "lang": task.lang,
             "repo": task.repo,
             "stratum": task.stratum,
-            "config_ok": not problems,
-            "config_problems": problems,
             "killed": killed,
             "wall_s": round(wall, 1),
-            **m,
-            "answer": answer,
-            "score": score.score(answer, task.gold, task.answer, roots).as_dict(),
-            "turns_to_locate": locate.turns_to_locate(
-                tr, locate.targets(task.gold, workspace.reader(cache, task.repo, task.commit))
-            ),
+            **measure(tr, task, run.setup, cache),
         }
     finally:
         changed, moved = workspace.reset(wt, task.commit)

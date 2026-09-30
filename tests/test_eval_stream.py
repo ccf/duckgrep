@@ -131,3 +131,13 @@ def test_a_run_cut_off_before_its_result_is_measured_from_its_messages():
     assert 0 < m["tokens"]["output"] < 425  # output only as far as each message had got when it started
     assert not m["usage_complete"] and m["cost_usd"] > 0
     assert stream.metrics(run("mcp"))["usage_complete"]
+
+
+def test_serenas_instructions_alone_are_not_adoption():
+    def calls(*names):
+        return stream.Transcript(calls=[stream.Call(str(i), n, i, {}) for i, n in enumerate(names, 1)])
+
+    m = stream.metrics(calls("mcp__serena__initial_instructions", "Grep"))
+    assert not m["adopted"] and m["mcp_calls"] == 1  # it still costs a call and its tokens
+    assert stream.metrics(calls("mcp__serena__initial_instructions", "mcp__serena__find_symbol"))["adopted"]
+    assert stream.metrics(calls("mcp__duckgrep__query"))["adopted"]
