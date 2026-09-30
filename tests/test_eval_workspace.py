@@ -18,16 +18,47 @@ def test_each_setup_gets_its_own_neutrally_named_worktree(tmp_path):
     assert workspace.worktree("o/r", commit, "baseline", cache, url=str(src)) == paths["baseline"]  # made once
 
 
-def test_restore_reverts_what_a_run_changed_but_keeps_ignored_files(tmp_path):
-    src, commit = origin(tmp_path, {**FILES, ".gitignore": ".cache/\n"})
-    wt = workspace.worktree("o/r", commit, "baseline", tmp_path / "cache", url=str(src))
-    (wt / "pkg/a.py").write_text("changed\n")
+def commit_all(root, message):
+    workspace.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", message, cwd=root)
+    return workspace.git("rev-parse", "HEAD", cwd=root).strip()
+
+
+def test_a_worktree_holds_no_history_after_its_commit(tmp_path):
+    src, task_commit = origin(tmp_path, FILES)
+    (src / "pkg/a.py").write_text("def f():\n    return 2\n")
+    commit_all(src, "fix: the answer")
+    workspace.git("tag", "v2", cwd=src)
+    workspace.git("branch", "later", cwd=src)
+    wt = workspace.worktree("o/r", task_commit, "baseline", tmp_path / "cache", url=str(src))
+    assert workspace.git("rev-list", "--all", cwd=wt).split() == [task_commit]
+    assert workspace.git("for-each-ref", cwd=wt) == ""
+    assert "the answer" not in workspace.git("log", "--all", "--oneline", cwd=wt)
+
+
+def test_reset_puts_back_the_commit_files_and_refs_but_keeps_the_index(tmp_path):
+    src, _ = origin(tmp_path, {**FILES, ".gitignore": "__pycache__/\n"})
+    (src / "pkg/a.py").write_text("def f():\n    return 2\n")
+    task_commit = commit_all(src, "second")
+    wt = workspace.worktree("o/r", task_commit, "baseline", tmp_path / "cache", url=str(src))
+    (wt / ".duckgrep").mkdir()
+    (wt / ".duckgrep/.gitignore").write_text("*\n")
+    (wt / ".duckgrep/index.duckdb").write_text("index")
+    # what an agent's Bash could leave behind
+    workspace.git("checkout", "-q", "--detach", "HEAD~1", cwd=wt)
+    workspace.git("branch", "scratch", cwd=wt)
+    (wt / "pkg/a.py").write_text("edited\n")
     (wt / "notes.txt").write_text("scratch\n")
-    (wt / ".cache").mkdir()
-    (wt / ".cache/x").write_text("kept\n")
-    assert sorted(workspace.restore(wt)) == [" M pkg/a.py", "?? notes.txt"]
-    assert (wt / "pkg/a.py").read_text() == FILES["pkg/a.py"] and not (wt / "notes.txt").exists()
-    assert (wt / ".cache/x").exists() and workspace.restore(wt) == []
+    (wt / "__pycache__").mkdir()
+    (wt / "__pycache__/a.pyc").write_text("x")
+    found, moved = workspace.reset(wt, task_commit)
+    assert moved and {" M pkg/a.py", "?? notes.txt", "!! __pycache__/a.pyc"} <= set(found)
+    assert not any(".duckgrep" in line for line in found)
+    assert workspace.git("rev-parse", "HEAD", cwd=wt).strip() == task_commit
+    assert (wt / "pkg/a.py").read_text() == "def f():\n    return 2\n"
+    assert not (wt / "notes.txt").exists() and not (wt / "__pycache__").exists()
+    assert workspace.git("for-each-ref", cwd=wt) == ""
+    assert (wt / ".duckgrep/index.duckdb").read_text() == "index"
+    assert workspace.reset(wt, task_commit) == ([], False)
 
 
 def test_require_space(tmp_path):

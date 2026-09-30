@@ -127,18 +127,19 @@ def test_runs_sharing_a_worktree_never_overlap(tmp_path):
     assert len(clashes) == 6 and not any(clashes)
 
 
-def fake_claude(tmp_path, stream_lines):
+def fake_claude(tmp_path, stream_lines, extra=""):
     """An executable standing in for `claude`: records its argv and environment, leaves a stray file in its
-    working directory, and prints a recorded stream."""
+    working directory, runs `extra` (Python source), and prints a recorded stream."""
     stream = tmp_path / "stream.jsonl"
     stream.write_text("\n".join(json.dumps(e) for e in stream_lines) + "\n")
     seen = tmp_path / "seen.json"
     exe = tmp_path / "claude"
     exe.write_text(
         f"#!{sys.executable}\n"
-        "import json, os, sys\n"
+        "import json, os, subprocess, sys\n"
         f"json.dump({{'argv': sys.argv, 'env': dict(os.environ)}}, open({str(seen)!r}, 'w'))\n"
         "open('stray.txt', 'w').write('x')\n"
+        f"{extra}\n"
         f"sys.stdout.write(open({str(stream)!r}).read())\n"
     )
     exe.chmod(0o755)
@@ -195,6 +196,23 @@ def test_execute_turns_an_auth_failure_into_an_infrastructure_error(tmp_path):
         exe, _ = fake_claude(tmp_path, [json.loads(line) for line in f])
     with pytest.raises(runner.InfrastructureError):
         runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
+    assert not (workspace.worktree_path(cache, "baseline", "o/r", commit) / "stray.txt").exists()
+
+
+def test_execute_puts_back_a_moved_head_and_ignored_files(tmp_path):
+    src, _ = origin(tmp_path, {"src/a.py": "def needle_fn():\n    pass\n", ".gitignore": "build/\n"})
+    (src / "src/a.py").write_text("def needle_fn():\n    return 1\n")
+    workspace.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "second", cwd=src)
+    commit = workspace.git("rev-parse", "HEAD", cwd=src).strip()
+    cache = tmp_path / "cache"
+    wt = workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    moves = "subprocess.run(['git', 'checkout', '-q', '--detach', 'HEAD~1'], check=True)\n"
+    moves += "os.makedirs('build', exist_ok=True); open('build/out.o', 'w').write('x')"
+    exe, _ = fake_claude(tmp_path, recorded_stream("no answer"), extra=moves)
+    rec = runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
+    assert rec["head_moved"] and "!! build/out.o" in rec["worktree_changes"]
+    assert workspace.git("rev-parse", "HEAD", cwd=wt).strip() == commit
+    assert not (wt / "build").exists() and not (wt / "stray.txt").exists()
 
 
 def test_low_disk_stops_the_batch_before_the_next_run(tmp_path, monkeypatch):

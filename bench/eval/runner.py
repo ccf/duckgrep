@@ -105,7 +105,8 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
 
 
 def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> dict:
-    """One run: start claude in the setup's worktree, capture the stream, score it, restore the worktree."""
+    """One run: start claude in the setup's worktree, capture the stream, score it. The worktree is put back at
+    the task's commit before the run and after it, however the run ends."""
     task, setup = run.task, setups.SETUPS[run.setup]
     wt = workspace.worktree_path(cache, run.setup, task.repo, task.commit)
     if not (wt / ".git").exists():
@@ -114,58 +115,63 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
     run_dir.mkdir(parents=True, exist_ok=True)
     raw = run_dir / f"{run.setup}-{run.rep}.jsonl"
     (cache / "tmp").mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=cache / "tmp") as tmp:
-        argv = setups.command(setup, task.prompt, _mcp_file(setup, task, wt, cache, Path(tmp)), claude=claude)
-        started = time.monotonic()
-        killed = False
-        with open(raw, "w") as out, open(run_dir / f"{run.setup}-{run.rep}.stderr", "w") as err:
-            proc = subprocess.Popen(
-                argv,
-                cwd=wt,
-                env=setups.environment(),
-                stdin=subprocess.DEVNULL,
-                stdout=out,
-                stderr=err,
-                start_new_session=True,
-            )
-            try:
-                proc.wait(timeout=config.WALL_LIMIT_S)
-            except subprocess.TimeoutExpired:
-                killed = True
-            finally:
-                _kill_group(proc)
-        wall = time.monotonic() - started
-    with open(raw) as f:
-        tr = stream.read(f)
-    with open(raw, "rb") as src, gzip.open(raw.with_name(raw.name + ".gz"), "wb") as dst:
-        shutil.copyfileobj(src, dst)
-    raw.unlink()
-    if stream.infrastructure_error(tr) and not killed:
-        raise InfrastructureError(f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}")
-    m = stream.metrics(tr)
-    answer = score.parse_answer(m["final_text"])
-    roots = (str(wt), os.path.realpath(wt))
-    problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
-    return {
-        "task": task.id,
-        "setup": run.setup,
-        "rep": run.rep,
-        "attempt": attempt,
-        "seed": config.SEED,
-        "kind": task.kind,
-        "lang": task.lang,
-        "repo": task.repo,
-        "stratum": task.stratum,
-        "config_ok": not problems,
-        "config_problems": problems,
-        "killed": killed,
-        "wall_s": round(wall, 1),
-        **m,
-        "answer": answer,
-        "score": score.score(answer, task.gold, task.answer, roots).as_dict(),
-        "turns_to_locate": stream.turns_to_locate(tr, task.gold),
-        "worktree_changes": workspace.restore(wt),
-    }
+    workspace.reset(wt, task.commit)  # whatever an interrupted run left behind
+    try:
+        with tempfile.TemporaryDirectory(dir=cache / "tmp") as tmp:
+            argv = setups.command(setup, task.prompt, _mcp_file(setup, task, wt, cache, Path(tmp)), claude=claude)
+            started = time.monotonic()
+            killed = False
+            with open(raw, "w") as out, open(run_dir / f"{run.setup}-{run.rep}.stderr", "w") as err:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=wt,
+                    env=setups.environment(),
+                    stdin=subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=err,
+                    start_new_session=True,
+                )
+                try:
+                    proc.wait(timeout=config.WALL_LIMIT_S)
+                except subprocess.TimeoutExpired:
+                    killed = True
+                finally:
+                    _kill_group(proc)
+            wall = time.monotonic() - started
+        with open(raw) as f:
+            tr = stream.read(f)
+        with open(raw, "rb") as src, gzip.open(raw.with_name(raw.name + ".gz"), "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        raw.unlink()
+        if stream.infrastructure_error(tr) and not killed:
+            raise InfrastructureError(f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}")
+        m = stream.metrics(tr)
+        answer = score.parse_answer(m["final_text"])
+        roots = (str(wt), os.path.realpath(wt))
+        problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
+        record = {
+            "task": task.id,
+            "setup": run.setup,
+            "rep": run.rep,
+            "attempt": attempt,
+            "seed": config.SEED,
+            "kind": task.kind,
+            "lang": task.lang,
+            "repo": task.repo,
+            "stratum": task.stratum,
+            "config_ok": not problems,
+            "config_problems": problems,
+            "killed": killed,
+            "wall_s": round(wall, 1),
+            **m,
+            "answer": answer,
+            "score": score.score(answer, task.gold, task.answer, roots).as_dict(),
+            "turns_to_locate": stream.turns_to_locate(tr, task.gold),
+        }
+    finally:
+        changed, moved = workspace.reset(wt, task.commit)
+    record["worktree_changes"], record["head_moved"] = changed, moved
+    return record
 
 
 class Batch:

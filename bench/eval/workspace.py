@@ -54,30 +54,43 @@ def worktree_path(cache: Path, setup: str, repo: str, commit: str) -> Path:
 
 
 def worktree(repo: str, commit: str, setup: str, cache: Path, url: str | None = None) -> Path:
-    """A detached worktree of `repo` at `commit` for one setup, so no setup sees files another's tools wrote."""
+    """A checkout of `repo` at `commit` for one setup. It is a repository of its own that borrows the clone's
+    objects and has no ref but a detached HEAD, so nothing after `commit` (the fix, later tags, other branches) is
+    reachable from it, and nothing one setup's agent does to git is visible to another's."""
     path = worktree_path(cache, setup, repo, commit)
     if (path / ".git").exists():
         return path
     bare = clone(repo, cache, url)
     if git("cat-file", "-t", commit, cwd=bare, check=False).strip() != "commit":
-        git("fetch", "origin", commit, cwd=bare)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    git("worktree", "add", "--detach", "--force", str(path), commit, cwd=bare)
+        git("fetch", "origin", f"{commit}:refs/eval/{commit}", cwd=bare)  # a ref keeps gc from pruning it
+    tmp = path.with_name(path.name + ".part")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    git("init", "-q", str(tmp))
+    (tmp / ".git" / "objects" / "info" / "alternates").write_text(f"{(bare / 'objects').resolve()}\n")
+    git("checkout", "-q", "--detach", commit, cwd=tmp)
+    tmp.rename(path)
     return path
 
 
 def changes(path: Path) -> list[str]:
-    """Tracked or untracked changes, ignored files excepted (so .duckgrep/ is not a change)."""
-    return [line for line in git("status", "--porcelain", "--untracked-files=all", cwd=path).splitlines() if line]
+    """Tracked, untracked and ignored changes; the duckgrep index is not a change."""
+    out = git("status", "--porcelain", "--ignored", "--untracked-files=all", cwd=path)
+    return [line for line in out.splitlines() if line and not line[3:].startswith(".duckgrep/")]
 
 
-def restore(path: Path) -> list[str]:
-    """Put a worktree back to its commit after a run; return what the run had changed."""
+def reset(path: Path, commit: str) -> tuple[list[str], bool]:
+    """Put a worktree back exactly at `commit`, before and after every run: files (untracked and ignored ones
+    too, but not the duckgrep index), HEAD, and any ref or reflog a run created. Returns what had changed and
+    whether HEAD had moved."""
     found = changes(path)
-    if found:
-        git("checkout", "--force", "HEAD", "--", ".", cwd=path)
-        git("clean", "-fd", cwd=path)
-    return found
+    moved = git("rev-parse", "HEAD", cwd=path).strip() != commit
+    git("checkout", "-q", "--force", "--detach", commit, cwd=path)
+    git("clean", "-ffdxq", "-e", ".duckgrep", cwd=path)
+    for ref in git("for-each-ref", "--format=%(refname)", cwd=path).split():
+        git("update-ref", "-d", ref, cwd=path)
+    git("reflog", "expire", "--expire=now", "--all", cwd=path)
+    return found, moved
 
 
 def free_gb(path: Path) -> float:
