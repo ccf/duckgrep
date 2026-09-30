@@ -112,7 +112,7 @@ def _build(what: str, argv: list[str], env: dict[str, str], partial: Path, timeo
     group, and its output goes to a file, so nothing it leaves running can keep the step waiting. If it fails or
     is interrupted, `partial`, what it built so far, is removed: it would pass for a finished one next time."""
     marker = f"prepare-{uuid.uuid4().hex}"
-    done = None
+    done, failure = None, ""
     with tempfile.TemporaryFile() as out:
         try:
             done = subprocess.run(
@@ -123,14 +123,17 @@ def _build(what: str, argv: list[str], env: dict[str, str], partial: Path, timeo
                 stderr=subprocess.STDOUT,
                 timeout=timeout,
             )
+            failure = f"exit {done.returncode}" if done.returncode else ""
+        except subprocess.TimeoutExpired:
+            failure = f"still running after {timeout:g} s"
         finally:
             setups.sweep(marker)
             if done is None or done.returncode:
                 shutil.rmtree(partial, ignore_errors=True)
-        if done.returncode:
+        if failure:  # with the output, which says where it stopped
             out.seek(0)
             tail = out.read().decode("utf-8", "replace").strip()[-3000:]
-            raise RuntimeError(f"{what} failed (exit {done.returncode}):\n{tail}")
+            raise RuntimeError(f"{what} failed ({failure}):\n{tail}")
 
 
 def index_duckgrep(path: Path) -> dict:
@@ -164,6 +167,9 @@ def rust_analyzer(cache: Path) -> Path:
     return exe
 
 
+SERENA_TIMEOUT_S = 3600  # a warm-up still going after an hour has hung
+
+
 def serena_warmup(path: Path, repo: str, lang: str, cache: Path) -> dict:
     """Create the Serena project with its language pinned (auto-detection asks a question on stdin when a repo
     has files in a second language) and fill its symbol cache, which lives outside the worktree."""
@@ -175,7 +181,7 @@ def serena_warmup(path: Path, repo: str, lang: str, cache: Path) -> dict:
         argv = [shutil.which("uvx") or "uvx", "--from", config.SERENA, "serena", "project", "index", str(path)]
         argv += ["--language", lang, "--log-level", "WARNING"]
         project = serena_project_file(cache, path).parent.parent
-        _build(f"warming Serena up on {path}", argv, env, project, timeout=3600)
+        _build(f"warming Serena up on {path}", argv, env, project, timeout=SERENA_TIMEOUT_S)
     return {"serena_seconds": round(time.monotonic() - started, 1)}
 
 
@@ -201,10 +207,10 @@ def prepare(tasks, setup_names: list[str], cache: Path, log=print, save=None) ->
             elif setup == "serena" and not serena_project_file(cache, path).exists():
                 row = serena_warmup(path, repo, lang, cache)
             leftover = changes(path)
-            if leftover and setup != "serena":
+            if leftover and not (setup == "serena" and row):
                 raise RuntimeError(f"preparing {path} changed it: {leftover[:5]}")
-            if leftover:  # rust-analyzer's cargo writes a Cargo.lock into a repo that commits none; runs restore it too
-                reset(path, commit)
+            if leftover:  # the warm-up's own: rust-analyzer's cargo writes a Cargo.lock into a repo that commits none
+                reset(path, commit)  # and every run restores it the same way
             if row:
                 row = {"setup": setup, "repo": repo, "commit": commit, **row}
                 if leftover:

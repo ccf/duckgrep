@@ -146,6 +146,38 @@ def test_a_serena_warmup_that_leaves_a_file_behind_is_restored_and_noted(tmp_pat
     assert workspace.changes(wt) == []
 
 
+def test_a_serena_worktree_changed_before_preparing_is_an_error(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, FILES)
+    cache = tmp_path / "cache"
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    wt = real("o/r", commit, "serena", cache, url=str(src))
+    project = workspace.serena_project_file(cache, wt)
+    project.parent.mkdir(parents=True)
+    project.write_text("")  # warmed up already, so only a warm-up's own leftovers are restored
+    (wt / "notes.txt").write_text("")  # say, from a run killed before it could restore its worktree
+    task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
+    with pytest.raises(RuntimeError, match="notes.txt"):
+        workspace.prepare([task], ["serena"], cache, log=lambda _: None)
+
+
+def test_a_serena_warmup_that_hangs_is_stopped_and_shows_its_output(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, FILES)
+    cache = tmp_path / "cache"
+    wt = workspace.worktree("o/r", commit, "serena", cache, url=str(src))
+    project = workspace.serena_project_file(cache, wt)
+    fake_uvx(
+        tmp_path,
+        monkeypatch,
+        f"p = pathlib.Path({str(project)!r}); p.parent.mkdir(parents=True); p.write_text('')\n"
+        "print('indexed 40 of 100 files', flush=True)\nimport time; time.sleep(60)",
+    )
+    monkeypatch.setattr(workspace, "SERENA_TIMEOUT_S", 1)
+    with pytest.raises(RuntimeError, match="(?s)1 s.*indexed 40 of 100 files"):
+        workspace.serena_warmup(wt, "o/r", "python", cache)
+    assert not project.exists()
+
+
 def test_a_duckgrep_worktree_that_preparing_changed_is_an_error(tmp_path, monkeypatch):
     src, commit = origin(tmp_path, FILES)
     real = workspace.worktree
