@@ -386,3 +386,71 @@ def test_sigterm_stops_the_batch_like_ctrl_c(tmp_path):
     assert seen["handler"] is not signal.SIG_DFL, "run() installs no SIGTERM handler"
     assert "interrupted" in stopped and not (wt / "stray.txt").exists()
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # restored afterwards
+
+
+def test_spend_of_runs_that_were_never_recorded_counts_after_a_resume(tmp_path):
+    runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 1, seed=1)
+    out = tmp_path / "out"
+    batch = None
+
+    def execute(r, c, o, attempt, cl):
+        if r.task.id == "t1":  # interrupted mid-run
+            batch.interrupt()
+            return fake_record(r, attempt, cost=0.5)
+        return fake_record(r, attempt, cost=0.01)
+
+    batch = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None)
+    batch.run()
+    again = runner.Batch(runs, tmp_path, out, execute_fn=execute, log=lambda _: None)
+    recorded_cost = sum(r["cli_cost_usd"] for r in results(out)) if (out / "results.jsonl").exists() else 0
+    assert again.spent == pytest.approx(recorded_cost + 0.5)
+
+
+def test_an_infrastructure_error_and_a_failed_retry_count_their_spend(tmp_path):
+    def execute(r, c, o, attempt, cl):
+        if r.task.id == "t1":
+            raise runner.InfrastructureError("rate limited", cost=0.3)
+        if attempt == 1:
+            return fake_record(r, attempt, ok=False, cost=0.2)  # t2's first attempt fails its check
+        raise runner.InfrastructureError("overloaded", cost=0.0)
+
+    out = tmp_path / "out"
+    for t in (task(1), task(2)):
+        runner.Batch(
+            runner.schedule([t], ["baseline"], 1, seed=1), tmp_path, out, execute_fn=execute, log=lambda _: None
+        ).run()
+    again = runner.Batch(
+        runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1),
+        tmp_path,
+        out,
+        execute_fn=execute,
+        log=lambda _: None,
+    )
+    assert again.spent == pytest.approx(0.3 + 0.2)
+
+
+def test_a_batch_that_finishes_past_the_cap_has_not_stopped_early(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    out = tmp_path / "out"
+    assert (
+        runner.Batch(
+            runs, tmp_path, out, max_total_usd=0.005, execute_fn=lambda r, *a: fake_record(r, 1), log=lambda _: None
+        ).run()
+        is None
+    )
+    assert (
+        runner.Batch(
+            runs, tmp_path, out, max_total_usd=0.005, execute_fn=lambda *a: pytest.fail("rerun"), log=lambda _: None
+        ).run()
+        is None
+    )
+
+
+def test_a_probe_that_times_out_is_reported_not_raised(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, {"src/a.py": "x = 1\n"})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    exe, _ = fake_claude(tmp_path, [], extra="import time; time.sleep(30)")
+    monkeypatch.setattr(runner, "PROBE_TIMEOUT_S", 1)
+    problems = runner.probe(task(1, commit), "baseline", cache, exe)
+    assert any("within 1 s" in p for p in problems)

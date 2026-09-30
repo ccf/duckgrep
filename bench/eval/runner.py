@@ -26,7 +26,15 @@ from .suite import Task
 
 
 class InfrastructureError(RuntimeError):
-    """The run failed outside the agent (login, rate limit, API outage). The batch stops; the run is redone later."""
+    """The run failed outside the agent (login, rate limit, API outage). The batch stops; the run is redone later.
+    `cost` is what the run spent before it failed, which still counts against the batch's cap."""
+
+    def __init__(self, message: str, cost: float = 0.0):
+        super().__init__(message)
+        self.cost = cost
+
+
+PROBE_TIMEOUT_S = 300
 
 
 INTERRUPTED = "interrupted; rerun the same command to resume"
@@ -139,10 +147,12 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=PROBE_TIMEOUT_S,
             )
+        except subprocess.TimeoutExpired:
+            return [f"the probe did not stop at login within {PROBE_TIMEOUT_S} s"]
         finally:
-            _sweep(run_id)  # Serena starts its language server even when no tool is called
+            _sweep(run_id)  # the timed-out claude too; and Serena starts its language server even when idle
     tr = stream.read(out.stdout.splitlines())
     problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
     if tr.api_error != "authentication_failed":
@@ -196,7 +206,12 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             shutil.copyfileobj(src, dst)
         raw.unlink()
         if stream.infrastructure_error(tr) and not killed:
-            raise InfrastructureError(f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}")
+            spent = tr.result.get("total_cost_usd")
+            if spent is None:
+                spent = stream.cost(stream.tokens(tr.result, tr.usage_by_message))
+            raise InfrastructureError(
+                f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}", cost=spent
+            )
         m = stream.metrics(tr)
         answer = score.parse_answer(m["final_text"])
         roots = (str(wt), os.path.realpath(wt))
@@ -242,6 +257,7 @@ class Batch:
         log: Callable[[str], None] = print,
     ):
         self.results = out_dir / "results.jsonl"
+        self.unrecorded = out_dir / "unrecorded.jsonl"  # spend of runs never recorded: interrupted, failed
         earlier = recorded(self.results)
         done = {(r["task"], r["setup"], r["rep"]) for r in earlier}
         self.pending = [r for r in runs if r.key not in done]
@@ -249,7 +265,7 @@ class Batch:
         self.max_total_usd, self.execute, self.claude, self.log = max_total_usd, execute_fn, claude, log
         self.busy: set[Path] = set()
         self.cond = threading.Condition()
-        self.spent = sum(charged(r) for r in earlier)
+        self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
         self.stopped: str | None = None
         self.interrupted = False
         self.completed = 0
@@ -258,11 +274,13 @@ class Batch:
     def _take(self) -> Run | None:
         with self.cond:
             while True:
-                if not self.stopped and self.spent >= self.max_total_usd:
-                    self.stopped = f"spent ${self.spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
-                if not self.stopped and workspace.free_gb(self.cache) < config.MIN_FREE_GB:
-                    self.stopped = f"less than {config.MIN_FREE_GB} GB free under {self.cache}"
                 if self.stopped or not self.pending:
+                    return None  # nothing pending is a finished batch, whatever it spent
+                if self.spent >= self.max_total_usd:
+                    self.stopped = f"spent ${self.spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
+                elif workspace.free_gb(self.cache) < config.MIN_FREE_GB:
+                    self.stopped = f"less than {config.MIN_FREE_GB} GB free under {self.cache}"
+                if self.stopped:
                     return None
                 for i, r in enumerate(self.pending):
                     wt = workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)
@@ -284,8 +302,17 @@ class Batch:
                 os.fsync(f.fileno())
             self.spent += charged(rec)
             self.completed += 1
-            if self.spent >= self.max_total_usd and not self.stopped:
-                self.stopped = f"spent ${self.spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
+
+    def _charge_unrecorded(self, r: Run, cost: float, why: str) -> None:
+        """Count what a run spent that no results line will show, so a resume counts it too."""
+        with self.cond:
+            with open(self.unrecorded, "a") as f:
+                f.write(
+                    json.dumps({"task": r.task.id, "setup": r.setup, "rep": r.rep, "why": why, "cost_usd": cost}) + "\n"
+                )
+                f.flush()
+                os.fsync(f.fileno())
+            self.spent += cost
 
     def _worker(self) -> None:
         while (r := self._take()) is not None:
@@ -294,16 +321,22 @@ class Batch:
                 if not rec["config_ok"] and not self.interrupted:  # discard, and retry once
                     self.log(f"config check failed, retrying: {r.key} {rec['config_problems']}")
                     first = rec
-                    rec = self.execute(r, self.cache, self.out_dir, 2, self.claude)
+                    try:
+                        rec = self.execute(r, self.cache, self.out_dir, 2, self.claude)
+                    except BaseException:
+                        self._charge_unrecorded(r, charged(first), "discarded attempt")
+                        raise
                     rec["discarded_cost_usd"] = charged(first)
-                if self.interrupted:
-                    continue  # a run the interrupt cut short is redone on resume, never scored
+                if self.interrupted:  # a run the interrupt cut short is redone on resume, never scored
+                    self._charge_unrecorded(r, charged(rec), "interrupted")
+                    continue
                 self._record(rec)
                 self.log(
                     f"[{self.completed}] {r.task.id} {r.setup}-{r.rep}: {rec['tool_calls']} calls, "
                     f"${rec['cost_usd']:.3f}, success={rec['score']['success']}"
                 )
             except InfrastructureError as e:
+                self._charge_unrecorded(r, e.cost, "infrastructure error")
                 with self.cond:
                     self.stopped = self.stopped or f"infrastructure error: {e}"
                     self.cond.notify_all()
