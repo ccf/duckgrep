@@ -30,9 +30,10 @@ python brand/tools/tokens_to_css.py        # brand/tokens.css from brand/tokens.
 
 # The A/B harness. Its cache (clones, worktrees) is ~/.cache/code-tasks; DUCKGREP_EVAL_CACHE moves it, never into ~/git
 uv run python -m bench.eval build        # draw the pilot suites (network): bench/eval/suites/pilot-*.jsonl
-uv run python -m bench.eval prepare      # clones, one worktree per setup, duckgrep index, Serena warm-up
+uv run python -m bench.eval prepare [--parallel 6]   # clones, one worktree per setup, duckgrep index, Serena warm-up, N repo/commit pairs at once
 uv run python -m bench.eval check        # free: each setup's tools and MCP servers, login refused
 uv run python -m bench.eval run --tasks A,B --reps 1 --name smoke   # costs money; rerun to resume
+# setups: baseline, duckgrep, serena, plus duckgrep-hint and serena-hint (the base setup and a hint appended to the system prompt; same worktree as the base); --setups picks a subset
 uv run python -m bench.eval rescore --name pilot                     # free: re-measure saved runs after a metric change
 uv run python -m bench.eval report --write                          # paired statistics into bench/RESULTS.md
 ```
@@ -81,7 +82,8 @@ Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, name
   `_imports_<lang>()` normalises each import into the same key space: relative imports, the `go.mod` module prefix, Rust `crate`/`self`/`super`, other crates' names, uniform paths and inline `mod` blocks. That context (go.mod module paths, Cargo crate names) is stored in `meta('module_ctx')`; when it changes, every file of that language is re-parsed.
 - The extractor is table-driven: each language is a `Spec` of node types (definitions, calls, member access) and of which parent/field puts an identifier into a context such as `write`, `type` or `import`. Language quirks live in `_def_targets`, `_imports_<lang>` and `module_keys`, not in the walker.
 - `bench/eval/` is the A/B harness (spec in `docs/specs/2026-09-29-ab-eval-harness-design.md`):
-  - It runs the real `claude` CLI in a scrubbed environment under three setups, which differ only in one MCP server.
+  - It runs the real `claude` CLI in a scrubbed environment under five setups, which differ only in one MCP server. The two hinted ones (`duckgrep-hint`, `serena-hint`) also append a sentence about it to the system prompt; code that branches on a setup reads `Setup.base`, never the name.
+  - A batch retries transient API errors (waits of 1, 5 and 15 minutes), stops on the first run whose Claude Code version differs from its first, and never overlaps Serena runs on one Rust repo (they share `CARGO_TARGET_DIR`).
   - It parses stream-json and scores against answer keys, which come from fix patches or from jedi and rust-analyzer SCIP.
   - Turns to locate (`locate.py`) counts a function located when a result identifies it: its definition line in its file, or its qualified name from a duckgrep row or Serena symbol. A call, a docstring or a same-named token never counts. Paths follow the shell's `cd` across Bash calls. `rescore` recomputes every measurement from the saved transcripts.
   - Suites are committed JSONL files; raw runs go under the gitignored `bench/eval/runs/`.

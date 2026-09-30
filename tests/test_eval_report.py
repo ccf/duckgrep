@@ -104,6 +104,56 @@ def records():
     return rows
 
 
+def hinted_records():
+    rows = records()
+    for i in range(6):
+        for rep in (1, 2):
+            rows.append(rec(f"t{i}", "duckgrep-hint", rep, calls=3 + i, tokens=800 + 100 * i, adopted=True))
+            rows.append(rec(f"t{i}", "serena-hint", rep, calls=9 + i, tokens=2000 + 100 * i, adopted=True))
+    return rows
+
+
+def test_every_non_baseline_setup_is_a_contrast_in_a_fixed_order():
+    rows = [rec("a", s) for s in ("zeta", "serena-hint", "baseline", "duckgrep-hint", "alpha", "serena", "duckgrep")]
+    assert report.contrasts(rows) == ["duckgrep", "duckgrep-hint", "serena", "serena-hint", "alpha", "zeta"]
+    assert report.contrasts([rec("a", "baseline"), rec("a", "serena")]) == ["serena"]
+
+
+def test_hinted_setups_are_compared_with_the_baseline_in_every_table():
+    found = report.comparisons(hinted_records())
+    loc = [c for c in found if c.table == "Python localization" and c.metric.name == "tool calls"]
+    assert [c.setup for c in loc] == ["duckgrep", "duckgrep-hint", "serena", "serena-hint"]
+    [hint] = [c for c in loc if c.setup == "duckgrep-hint"]
+    assert hint.n == 6 and hint.other < hint.base
+    assert all(c.p_holm >= c.p for c in found)
+    assert len(found) == 4 * len(report.METRICS)  # one table, four setups
+
+
+def test_the_adoption_and_variance_tables_cover_every_setup():
+    rows = hinted_records()
+    text = "\n".join(report.adoption_table(rows))
+    for setup in ("duckgrep", "duckgrep-hint", "serena", "serena-hint"):
+        assert f"| {setup} | localization |" in text
+    variance = "\n".join(report.variance_table(rows))
+    assert "| serena-hint | log tokens |" in variance and "| baseline | log tokens |" in variance
+
+
+def test_the_post_cutoff_table_is_the_live_stratum_for_every_setup():
+    rows = []
+    for i in range(4):
+        for setup in ("baseline", "duckgrep", "duckgrep-hint"):
+            live = i >= 2
+            rows.append(
+                rec(
+                    f"r{i}", setup, lang="rust", stratum="live" if live else "live-earlier", calls=5 + i, tokens=900 + i
+                )
+            )
+    found = report.comparisons(rows)
+    post = [c for c in found if c.table == "Rust localization, post-cutoff issues"]
+    assert {c.setup for c in post} == {"duckgrep", "duckgrep-hint"} and {c.n for c in post} == {2}
+    assert {c.n for c in found if c.table == "Rust localization"} == {4}
+
+
 def test_report_has_every_section():
     text = report.build(records(), [{"setup": "duckgrep", "index_seconds": 2.0, "index_mb": 5.0}], "pilot")
     assert text.startswith("## A/B evaluation: pilot")
