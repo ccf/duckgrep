@@ -10,14 +10,17 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from . import config, datasets, setups
 
 
 def git_env() -> dict[str, str]:
-    """The environment without GIT_* variables: a commit hook exports GIT_DIR, which would redirect every git call."""
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    """The environment without GIT_* variables: a commit hook exports GIT_DIR, which would redirect every git call.
+    LFS files check out as their pointers: a worktree has no remote to download their content from, and no task
+    needs it."""
+    return {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, "GIT_LFS_SKIP_SMUDGE": "1"}
 
 
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
@@ -104,12 +107,40 @@ def require_space(path: Path, minimum: float = config.MIN_FREE_GB) -> None:
         raise RuntimeError(f"only {free:.1f} GB free under {path}; need {minimum} GB (set DUCKGREP_EVAL_CACHE)")
 
 
+def _build(what: str, argv: list[str], env: dict[str, str], partial: Path, timeout: float | None = None) -> None:
+    """Run one build step of `prepare`. Whatever it starts is stopped when it ends, even what left its process
+    group, and its output goes to a file, so nothing it leaves running can keep the step waiting. If it fails or
+    is interrupted, `partial`, what it built so far, is removed: it would pass for a finished one next time."""
+    marker = f"prepare-{uuid.uuid4().hex}"
+    done, failure = None, ""
+    with tempfile.TemporaryFile() as out:
+        try:
+            done = subprocess.run(
+                argv,
+                env={**env, setups.RUN_MARKER: marker},
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+            )
+            failure = f"exit {done.returncode}" if done.returncode else ""
+        except subprocess.TimeoutExpired:
+            failure = f"still running after {timeout:g} s"
+        finally:
+            setups.sweep(marker)
+            if done is None or done.returncode:
+                shutil.rmtree(partial, ignore_errors=True)
+        if failure:  # with the output, which says where it stopped
+            out.seek(0)
+            tail = out.read().decode("utf-8", "replace").strip()[-3000:]
+            raise RuntimeError(f"{what} failed ({failure}):\n{tail}")
+
+
 def index_duckgrep(path: Path) -> dict:
     """Build the duckgrep index of a worktree; report the build time and index size."""
     t = time.monotonic()
-    subprocess.run(
-        [sys.executable, "-m", "duckgrep", "-C", str(path), "index"], check=True, env=git_env(), capture_output=True
-    )
+    argv = [sys.executable, "-m", "duckgrep", "-C", str(path), "index"]
+    _build(f"indexing {path}", argv, git_env(), path / ".duckgrep")
     db = path / ".duckgrep" / "index.duckdb"
     return {"index_seconds": round(time.monotonic() - t, 1), "index_mb": round(db.stat().st_size / 1e6, 1)}
 
@@ -136,6 +167,9 @@ def rust_analyzer(cache: Path) -> Path:
     return exe
 
 
+SERENA_TIMEOUT_S = 3600  # a warm-up still going after an hour has hung
+
+
 def serena_warmup(path: Path, repo: str, lang: str, cache: Path) -> dict:
     """Create the Serena project with its language pinned (auto-detection asks a question on stdin when a repo
     has files in a second language) and fill its symbol cache, which lives outside the worktree."""
@@ -145,14 +179,9 @@ def serena_warmup(path: Path, repo: str, lang: str, cache: Path) -> dict:
         env = {**git_env(), "SERENA_HOME": str(setups.serena_home(Path(tmp) / "home", cache))}
         env.update(setups.rust_env(cache, repo))
         argv = [shutil.which("uvx") or "uvx", "--from", config.SERENA, "serena", "project", "index", str(path)]
-        subprocess.run(
-            argv + ["--language", lang, "--log-level", "WARNING"],
-            env=env,
-            check=True,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=3600,
-        )
+        argv += ["--language", lang, "--log-level", "WARNING"]
+        project = serena_project_file(cache, path).parent.parent
+        _build(f"warming Serena up on {path}", argv, env, project, timeout=SERENA_TIMEOUT_S)
     return {"serena_seconds": round(time.monotonic() - started, 1)}
 
 
@@ -160,9 +189,10 @@ def serena_project_file(cache: Path, path: Path) -> Path:
     return cache / "serena-projects" / path.name / ".serena" / "project.yml"
 
 
-def prepare(tasks, setup_names: list[str], cache: Path, log=print) -> list[dict]:
+def prepare(tasks, setup_names: list[str], cache: Path, log=print, save=None) -> list[dict]:
     """Worktrees for every (repo, commit, setup), with the duckgrep index or the Serena warm-up. Returns what was
-    newly built, with its cost; what exists already is left alone."""
+    newly built, with its cost, and hands each row to `save` as soon as it is measured, so a later failure keeps
+    it; what exists already is left alone."""
     built = []
     todo = sorted({(t.repo, t.commit, t.lang) for t in tasks})
     if "serena" in setup_names and any(lang == "rust" for *_, lang in todo):
@@ -177,9 +207,16 @@ def prepare(tasks, setup_names: list[str], cache: Path, log=print) -> list[dict]
             elif setup == "serena" and not serena_project_file(cache, path).exists():
                 row = serena_warmup(path, repo, lang, cache)
             leftover = changes(path)
-            if leftover:
+            if leftover and not (setup == "serena" and row):
                 raise RuntimeError(f"preparing {path} changed it: {leftover[:5]}")
+            if leftover:  # the warm-up's own: rust-analyzer's cargo writes a Cargo.lock into a repo that commits none
+                reset(path, commit)  # and every run restores it the same way
             if row:
-                built.append({"setup": setup, "repo": repo, "commit": commit, **row})
+                row = {"setup": setup, "repo": repo, "commit": commit, **row}
+                if leftover:
+                    row["restored"] = leftover
+                built.append(row)
+                if save:
+                    save(row)
                 log(f"prepared {setup} {repo}@{commit[:12]}: {row}")
     return built

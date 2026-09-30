@@ -92,31 +92,6 @@ def _kill_group(proc: subprocess.Popen) -> None:
         time.sleep(0.5)
 
 
-def _sweep(run_id: str) -> None:
-    """Kill every process that still carries the run's marker. Serena starts each language server in a session
-    of its own, so killing the run's process group does not reach them."""
-    import psutil
-
-    marked = []
-    for p in psutil.process_iter():
-        try:
-            if p.environ().get(setups.RUN_MARKER) == run_id:
-                marked.append(p)
-        except (psutil.Error, OSError):
-            continue  # gone, a zombie, or another user's
-    for p in marked:
-        try:
-            p.terminate()
-        except psutil.Error:
-            pass
-    _, alive = psutil.wait_procs(marked, timeout=5)
-    for p in alive:
-        try:
-            p.kill()
-        except psutil.Error:
-            pass
-
-
 def _mcp_file(setup: setups.Setup, task: Task, wt: Path, cache: Path, tmp: Path) -> Path | None:
     """Write the run's --mcp-config file (and its own SERENA_HOME) into `tmp`; None for the baseline."""
     home = setups.serena_home(tmp / "serena-home", cache) if setup.name == "serena" else None
@@ -152,7 +127,7 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
         except subprocess.TimeoutExpired:
             return [f"the probe did not stop at login within {PROBE_TIMEOUT_S} s"]
         finally:
-            _sweep(run_id)  # the timed-out claude too; and Serena starts its language server even when idle
+            setups.sweep(run_id)  # the timed-out claude too; and Serena starts its language server even when idle
     tr = stream.read(out.stdout.splitlines())
     problems = stream.config_problems(tr, setup.expected_tools, set(setup.servers))
     if tr.api_error != "authentication_failed":
@@ -196,7 +171,7 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                     killed = True
                 finally:
                     _kill_group(proc)
-                    _sweep(run_id)
+                    setups.sweep(run_id)
                     with _live_lock:
                         _live.pop(proc, None)
             wall = time.monotonic() - started
@@ -361,7 +336,7 @@ class Batch:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-            _sweep(run_id)
+            setups.sweep(run_id)
 
     def _work(self) -> None:
         try:
