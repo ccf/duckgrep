@@ -1,7 +1,5 @@
 # Wrong-answer fixes before the A/B eval — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Remove the verified wrong answers and failure modes that would skew an A/B evaluation of duckgrep on Python and Rust repos.
 
 **Architecture:** Four groups of tasks with disjoint file ownership. Each group is built test-first in its own worktree, and the coordinator merges them:

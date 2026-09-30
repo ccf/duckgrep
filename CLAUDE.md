@@ -43,6 +43,8 @@ Bugbot and Greptile review every PR:
 
 Never commit on, merge into or push `main` directly; a pre-commit hook refuses commits on it.
 
+Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, named `YYYY-MM-DD-<topic>.md`. Keep tool, skill and plugin names out of their paths and text.
+
 ## How it fits together
 
 - `extract.py` is per file and pure: (path, bytes, small repo context) → symbols, refs, imports, module keys. `index.py` decides which files to re-extract and swaps their rows. `schema.py` holds the SQL: tables, `EDGES_COMPUTE` (reference resolution), views, table macros and `SCHEMA_DOC`. `builtin_names.py` lists the builtin method and global names that `EDGES_COMPUTE` inlines. `query.py` refreshes, then runs the agent's SQL. `mcp_server.py` and `cli.py` are thin wrappers over it.
