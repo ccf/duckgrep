@@ -1,0 +1,106 @@
+/* Generated from tokens.json by tools/tokens_to_css.py. Do not edit by hand. */
+@import url("https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;700;800&display=swap");
+
+:root {
+  --duck-yellow: #fff100;
+  --duck-yellow-hover: #eddd0c;
+  --on-yellow: #0d0d0d;
+  --surface: #fcfcfc;
+  --surface-raised: #ffffff;
+  --surface-code: #f7f7f7;
+  --ink: #0d0d0d;
+  --ink-muted: #666666;
+  --border: #e6e6e6;
+  --border-strong: #808080;
+  --link: #665d00;
+  --focus: #357197;
+  --match-bg: #fff100;
+  --match-ink: #0d0d0d;
+  --accent-orange: #ff6900;
+  --code-keyword: #005fff;
+  --code-string: #875f00;
+  --code-number: #b8009a;
+  --code-function: #007a00;
+  --code-comment: #626262;
+  --code-error: #d70000;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+  --space-7: 96px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --font-sans: "Hanken Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --duck-yellow: #fff100;
+    --duck-yellow-hover: #eddd0c;
+    --on-yellow: #0d0d0d;
+    --surface: #0d0d0d;
+    --surface-raised: #1a1a1a;
+    --surface-code: #141414;
+    --ink: #f2f2f2;
+    --ink-muted: #b2b2b2;
+    --border: #333333;
+    --border-strong: #808080;
+    --link: #fff100;
+    --focus: #61c2ff;
+    --match-bg: #454100;
+    --match-ink: #fff866;
+    --accent-orange: #ff6900;
+    --code-keyword: #5fafff;
+    --code-string: #ffd700;
+    --code-number: #ff00ff;
+    --code-function: #00af00;
+    --code-comment: #888888;
+    --code-error: #ff6a6a;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --duck-yellow: #fff100;
+  --duck-yellow-hover: #eddd0c;
+  --on-yellow: #0d0d0d;
+  --surface: #0d0d0d;
+  --surface-raised: #1a1a1a;
+  --surface-code: #141414;
+  --ink: #f2f2f2;
+  --ink-muted: #b2b2b2;
+  --border: #333333;
+  --border-strong: #808080;
+  --link: #fff100;
+  --focus: #61c2ff;
+  --match-bg: #454100;
+  --match-ink: #fff866;
+  --accent-orange: #ff6900;
+  --code-keyword: #5fafff;
+  --code-string: #ffd700;
+  --code-number: #ff00ff;
+  --code-function: #00af00;
+  --code-comment: #888888;
+  --code-error: #ff6a6a;
+  color-scheme: dark;
+}
+
+.type-display { font-family: var(--font-sans); font-size: 64px; line-height: 60px; font-weight: 700; letter-spacing: -0.02em; }
+.type-h1 { font-family: var(--font-sans); font-size: 40px; line-height: 44px; font-weight: 700; letter-spacing: -0.01em; }
+.type-h2 { font-family: var(--font-sans); font-size: 28px; line-height: 34px; font-weight: 700; }
+.type-h3 { font-family: var(--font-sans); font-size: 20px; line-height: 28px; font-weight: 600; }
+.type-body-lg { font-family: var(--font-sans); font-size: 18px; line-height: 28px; font-weight: 400; }
+.type-body { font-family: var(--font-sans); font-size: 16px; line-height: 24px; font-weight: 400; }
+.type-small { font-family: var(--font-sans); font-size: 14px; line-height: 20px; font-weight: 400; }
+.type-code { font-family: var(--font-mono); font-size: 14px; line-height: 22px; font-weight: 400; }
+.type-code-sm { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 400; }
+.type-label { font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }

@@ -26,6 +26,7 @@ uv run python bench/latency.py <repo> <file-to-edit> <symbol> <qualname>
 uv run python bench/vs_grep.py <django-checkout>
 uv run --group bench python bench/accuracy.py <python-repo> [n]   # jedi as the reference
 uv run python bench/mcp_smoke.py [repo]    # drives the MCP server over stdio
+python brand/tools/tokens_to_css.py        # brand/tokens.css from brand/tokens.json (other builds: brand/tools/README.md)
 
 # The A/B harness. Its cache (clones, worktrees) is ~/.cache/code-tasks; DUCKGREP_EVAL_CACHE moves it, never into ~/git
 uv run python -m bench.eval build        # draw the pilot suites (network): bench/eval/suites/pilot-*.jsonl
@@ -82,6 +83,7 @@ Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, name
   - It runs the real `claude` CLI in a scrubbed environment under three setups, which differ only in one MCP server.
   - It parses stream-json and scores against answer keys, which come from fix patches or from jedi and rust-analyzer SCIP.
   - Suites are committed JSONL files; raw runs go under the gitignored `bench/eval/runs/`.
+- `brand/` is the design system. `brand/README.md` holds the rules for the README, docs, site and social cards (name, messaging, voice, colour, type); `brand/tools/` regenerates its derived files (tokens.css, logos, favicons, cards).
 
 ## Gotchas
 

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>duckgrep brand</title>
+<link rel="icon" href="favicons/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="components.css">
+<style>
+body{margin:0;background:var(--surface);color:var(--ink);font-family:var(--font-sans)}
+main{max-width:1120px;margin:0 auto;padding:var(--space-6) var(--space-4)}
+section{margin-top:var(--space-6)} h2{margin:0 0 var(--space-3)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--space-3)}
+.sw{display:grid;grid-template-columns:40px 1fr;column-gap:12px;align-items:center;font-size:13px}
+.sw .chip{grid-row:span 2;width:40px;height:40px;border-radius:var(--radius-md);border:1px solid var(--border)}
+.sw span{color:var(--ink-muted);font-family:var(--font-mono);font-size:12px}
+.ty{padding:var(--space-3) 0;border-top:1px solid var(--border)} .ty code{color:var(--ink-muted);font-size:12px}
+figure{margin:0;padding:var(--space-4);border-radius:var(--radius-md);border:1px solid var(--border)}
+figure.lt{background:#fcfcfc} figure.dk{background:#0d0d0d} figure.dk figcaption{color:#b2b2b2}
+figure img{max-width:100%;height:auto;max-height:64px;display:block}
+figcaption{margin-top:12px;font-size:12px;color:#666}
+.social img{width:100%;border-radius:var(--radius-md);border:1px solid var(--border)}
+.toggle{float:right}
+</style></head>
+<body><main>
+<button class="dg-btn dg-btn--secondary dg-btn--sm toggle" onclick="var r=document.documentElement;r.dataset.theme=(r.dataset.theme==='dark'||(!r.dataset.theme&&matchMedia('(prefers-color-scheme: dark)').matches))?'light':'dark'">Toggle theme</button>
+<img src="logos/duckgrep-lockup-light.svg" alt="duckgrep" height="48" id="lockup">
+<p class="type-body-lg" style="max-width:68ch">Brand specimen. Rules live in <code>README.md</code>; values in <code>tokens.json</code>, compiled to <code>tokens.css</code>.</p>
+<section><h2 class="type-h2">Logos</h2><div class="grid"><figure class="lt"><img src="logos/duckgrep-lockup-light.svg" alt="" height="64"><figcaption><code>duckgrep-lockup-light.svg</code></figcaption></figure><figure class="lt"><img src="logos/duckgrep-mark.svg" alt="" height="64"><figcaption><code>duckgrep-mark.svg</code></figcaption></figure><figure class="lt"><img src="logos/duckgrep-mark-yellow.svg" alt="" height="64"><figcaption><code>duckgrep-mark-yellow.svg</code></figcaption></figure><figure class="lt"><img src="logos/dgrep-wordmark-light.svg" alt="" height="64"><figcaption><code>dgrep-wordmark-light.svg</code></figcaption></figure><figure class="lt"><img src="logos/duckgrep-glyph-ink.svg" alt="" height="64"><figcaption><code>duckgrep-glyph-ink.svg</code></figcaption></figure><figure class="dk"><img src="logos/duckgrep-lockup-dark.svg" alt="" height="64"><figcaption><code>duckgrep-lockup-dark.svg</code></figcaption></figure><figure class="dk"><img src="logos/dgrep-wordmark-dark.svg" alt="" height="64"><figcaption><code>dgrep-wordmark-dark.svg</code></figcaption></figure><figure class="dk"><img src="logos/duckgrep-glyph-yellow.svg" alt="" height="64"><figcaption><code>duckgrep-glyph-yellow.svg</code></figcaption></figure></div></section>
+<section><h2 class="type-h2">Colour</h2><div class="grid"><div class="sw"><div class="chip" style="background:var(--duck-yellow)"></div><code>duck-yellow</code><span>#fff100 / #fff100</span></div><div class="sw"><div class="chip" style="background:var(--duck-yellow-hover)"></div><code>duck-yellow-hover</code><span>#eddd0c / #eddd0c</span></div><div class="sw"><div class="chip" style="background:var(--on-yellow)"></div><code>on-yellow</code><span>#0d0d0d / #0d0d0d</span></div><div class="sw"><div class="chip" style="background:var(--surface)"></div><code>surface</code><span>#fcfcfc / #0d0d0d</span></div><div class="sw"><div class="chip" style="background:var(--surface-raised)"></div><code>surface-raised</code><span>#ffffff / #1a1a1a</span></div><div class="sw"><div class="chip" style="background:var(--surface-code)"></div><code>surface-code</code><span>#f7f7f7 / #141414</span></div><div class="sw"><div class="chip" style="background:var(--ink)"></div><code>ink</code><span>#0d0d0d / #f2f2f2</span></div><div class="sw"><div class="chip" style="background:var(--ink-muted)"></div><code>ink-muted</code><span>#666666 / #b2b2b2</span></div><div class="sw"><div class="chip" style="background:var(--border)"></div><code>border</code><span>#e6e6e6 / #333333</span></div><div class="sw"><div class="chip" style="background:var(--border-strong)"></div><code>border-strong</code><span>#808080 / #808080</span></div><div class="sw"><div class="chip" style="background:var(--link)"></div><code>link</code><span>#665d00 / #fff100</span></div><div class="sw"><div class="chip" style="background:var(--focus)"></div><code>focus</code><span>#357197 / #61c2ff</span></div><div class="sw"><div class="chip" style="background:var(--match-bg)"></div><code>match-bg</code><span>#fff100 / #454100</span></div><div class="sw"><div class="chip" style="background:var(--match-ink)"></div><code>match-ink</code><span>#0d0d0d / #fff866</span></div><div class="sw"><div class="chip" style="background:var(--accent-orange)"></div><code>accent-orange</code><span>#ff6900 / #ff6900</span></div><div class="sw"><div class="chip" style="background:var(--code-keyword)"></div><code>code-keyword</code><span>#005fff / #5fafff</span></div><div class="sw"><div class="chip" style="background:var(--code-string)"></div><code>code-string</code><span>#875f00 / #ffd700</span></div><div class="sw"><div class="chip" style="background:var(--code-number)"></div><code>code-number</code><span>#b8009a / #ff00ff</span></div><div class="sw"><div class="chip" style="background:var(--code-function)"></div><code>code-function</code><span>#007a00 / #00af00</span></div><div class="sw"><div class="chip" style="background:var(--code-comment)"></div><code>code-comment</code><span>#626262 / #888888</span></div><div class="sw"><div class="chip" style="background:var(--code-error)"></div><code>code-error</code><span>#d70000 / #ff6a6a</span></div></div></section>
+<section><h2 class="type-h2">Type</h2><div class="ty"><code>.type-display</code><div class="type-display">Grep finds strings. duckgrep answers questions.</div></div><div class="ty"><code>.type-h1</code><div class="type-h1">Grep finds strings.</div></div><div class="ty"><code>.type-h2</code><div class="type-h2">Why it matters</div></div><div class="ty"><code>.type-h3</code><div class="type-h3">It joins code with its history.</div></div><div class="ty"><code>.type-body-lg</code><div class="type-body-lg">Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so questions that take dozens of greps take one query.</div></div><div class="ty"><code>.type-body</code><div class="type-body">Coding agents find their way around a codebase with chains of grep → read file → grep again. That works for “where is this string.”</div></div><div class="ty"><code>.type-small</code><div class="type-small">index: 89 files, 702 symbols, 16513 refs, 72 commits</div></div><div class="ty"><code>.type-code</code><div class="type-code">$ duckgrep callers Session.request</div></div><div class="ty"><code>.type-code-sm</code><div class="type-code-sm">src/duckgrep/index.py  367</div></div><div class="ty"><code>.type-label</code><div class="type-label">WHY IT MATTERS</div></div></section>
+<section><h2 class="type-h2">Buttons</h2><div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:24px;background:var(--surface);font-family:var(--font-sans)">
+  <a class="dg-btn dg-btn--primary" href="#">Install</a>
+  <a class="dg-btn dg-btn--secondary" href="#">Read the docs</a>
+  <button class="dg-btn dg-btn--ghost"><code>claude mcp add duckgrep -- duckgrep mcp</code></button>
+  <button class="dg-btn dg-btn--primary dg-btn--sm">Copy</button>
+  <button class="dg-btn dg-btn--secondary" disabled>Disabled</button>
+</div>
+</section>
+<section><h2 class="type-h2">Terminal</h2><div style="padding:24px;background:var(--surface)">
+<pre class="dg-term"><div class="dg-term__bar"><span>terminal</span><span>zsh</span></div><span class="prompt">$</span> duckgrep q <span class="str">"</span><span class="kw">SELECT</span> src_path, line, caller, resolution <span class="kw">FROM</span> <span class="fn">callers</span>(<span class="str">'</span><span class="dg-match">freshen</span><span class="str">'</span>)
+    <span class="kw">WHERE</span> resolution &lt;&gt; <span class="str">'name'"</span>
+<span class="ctx">src_path                      line  caller                                 resolution
+----------------------------  ----  -------------------------------------  ----------</span>
+<span class="path">bench/latency.py</span>              <span class="ln">27</span>    main.noop                              import
+<span class="path">src/duckgrep/cli.py</span>           <span class="ln">86</span>    main                                   import
+<span class="path">src/duckgrep/query.py</span>         <span class="ln">40</span>    refresh                                import
+<span class="path">tests/test_freshness.py</span>       <span class="ln">93</span>    test_grammar_upgrade_reparses          module
+<span class="path">tests/test_module_context.py</span>  <span class="ln">48</span>    test_dependency_edit_does_not_reparse  import</pre>
+</div>
+</section>
+<section class="social"><h2 class="type-h2">Social cards</h2><div class="grid" style="grid-template-columns:1fr 1fr"><img src="social/og-image-dark.png" alt=""><img src="social/og-image-light.png" alt=""></div></section>
+</main>
+<script>
+var q=matchMedia('(prefers-color-scheme: dark)'),r=document.documentElement,l=document.getElementById('lockup');
+function sync(){var d=r.dataset.theme==='dark'||(!r.dataset.theme&&q.matches);l.src='logos/duckgrep-lockup-'+(d?'dark':'light')+'.svg'}
+new MutationObserver(sync).observe(r,{attributes:true});q.addEventListener('change',sync);sync();
+</script>
+</body></html>
