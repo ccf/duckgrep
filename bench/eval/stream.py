@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -196,19 +195,3 @@ def metrics(tr: Transcript) -> dict:
         "tool_seconds": {k: round(v, 3) for k, v in seconds.items()},
         "final_text": res.get("result") or "",
     }
-
-
-def turns_to_locate(tr: Transcript, gold: tuple[str, ...] | list[str]) -> int | None:
-    """The first round whose tool results show a key location: the key's path (in the call or its result) with
-    the function's name in the result, or the path alone for a file-only key. None if none ever did."""
-    keys = []
-    for entry in gold:
-        path, _, qual = entry.partition(":")
-        last = qual.split(".")[-1] if qual else ""
-        keys.append((path, re.compile(rf"(?<!\w){re.escape(last)}(?!\w)") if last else None))
-    for call in sorted(tr.calls, key=lambda c: c.round):
-        seen = json.dumps(call.input) + "\n" + call.result
-        for path, name in keys:
-            if path in seen and (name is None or name.search(call.result)):
-                return call.round
-    return None

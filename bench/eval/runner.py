@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, score, setups, stream, workspace
+from . import config, locate, score, setups, stream, workspace
 from .suite import Task
 
 
@@ -208,7 +208,9 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             **m,
             "answer": answer,
             "score": score.score(answer, task.gold, task.answer, roots).as_dict(),
-            "turns_to_locate": stream.turns_to_locate(tr, task.gold),
+            "turns_to_locate": locate.turns_to_locate(
+                tr, locate.targets(task.gold, workspace.reader(cache, task.repo, task.commit))
+            ),
         }
     finally:
         changed, moved = workspace.reset(wt, task.commit)

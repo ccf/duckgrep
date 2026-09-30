@@ -157,8 +157,25 @@ def recorded_stream(answer):
     return events
 
 
+NEEDLE_SRC = 'def hello():\n    return "hi"\n\ndef needle_fn():\n    return hello()\n'  # what tests/eval_runs saw
+
+
+def test_execute_counts_a_function_located_when_its_definition_shows(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    events = recorded_stream('```json\n{"locations": ["src/a.py:hello"]}\n```')
+    # round 1's grep now also shows a call to hello; its definition first shows in round 2's read
+    shown = "src/a.py:4:def needle_fn():"
+    events = json.loads(json.dumps(events).replace(shown, shown + "\\nsrc/a.py:5:    return hello()"))
+    exe, _ = fake_claude(tmp_path, events)
+    hello = Task("t1", "localization", "python", "o/r", commit, "p", ("src/a.py:hello",), "s")
+    rec = runner.execute(runner.Run(hello, "baseline", 1), cache, tmp_path / "out", 1, exe)
+    assert rec["score"]["success"] and rec["turns_to_locate"] == 2
+
+
 def test_execute_runs_scores_and_restores(tmp_path, monkeypatch):
-    src, commit = origin(tmp_path, {"src/a.py": "def needle_fn():\n    pass\n"})
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
     cache = tmp_path / "cache"
     workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
     answer = 'Found it.\n\n```json\n{"locations": ["src/a.py:needle_fn"]}\n```'

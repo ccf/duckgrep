@@ -52,6 +52,20 @@ def clone(repo: str, cache: Path, url: str | None = None) -> Path:
 GROUPS = {"baseline": "t1", "duckgrep": "t2", "serena": "t3"}
 
 
+def reader(cache: Path, repo: str, commit: str):
+    """A function giving a file's text at `commit` (None if absent), read from the repo's clone, so what a run did
+    to its worktree cannot change it."""
+    bare = cache / "repos" / f"{slug(repo)}.git"
+
+    def read(path: str) -> str | None:
+        r = subprocess.run(
+            ["git", "--git-dir", str(bare), "show", f"{commit}:{path}"], env=git_env(), capture_output=True
+        )
+        return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
+
+    return read
+
+
 def worktree_path(cache: Path, setup: str, repo: str, commit: str) -> Path:
     return cache / "wt" / GROUPS.get(setup, setup) / f"{slug(repo)}@{commit[:12]}"
 

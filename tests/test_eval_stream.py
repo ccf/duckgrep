@@ -115,14 +115,6 @@ def test_config_check_on_the_free_probe_sees_the_setup_before_the_login_fails():
     assert stream.config_problems(tr, BUILTINS | {"mcp__tiny__ping"}, {"tiny"}, model="claude-sonnet-5-5") == []
 
 
-def test_turns_to_locate():
-    assert stream.turns_to_locate(run("plain"), ["src/a.py:needle_fn"]) == 1  # grep content shows path and name
-    assert stream.turns_to_locate(run("mcp"), ["src/a.py:needle_fn"]) == 3  # file list first, then the read
-    assert stream.turns_to_locate(run("mcp"), ["src/a.py"]) == 2  # a file-only key needs the path alone
-    assert stream.turns_to_locate(run("plain"), ["src/a.py:Other.needle"]) is None
-    assert stream.turns_to_locate(run("auth_failure"), ["src/a.py"]) is None
-
-
 def test_a_run_cut_off_before_its_result_is_measured_from_its_messages():
     import json
 
