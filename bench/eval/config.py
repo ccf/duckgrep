@@ -14,6 +14,7 @@ MAX_BUDGET_USD = 1.50
 WALL_LIMIT_S = 15 * 60
 RETRY_WAITS_S = (60, 300, 900)  # a transient API error is retried after each wait in turn, then stops the batch
 PARALLEL = 3
+PREPARE_PARALLEL = 6  # repo/commit pairs `prepare` builds at once
 REPETITIONS = 2
 SEED = 20260929
 

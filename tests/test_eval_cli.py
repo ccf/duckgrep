@@ -26,7 +26,7 @@ def test_prepare_writes_each_row_as_soon_as_it_is_measured(tmp_path, monkeypatch
     monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
     row = {"setup": "duckgrep", "repo": "o/r", "commit": "c", "index_seconds": 1.0, "index_mb": 0.1}
 
-    def prepare(tasks, setups, cache, log=print, save=lambda row: None):
+    def prepare(tasks, setups, cache, log=print, save=lambda row: None, workers=1):
         save(row)
         raise RuntimeError("the next repo failed")  # an hour in, say
 
@@ -38,6 +38,35 @@ def test_prepare_writes_each_row_as_soon_as_it_is_measured(tmp_path, monkeypatch
         cli.main(["prepare", "--setups", "duckgrep"])
     saved = tmp_path / "runs" / "pilot" / "prepare.jsonl"
     assert saved.exists() and [json.loads(line) for line in saved.read_text().splitlines()] == [row]
+
+
+def test_prepare_takes_a_worker_count_and_saves_whole_rows_from_several_threads(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
+    seen = {}
+
+    def prepare(tasks, setups, cache, log=print, save=lambda row: None, workers=None):
+        seen.update(workers=workers, setups=setups)
+        rows = [{"setup": "duckgrep", "repo": f"o/r{i}", "commit": "c", "pad": "x" * 100_000} for i in range(8)]
+        threads = [threading.Thread(target=save, args=(row,)) for row in rows]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    monkeypatch.setattr(cli.workspace, "prepare", prepare)
+    suite.save(
+        tmp_path / "pilot-localization.jsonl", [Task("t1", "localization", "python", "o/r", "c", "p", ("a.py:f",), "s")]
+    )
+    assert cli.main(["prepare", "--setups", "duckgrep,duckgrep-hint"]) == 0
+    assert seen == {"workers": 6, "setups": ["duckgrep", "duckgrep-hint"]}
+    assert cli.main(["prepare", "--parallel", "2"]) == 0
+    assert seen["workers"] == 2
+    lines = (tmp_path / "runs" / "pilot" / "prepare.jsonl").read_text().splitlines()
+    assert len(lines) == 16 and all(json.loads(line)["setup"] == "duckgrep" for line in lines)
 
 
 def test_run_rejects_unknown_task_ids(tmp_path, monkeypatch):
