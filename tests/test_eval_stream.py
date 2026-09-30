@@ -101,6 +101,30 @@ def test_an_api_error_is_permanent_only_when_a_retry_cannot_help(error, permanen
     assert stream.infrastructure_error(tr) and stream.permanent_error(tr) is permanent
 
 
+@pytest.mark.parametrize(
+    "text, permanent",
+    [
+        ("Not logged in · Please run /login", True),
+        ("Invalid API key · Please run /login", True),
+        ("Credit balance is too low", True),
+        ('API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"bad"}}', True),
+        ('API Error: 403 {"type":"error","error":{"type":"permission_error","message":"no"}}', True),
+        ('API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}', False),
+        ('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"busy"}}', False),
+        ("", False),
+    ],
+)
+def test_an_api_error_only_the_result_names_is_classed_by_its_text(text, permanent):
+    tr = stream.Transcript(result={"terminal_reason": "api_error", "result": text})
+    assert stream.infrastructure_error(tr) and stream.permanent_error(tr) is permanent
+
+
+def test_a_final_answer_is_never_read_as_an_api_error():
+    # an error message mid-run, then an answer that names auth code: only a run that ended on the error is read
+    tr = stream.Transcript(api_error="overloaded", result={"terminal_reason": "completed", "result": "auth.py:login"})
+    assert stream.infrastructure_error(tr) and not stream.permanent_error(tr)
+
+
 def test_truncated_stream_is_an_error():
     with open(os.path.join(RUNS, "plain.jsonl")) as f:
         lines = f.readlines()[:-1] + ['{"type": "resu']

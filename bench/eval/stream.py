@@ -160,11 +160,17 @@ def infrastructure_error(tr: Transcript) -> bool:
     return tr.api_error is not None or tr.result.get("terminal_reason") == "api_error"
 
 
+PERMANENT = ("auth", "billing", "invalid_request", "permission_error", "/login", "api key", "credit balance")
+
+
 def permanent_error(tr: Transcript) -> bool:
-    """An infrastructure error no retry can fix: login, billing or a malformed request. Everything else (rate
-    limit, overload, server errors, unknown, a bare synthetic message) is transient."""
-    error = (tr.api_error or "").lower()
-    return any(word in error for word in ("auth", "billing", "invalid_request"))
+    """An infrastructure error no retry can fix: login, billing, permission or a malformed request, as the
+    synthetic message's error value names it or, in a run that ended on the error, the result's text. Everything
+    else (rate limit, overload, server errors, unknown, a bare synthetic message) is transient."""
+    said = tr.api_error or ""
+    if tr.result.get("terminal_reason") == "api_error":  # then the result is the error's message, not an answer
+        said += f" {tr.result.get('result') or ''}"
+    return any(word in said.lower() for word in PERMANENT)
 
 
 def metrics(tr: Transcript) -> dict:

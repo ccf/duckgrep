@@ -139,6 +139,66 @@ def test_a_transient_error_waits_as_long_as_the_configuration_says_and_then_stop
     assert not (tmp_path / "out/results.jsonl").exists()
 
 
+def test_a_retry_never_starts_past_the_spending_cap(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def execute(r, *a):
+        calls.append(1)
+        raise runner.InfrastructureError("overloaded", cost=0.3)
+
+    batch = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, max_total_usd=0.25, execute_fn=execute, log=lambda _: None
+    )
+    assert "cap" in batch.run() and len(calls) == 1 and batch.spent == pytest.approx(0.3)
+
+
+def test_a_configuration_retry_never_starts_past_the_spending_cap(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    attempts = []
+
+    def execute(r, cache, out, attempt, claude):
+        attempts.append(attempt)
+        return fake_record(r, attempt, ok=False, cost=0.3)
+
+    batch = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, max_total_usd=0.25, execute_fn=execute, log=lambda _: None
+    )
+    assert "cap" in batch.run() and attempts == [1]
+    assert not (tmp_path / "out/results.jsonl").exists()
+    assert [u["why"] for u in unrecorded(tmp_path / "out")] == ["discarded attempt"]
+    assert batch.spent == pytest.approx(0.3)
+
+
+def test_every_charged_attempt_keeps_its_transcript(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    tries = []
+
+    def execute(r, cache, out, attempt, claude):  # an API error, then a failed configuration check, then a run
+        tries.append(attempt)
+        (out / r.task.id).mkdir(parents=True, exist_ok=True)
+        with gzip.open(out / r.task.id / f"{r.setup}-{r.rep}.jsonl.gz", "wt") as f:
+            f.write(f"try {len(tries)}")
+        (out / r.task.id / f"{r.setup}-{r.rep}.stderr").write_text(f"try {len(tries)}")
+        if len(tries) == 1:
+            raise runner.InfrastructureError("overloaded", cost=0.1)
+        return fake_record(r, attempt, ok=len(tries) == 3)
+
+    assert (
+        runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run() is None
+    )
+    run_dir = tmp_path / "out" / "t1"
+
+    def text(name):
+        with gzip.open(run_dir / name, "rt") as f:
+            return f.read()
+
+    assert tries == [1, 1, 2] and text("baseline-1.jsonl.gz") == "try 3"  # the recorded attempt's, where rescore looks
+    assert text("baseline-1.unrecorded-1.jsonl.gz") == "try 1" and text("baseline-1.unrecorded-2.jsonl.gz") == "try 2"
+    assert (run_dir / "baseline-1.unrecorded-2.stderr").read_text() == "try 2"
+    assert [u.get("transcript") for u in unrecorded(tmp_path / "out")] == ["baseline-1.unrecorded-1.jsonl.gz"]
+
+
 def test_a_permanent_error_on_a_retry_stops_the_batch_at_once(tmp_path):
     runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
     calls = []

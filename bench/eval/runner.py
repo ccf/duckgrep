@@ -318,15 +318,29 @@ class Batch:
             held.add(setups.cargo_target(self.cache, r.task.repo))
         return held
 
+    def _limit(self, uncharged: float = 0.0) -> str | None:
+        """Why no attempt may start now: the spending cap, counting `uncharged` spend on top of what is charged, or
+        the disk. Called holding `cond`."""
+        spent = self.spent + uncharged
+        if spent >= self.max_total_usd:
+            return f"spent ${spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
+        if workspace.free_gb(self.cache) < config.MIN_FREE_GB:
+            return f"less than {config.MIN_FREE_GB} GB free under {self.cache}"
+        return None
+
+    def _may_retry(self, uncharged: float = 0.0) -> bool:
+        """Whether a retry may start: a retry spends like a new run, so it stops at the same limits. `uncharged`
+        is spend not charged yet: the discarded attempt a record will carry."""
+        with self.cond:
+            self.stopped = self.stopped or self._limit(uncharged)
+            return not self.stopped
+
     def _take(self) -> Run | None:
         with self.cond:
             while True:
                 if self.stopped or not self.pending:
                     return None  # nothing pending is a finished batch, whatever it spent
-                if self.spent >= self.max_total_usd:
-                    self.stopped = f"spent ${self.spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
-                elif workspace.free_gb(self.cache) < config.MIN_FREE_GB:
-                    self.stopped = f"less than {config.MIN_FREE_GB} GB free under {self.cache}"
+                self.stopped = self._limit()
                 if self.stopped:
                     return None
                 for i, r in enumerate(self.pending):
@@ -364,13 +378,31 @@ class Batch:
                 )
                 self.cond.notify_all()
 
-    def _charge_unrecorded(self, r: Run, cost: float, why: str) -> None:
+    def _set_aside(self, r: Run) -> str | None:
+        """Keep an attempt that won't be recorded out of the next one's way: its transcript and stderr become
+        <setup>-<rep>.unrecorded-<n>.*, so the run's own name only ever holds the recorded attempt. Returns the
+        transcript's new name, None if the attempt left none."""
+        run_dir, stem = self.out_dir / r.task.id, f"{r.setup}-{r.rep}"
+        transcript = run_dir / f"{stem}.jsonl.gz"
+        if not transcript.exists():
+            return None
+        n = 1
+        while (run_dir / f"{stem}.unrecorded-{n}.jsonl.gz").exists():
+            n += 1
+        stderr = run_dir / f"{stem}.stderr"
+        if stderr.exists():
+            stderr.rename(run_dir / f"{stem}.unrecorded-{n}.stderr")
+        transcript.rename(run_dir / f"{stem}.unrecorded-{n}.jsonl.gz")
+        return f"{stem}.unrecorded-{n}.jsonl.gz"
+
+    def _charge_unrecorded(self, r: Run, cost: float, why: str, transcript: str | None = None) -> None:
         """Count what a run spent that no results line will show, so a resume counts it too."""
+        row = {"task": r.task.id, "setup": r.setup, "rep": r.rep, "why": why, "cost_usd": cost}
+        if transcript:
+            row["transcript"] = transcript
         with self.cond:
             with open(self.unrecorded, "a") as f:
-                f.write(
-                    json.dumps({"task": r.task.id, "setup": r.setup, "rep": r.rep, "why": why, "cost_usd": cost}) + "\n"
-                )
+                f.write(json.dumps(row) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             self.spent += cost
@@ -389,16 +421,16 @@ class Batch:
     def _attempt(self, r: Run, attempt: int) -> dict:
         """One execution, redone after each of RETRY_WAITS_S while it fails with a transient API error. Every
         failed try is charged as unrecorded spend; the last failure, a permanent one, or one after the batch
-        stopped is raised."""
+        stopped or reached a limit is raised."""
         for wait in (*config.RETRY_WAITS_S, None):
             try:
                 return self.execute(r, self.cache, self.out_dir, attempt, self.claude)
             except InfrastructureError as e:
-                self._charge_unrecorded(r, e.cost, "infrastructure error")
+                self._charge_unrecorded(r, e.cost, "infrastructure error", self._set_aside(r))
                 if e.permanent or wait is None:
                     raise
                 self.log(f"transient API error, retrying {r.key} in {wait:g} s: {e}")
-                if not self._pause(wait):
+                if not self._pause(wait) or not self._may_retry():
                     raise
         raise AssertionError("unreachable")
 
@@ -408,15 +440,18 @@ class Batch:
                 rec = self._attempt(r, 1)
                 if not rec["config_ok"] and not self.interrupted:  # discard, and retry once
                     self.log(f"config check failed, retrying: {r.key} {rec['config_problems']}")
-                    first = rec
+                    first, kept = rec, self._set_aside(r)
+                    if not self._may_retry(charged(first)):
+                        self._charge_unrecorded(r, charged(first), "discarded attempt", kept)
+                        continue
                     try:
                         rec = self._attempt(r, 2)
                     except BaseException:
-                        self._charge_unrecorded(r, charged(first), "discarded attempt")
+                        self._charge_unrecorded(r, charged(first), "discarded attempt", kept)
                         raise
                     rec["discarded_cost_usd"] = charged(first)
                 if self.interrupted:  # a run the interrupt cut short is redone on resume, never scored
-                    self._charge_unrecorded(r, charged(rec), "interrupted")
+                    self._charge_unrecorded(r, charged(rec), "interrupted", self._set_aside(r))
                     continue
                 self._record(rec)
                 self.log(
