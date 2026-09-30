@@ -98,14 +98,23 @@ def python_tasks(n: int, per_repo: int, seed: int, cache: Path | None = None) ->
     return select(pool, n, per_repo, seed, accept)
 
 
-def rust_tasks(name: str, n: int, per_repo: int, seed: int, cache: Path | None = None) -> list[Task]:
-    """`name` is "multilingual" or "live" (post-cutoff issues only)."""
+def rust_tasks(
+    name: str,
+    n: int,
+    per_repo: int,
+    seed: int,
+    cache: Path | None = None,
+    every_date: bool = False,
+    max_functions: int = 10,
+) -> list[Task]:
+    """`name` is "multilingual" or "live". Live issues are the post-cutoff ones only, unless `every_date`: then the
+    earlier ones come too, as stratum `live-earlier`, since the model may have seen them."""
     ds = config.DATASETS[name]
     excluded = {r.lower() for r in config.EXCLUDED_RUST_REPOS}
     pool = [
         r
         for r in datasets.rows(name, cache)
-        if r["repo"].lower() not in excluded and (name != "live" or r["created_at"] >= config.LIVE_SINCE)
+        if r["repo"].lower() not in excluded and (name != "live" or every_date or r["created_at"] >= config.LIVE_SINCE)
     ]
 
     def accept(row: dict) -> Task | None:
@@ -117,24 +126,21 @@ def rust_tasks(name: str, n: int, per_repo: int, seed: int, cache: Path | None =
             key = gold.derive(row["patch"], read, "rust")
         except ValueError:
             return None
-        if not 1 <= key.functions <= 10 or leaks(row["problem_statement"], key.entries):
+        if not 1 <= key.functions <= max_functions or leaks(row["problem_statement"], key.entries):
             return None
-        return _task(row, "rust", key, ds.label, name)
+        earlier = name == "live" and row["created_at"] < config.LIVE_SINCE
+        return _task(row, "rust", key, ds.label, "live-earlier" if earlier else name)
 
     return select(pool, n, per_repo, seed, accept)
 
 
 def build(
-    seed: int = config.SEED,
-    n_python: int = 10,
-    n_multilingual: int = 5,
-    n_live: int = 5,
-    per_repo_python: int = 3,
-    per_repo_rust: int = 2,
-    cache: Path | None = None,
+    seed: int = config.SEED, profile: config.Profile = config.PROFILES["pilot"], cache: Path | None = None
 ) -> list[Task]:
+    p = profile
+    rust = {"every_date": p.live_every_date, "max_functions": p.rust_functions}
     return (
-        python_tasks(n_python, per_repo_python, seed, cache)
-        + rust_tasks("multilingual", n_multilingual, per_repo_rust, seed, cache)
-        + rust_tasks("live", n_live, per_repo_rust, seed, cache)
+        python_tasks(p.python, p.python_per_repo, seed, cache)
+        + rust_tasks("multilingual", p.multilingual, p.rust_per_repo, seed, cache, **rust)
+        + rust_tasks("live", p.live, p.rust_per_repo, seed, cache, **rust)
     )

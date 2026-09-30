@@ -78,7 +78,10 @@ def test_python_questions(tmp_path):
     root = python_repo(tmp_path)
     a = st.python_analysis(root)
     q, key = st.callers_question(a, defn(a, "Store.get"), "python")
-    assert q == "Which functions call `Store.get`, defined in `pkg/core.py`? List every one, including test functions."
+    assert q == (
+        "Which functions call `Store.get`, defined in `pkg/core.py`? List every one, including test functions and,"
+        " if it calls itself, the function itself."
+    )
     assert key == ("pkg/core.py:load", "pkg/core.py:run")
     q, key = st.two_hop_question(a, defn(a, "Store.get"), "python")
     assert "directly or through one intermediate function" in q
@@ -88,6 +91,26 @@ def test_python_questions(tmp_path):
     q, key = st.importers_question(a, module, "python")
     assert q.startswith("Which files import the module `pkg.core`, or import names from it?")
     assert key == ("pkg/other.py", "tests/test_core.py")
+
+
+def test_a_python_function_also_used_as_a_value_is_not_asked_about(tmp_path):
+    # a callback is a reference but not a call: whether its user "calls" it is ambiguous
+    a = st.python_analysis(python_repo(tmp_path))
+    assert st._entries(a.callers(defn(a, "run"))) == {"pkg/other.py:main", "tests/test_core.py:test_run"}
+    a = st.python_analysis(python_repo(tmp_path / "v", "\n\nHANDLERS = [run]\n"))
+    assert a.callers(defn(a, "run")) is None
+
+
+def test_a_repo_never_gets_two_questions_with_one_answer(tmp_path, monkeypatch):
+    twins = "\n\ndef a1():\n    return 1\n\n\ndef a2():\n    return 2\n"
+    twins += "\n\ndef c1():\n    return a1() + a2()\n\n\ndef c2():\n    return a1() * a2()\n"
+    root = python_repo(tmp_path, twins)
+    monkeypatch.setattr(st.workspace, "worktree", lambda *a, **k: root)
+    pin = st.config.PinnedRepo("o/pkg", "python", "v1", "c" * 40)
+    tasks = st.repo_tasks(pin, tmp_path / "cache", 1, callers=8, two_hop=8, importers=4)
+    keys = [t.gold for t in tasks]
+    assert len(keys) == len(set(keys)) and ("pkg/core.py:c1", "pkg/core.py:c2") in keys
+    assert sum(t.id.startswith("pkg-callers-") for t in tasks) <= 8
 
 
 def test_python_module_names():

@@ -25,6 +25,8 @@ CALLERS_SIZE = (2, 15)
 TWO_HOP_SIZE = (3, 25)
 IMPORTERS_SIZE = (2, 15)
 FUNCTION_LIKE = ("function", "test-fn")
+# the keys count a recursive function as its own caller; the question says so (a pilot run left it out on purpose)
+EVERY = "including test functions and, if it calls itself, the function itself"
 
 
 @dataclass(frozen=True)
@@ -209,10 +211,8 @@ def python_analysis(root: Path) -> Analysis:
 
     def resolve(site: Site) -> set | None:
         if site not in memo:
-            if site.path not in scripts:
-                scripts[site.path] = jedi.Script(sources[site.path], path=str(root / site.path), project=project)
             try:
-                names = scripts[site.path].goto(site.line, site.col, follow_imports=True)
+                names = script(site.path).goto(site.line, site.col, follow_imports=True)
             except Exception:
                 names = []
             got = set()
@@ -225,8 +225,40 @@ def python_analysis(root: Path) -> Analysis:
             memo[site] = got or None
         return memo[site]
 
+    import_lines = {rel: gold.python_import_lines(src) for rel, src in sources.items()}
+    refs_memo: dict[Def, set | None] = {}
+
+    def script(rel: str) -> jedi.Script:
+        if rel not in scripts:
+            scripts[rel] = jedi.Script(sources[rel], path=str(root / rel), project=project)
+        return scripts[rel]
+
+    def references(d: Def) -> set | None:
+        """Where jedi sees d used, except its definition and import lines. A use that is not a call (a callback,
+        `map(d, ...)`) would make "who calls it" ambiguous, so `callers` rejects any that aren't call sites."""
+        if d not in refs_memo:
+            try:
+                found = script(d.path).get_references(d.line, d.col, include_builtins=False)
+            except Exception:
+                refs_memo[d] = None
+                return None
+            out = set()
+            for r in found:
+                try:
+                    path = str(Path(r.module_path).relative_to(root)) if r.module_path else None
+                except ValueError:
+                    path = None
+                if path is None or path not in sources or r.line is None:
+                    continue
+                if (path, r.line) == (d.path, d.line) or r.line in import_lines[path]:
+                    continue
+                out.add((path, r.line, r.column))
+            refs_memo[d] = out
+        return refs_memo[d]
+
     a.resolve = resolve
     a.identity = lambda d: (d.path, d.line)
+    a.references = references
     return a
 
 
@@ -394,7 +426,7 @@ def callers_question(a: Analysis, d: Def, lang: str) -> tuple[str, tuple[str, ..
     if not CALLERS_SIZE[0] <= len(key) <= CALLERS_SIZE[1]:
         return None
     return (
-        f"Which functions call `{_display(d, lang)}`, defined in `{d.path}`? List every one, including test functions.",
+        f"Which functions call `{_display(d, lang)}`, defined in `{d.path}`? List every one, {EVERY}.",
         key,
     )
 
@@ -414,7 +446,7 @@ def two_hop_question(a: Analysis, d: Def, lang: str) -> tuple[str, tuple[str, ..
         return None
     return (
         f"Which functions call `{_display(d, lang)}`, defined in `{d.path}`, either directly or through one "
-        "intermediate function? List every one, including test functions.",
+        f"intermediate function? List every one, {EVERY}.",
         tuple(sorted(key)),
     )
 
@@ -435,9 +467,13 @@ def common_names(a: Analysis) -> set[str]:
     return {n for n, k in count.items() if k > 1}
 
 
-def pick(a: Analysis, lang: str, make: Callable, common: int, unique: int, rng: random.Random) -> list[tuple]:
+def pick(
+    a: Analysis, lang: str, make: Callable, common: int, unique: int, rng: random.Random, taken: set | None = None
+) -> list[tuple]:
     """(def, question, key, is_common) for up to `common` common-name targets and `unique` others; a common one
-    that can't be found is replaced by a unique one."""
+    that can't be found is replaced by a unique one. A question whose key is in `taken`, or repeats one picked
+    here, is passed over."""
+    taken = set(taken or ())
     names = common_names(a)
     seen: dict[tuple[str, str], int] = defaultdict(int)
     for d in a.defs:
@@ -457,12 +493,18 @@ def pick(a: Analysis, lang: str, make: Callable, common: int, unique: int, rng: 
                 continue  # two functions of that name in the file: a question about it would be ambiguous
             if (d.name in names) == want_common and all(p[0] != d for p in picked):
                 made = make(a, d, lang)
-                if made:
+                if made and made[1] not in taken:
+                    taken.add(made[1])
                     picked.append((d, *made, want_common))
     return picked
 
 
-def repo_tasks(pin: config.PinnedRepo, cache: Path, seed: int) -> list[Task]:
+def repo_tasks(
+    pin: config.PinnedRepo, cache: Path, seed: int, callers: int = 2, two_hop: int = 2, importers: int = 1
+) -> list[Task]:
+    """Up to `callers` and `two_hop` questions (half about names defined more than once) and `importers` more.
+    A question whose answer equals an earlier one's is dropped: the pilot's two requests two-hop questions had the
+    same answer, which counts one finding twice."""
     root = workspace.worktree(pin.repo, pin.commit, "build", cache)
     if pin.lang == "python":
         import jedi
@@ -475,7 +517,12 @@ def repo_tasks(pin: config.PinnedRepo, cache: Path, seed: int) -> list[Task]:
     rng = random.Random(f"{seed}:{pin.repo}")
     tasks = []
 
-    def add(kind: str, label: str, question: str, key: tuple[str, ...], answer: str, stratum: str) -> None:
+    answers: set[tuple[str, ...]] = set()
+
+    def add(kind: str, label: str, question: str, key: tuple[str, ...], answer: str, stratum: str) -> bool:
+        if key in answers:
+            return False
+        answers.add(key)
         tasks.append(
             Task(
                 id=f"{short}-{kind}-{label}",
@@ -490,20 +537,31 @@ def repo_tasks(pin: config.PinnedRepo, cache: Path, seed: int) -> list[Task]:
                 stratum=stratum,
             )
         )
+        return True
 
-    for kind, make in (("callers", callers_question), ("two-hop", two_hop_question)):
-        for d, question, key, is_common in pick(a, pin.lang, make, 1, 1, rng):
+    for kind, make, n in (("callers", callers_question, callers), ("two-hop", two_hop_question, two_hop)):
+        common = n // 2 + n % 2
+        for d, question, key, is_common in pick(a, pin.lang, make, common, n - common, rng, taken=answers):
             add(kind, d.qualname, question, key, "functions", f"{kind}:{'common' if is_common else 'unique'}")
     modules = sorted(a.modules, key=lambda m: m.file)
     rng.shuffle(modules)
+    made_importers = 0
     for m in modules:
-        made = importers_question(a, m, pin.lang)
-        if made:
-            add("importers", m.file.replace("/", "."), *made, "files", "importers")
+        if made_importers == importers:
             break
+        made = importers_question(a, m, pin.lang)
+        if made and add("importers", m.file.replace("/", "."), *made, "files", "importers"):
+            made_importers += 1
     return tasks
 
 
-def build(seed: int = config.SEED, cache: Path | None = None) -> list[Task]:
+def build(
+    seed: int = config.SEED, profile: config.Profile = config.PROFILES["pilot"], cache: Path | None = None, log=print
+) -> list[Task]:
     cache = cache or config.cache_dir()
-    return [t for pin in config.STRUCTURAL_REPOS for t in repo_tasks(pin, cache, seed)]
+    tasks = []
+    for pin in profile.repos:
+        made = repo_tasks(pin, cache, seed, *profile.questions)
+        log(f"{pin.repo}@{pin.tag}: {len(made)} questions")
+        tasks += made
+    return tasks

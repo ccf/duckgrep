@@ -119,3 +119,14 @@ def test_harness_reports_its_commit_and_any_difference_from_it(tmp_path):
     assert cli.harness(repo) == {"commit": commit, "dirty": False}
     (repo / "new.py").write_text("")  # an untracked module changes what runs, too
     assert cli.harness(repo)["dirty"]
+
+
+def test_build_drops_the_tasks_its_curation_file_lists(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    from bench.eval.tasks import localization
+
+    made = [Task(i, "localization", "rust", "o/r", "c", "p", ("a.rs:f",), "s") for i in ("keep", "bundled")]
+    monkeypatch.setattr(localization, "build", lambda **kw: made)
+    (tmp_path / "x-curation.jsonl").write_text(json.dumps({"id": "bundled", "reason": "an unrelated feature"}) + "\n")
+    assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 0
+    assert [t.id for t in suite.load(tmp_path / "x-localization.jsonl")] == ["keep"]

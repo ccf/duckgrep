@@ -151,6 +151,17 @@ def test_rust_insertion_after_a_closing_brace_is_outside_the_function():
     )
 
 
+def test_a_visibility_only_edit_is_not_the_fix():
+    # pixi-6335: `pub(crate) fn invalid()` -> `pub fn invalid()` came with an unrelated feature, not the fix
+    widened = BASE_RS.replace("pub fn new()", "pub(crate) fn new()")
+    assert key("src/walk.rs", widened, BASE_RS, "rust") == ()
+    assert key("src/walk.rs", BASE_RS, BASE_RS.replace("pub fn run()", "fn run()"), "rust") == ()
+    both = BASE_RS.replace("pub fn run()", "pub(super) fn run()").replace("    1\n}", "    2\n}")
+    assert key("src/walk.rs", BASE_RS, both, "rust") == ("src/walk.rs:run",)  # its body changed too
+    typed = BASE_RS.replace("pub fn run() -> u32", "pub(crate) fn run() -> u64")
+    assert key("src/walk.rs", BASE_RS, typed, "rust") == ("src/walk.rs:run",)  # more than visibility
+
+
 def test_rust_units_mark_test_code():
     kinds = {u.qualname: u.kind for u in gold.rust_units(BASE_RS)}
     assert kinds["Walker.new"] == "function" and kinds["run"] == "function"

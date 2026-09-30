@@ -225,6 +225,42 @@ def _insertion_owner(units: list[Unit], before: int, added: list[str], base: lis
     return f if len(first) - len(first.lstrip()) > len(head) - len(head.lstrip()) else None
 
 
+RUST_VISIBILITY = re.compile(r"\bpub(?:\s*\((?:crate|super|self|in\s+[\w:]+)\))?\s+")
+
+
+def _visibility_only(hunk, lang: str) -> set[int]:
+    """Indices of the hunk's lines that only change a Rust item's visibility (`fn` <-> `pub fn` <->
+    `pub(crate) fn`): each removed line of a change block paired with its added line, when the two differ in
+    nothing else. Such an edit exposes a function to other code; it doesn't fix it."""
+    if lang != "rust":
+        return set()
+    items = list(hunk)
+    same: set[int] = set()
+    i = 0
+    while i < len(items):
+        if not items[i].is_removed:
+            i += 1
+            continue
+        removed = []
+        while i < len(items) and items[i].is_removed:
+            removed.append(i)
+            i += 1
+        added = []
+        while i < len(items) and items[i].is_added:
+            added.append(i)
+            i += 1
+        if len(removed) != len(added):
+            continue
+
+        def bare(k: int) -> str:
+            return " ".join(RUST_VISIBILITY.sub("", items[k].value).split())
+
+        for r, a in zip(removed, added, strict=True):
+            if items[r].value.strip() != items[a].value.strip() and bare(r) == bare(a):
+                same |= {r, a}
+    return same
+
+
 @dataclass(frozen=True)
 class Key:
     entries: tuple[str, ...]  # sorted: "path:Qual.name" and "path"
@@ -275,7 +311,10 @@ def derive(patch: str, read: Callable[[str], str | None], lang: str) -> Key:
 
         for hi, (hunk, delta) in enumerate(hunks):
             items = list(hunk)
+            exposed = _visibility_only(hunk, lang)
             for i, ln in enumerate(items):
+                if i in exposed:
+                    continue
                 if ln.is_removed:
                     line = ln.source_line_no + delta
                     if _blank_or_comment(ln.value, lang) or line in old_imports or outermost(units, line, TEST):
@@ -286,6 +325,8 @@ def derive(patch: str, read: Callable[[str], str | None], lang: str) -> Key:
                     for j in range(i, len(items)):
                         if not items[j].is_added:
                             break
+                        if j in exposed:
+                            continue
                         if not (_blank_or_comment(items[j].value, lang) or where[(hi, j)] in new_imports):
                             run.append(items[j].value.rstrip("\r\n"))
                     if not run:

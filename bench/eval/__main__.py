@@ -58,19 +58,24 @@ def parser() -> argparse.ArgumentParser:
 
 
 def build(a) -> int:
+    """Draw the suite's tasks by its profile (an unknown name draws like the pilot), minus those its curation
+    file, <suite>-curation.jsonl, drops: one {"id", "reason"} per line."""
     cache = config.cache_dir()
-    if a.kind in ("localization", "all"):
-        from .tasks import localization
+    profile = config.PROFILES.get(a.suite, config.PROFILES["pilot"])
+    curation = config.SUITES_DIR / f"{a.suite}-curation.jsonl"
+    dropped = {r["id"]: r["reason"] for r in report.load(curation)}
+    from .tasks import localization, structural
 
-        tasks = localization.build(seed=a.seed, cache=cache)
-        suite.save(config.SUITES_DIR / f"{a.suite}-localization.jsonl", tasks)
-        print(f"{len(tasks)} localization tasks")
-    if a.kind in ("structural", "all"):
-        from .tasks import structural
-
-        tasks = structural.build(seed=a.seed, cache=cache)
-        suite.save(config.SUITES_DIR / f"{a.suite}-structural.jsonl", tasks)
-        print(f"{len(tasks)} structural tasks")
+    for kind, builder in (("localization", localization), ("structural", structural)):
+        if a.kind not in (kind, "all"):
+            continue
+        tasks = builder.build(seed=a.seed, profile=profile, cache=cache)
+        kept = [t for t in tasks if t.id not in dropped]
+        suite.save(config.SUITES_DIR / f"{a.suite}-{kind}.jsonl", kept)
+        print(
+            f"{len(kept)} {kind} tasks"
+            + (f" ({len(tasks) - len(kept)} dropped by curation)" if len(kept) < len(tasks) else "")
+        )
     return 0
 
 
