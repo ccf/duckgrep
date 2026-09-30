@@ -136,9 +136,19 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
     return problems
 
 
-def measure(tr: stream.Transcript, task: Task, setup_name: str, cache: Path) -> dict:
+def visible(cache: Path, task: Task, left: list[str]) -> set[str] | None:
+    """The files a run could see: those at the task's commit and those it created (`left`, its worktree changes
+    in porcelain form). None when the commit cannot be listed."""
+    files = workspace.listing(cache, task.repo, task.commit)
+    if files is None:
+        return None
+    return set(files) | {c[3:] for c in left if c[:2] in ("??", "!!")}
+
+
+def measure(tr: stream.Transcript, task: Task, setup_name: str, cache: Path, left: list[str] | tuple = ()) -> dict:
     """What a record takes from a run's transcript: the configuration check, the metrics, the answer and its
-    score, and turns to locate. `rescore` recomputes exactly these."""
+    score, and turns to locate. `left` is what the run left in its worktree. `rescore` recomputes exactly
+    these."""
     setup = setups.SETUPS[setup_name]
     wt = workspace.worktree_path(cache, setup_name, task.repo, task.commit)
     m = stream.metrics(tr)
@@ -152,7 +162,7 @@ def measure(tr: stream.Transcript, task: Task, setup_name: str, cache: Path) -> 
         "answer": answer,
         "score": score.score(answer, task.gold, task.answer, (str(wt), os.path.realpath(wt))).as_dict(),
         "turns_to_locate": locate.turns_to_locate(
-            tr, found, (str(wt), os.path.realpath(wt)), workspace.listing(cache, task.repo, task.commit)
+            tr, found, (str(wt), os.path.realpath(wt)), visible(cache, task, list(left))
         ),
     }
 
@@ -176,7 +186,7 @@ def rescore(out_dir: Path, tasks: list[Task], cache: Path) -> Counter:
         sources = task is not None and all(read(e.partition(":")[0]) is not None for e in task.gold)
         if sources and transcript.exists():
             with gzip.open(transcript, "rt") as f:
-                new = measure(stream.read(f), by_id[rec["task"]], rec["setup"], cache)
+                new = measure(stream.read(f), task, rec["setup"], cache, rec.get("worktree_changes") or [])
             changed.update(k for k, v in new.items() if rec.get(k) != v)
             rec = {**rec, **new}
         else:
@@ -252,7 +262,7 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             "stratum": task.stratum,
             "killed": killed,
             "wall_s": round(wall, 1),
-            **measure(tr, task, run.setup, cache),
+            **measure(tr, task, run.setup, cache, workspace.changes(wt)),
         }
     finally:
         changed, moved = workspace.reset(wt, task.commit)

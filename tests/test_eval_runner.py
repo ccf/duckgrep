@@ -506,3 +506,16 @@ def test_rescore_keeps_a_record_whose_source_is_gone(tmp_path):
     (cache / "repos" / "o__r.git").rename(cache / "repos" / "moved.git")  # the clone left the cache
     changed = runner.rescore(out, [t], cache)
     assert json.loads((out / "results.jsonl").read_text())["turns_to_locate"] == 7 and changed["missing"] == 1
+
+
+def test_the_files_a_run_could_see_are_the_commits_and_those_it_created(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.clone("o/r", cache, url=str(src))
+    left = ["?? tests/a.py", " M src/a.py", "!! src/__pycache__/a.cpython-312.pyc"]
+    assert runner.visible(cache, task(1, commit), left) == {
+        "src/a.py",
+        "tests/a.py",
+        "src/__pycache__/a.cpython-312.pyc",
+    }
+    assert runner.visible(cache, task(1, "f" * 40), left) is None  # no commit to list: nothing to narrow by
