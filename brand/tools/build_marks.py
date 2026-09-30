@@ -5,6 +5,7 @@ import os
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools.ttLib import TTFont
+from palette import colors
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BRAND = os.path.dirname(HERE)
@@ -14,9 +15,10 @@ SANS = TTFont(f"{FNT}/fontsource-hanken-grotesk-5.3.0/package/files/hanken-grote
 OUT = os.path.join(BRAND, "logos")
 os.makedirs(OUT, exist_ok=True)
 
-YELLOW = "#fff100"
-INK = "#0d0d0d"
-PAPER = "#f2f2f2"
+LIGHT, DARK = colors("light"), colors("dark")  # tokens.json
+YELLOW = LIGHT["duck-yellow"]
+INK = LIGHT["ink"]
+PAPER = DARK["ink"]
 
 # ---- the duck-d, in font units (y up), sized to JetBrains Mono 800 ----
 R = 275  # bowl radius

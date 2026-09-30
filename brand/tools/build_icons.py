@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 
+from palette import colors
 from PIL import Image
 from playwright.async_api import async_playwright
 
@@ -12,7 +13,9 @@ BRAND = os.path.dirname(HERE)
 OUT = os.path.join(BRAND, "_build")
 os.makedirs(OUT, exist_ok=True)
 FNT = os.environ.get("DUCKGREP_FONTS", os.path.join(HERE, "fonts"))  # see tools/README.md
-Y, INK, PAPER = "#fff100", "#0d0d0d", "#f2f2f2"
+LIGHT, DARK = colors("light"), colors("dark")  # tokens.json
+Y, INK, PAPER = LIGHT["duck-yellow"], LIGHT["ink"], DARK["ink"]
+ORANGE = LIGHT["accent-orange"]
 
 
 # Small-size duck-d on a 32 grid: heavier stem, bigger eye so it survives 16px.
@@ -44,37 +47,29 @@ FONTS = f"""
 @font-face{{font-family:'JetBrains Mono';font-weight:700;src:url(file://{FNT}/fontsource-jetbrains-mono-5.3.0/package/files/jetbrains-mono-latin-700-normal.woff2)}}
 """
 
-THEMES = {
-    "dark": dict(
-        bg="#0d0d0d",
-        ink="#f2f2f2",
-        muted="#b2b2b2",
-        code="#141414",
-        border="#333333",
-        path="#5fafff",
-        ln="#00af00",
-        str="#ffd700",
-        prompt="#888888",
-        mbg="#454100",
-        mink="#fff866",
-        slab="#1a1a1a",
-        lockup="duckgrep-lockup-dark.svg",
-    ),
-    "light": dict(
-        bg="#fcfcfc",
-        ink="#0d0d0d",
-        muted="#666666",
-        code="#f7f7f7",
-        border="#e6e6e6",
-        path="#005fff",
-        ln="#007a00",
-        str="#875f00",
-        prompt="#626262",
-        mbg="#fff100",
-        mink="#0d0d0d",
-        slab="#0d0d0d",
-        lockup="duckgrep-lockup-light.svg",
-    ),
+
+def theme(c, slab, lockup):
+    """A social card's palette from one theme's tokens."""
+    return dict(
+        bg=c["surface"],
+        ink=c["ink"],
+        muted=c["ink-muted"],
+        code=c["surface-code"],
+        border=c["border"],
+        path=c["code-keyword"],
+        ln=c["code-function"],
+        str=c["code-string"],
+        prompt=c["code-comment"],
+        mbg=c["match-bg"],
+        mink=c["match-ink"],
+        slab=slab,
+        lockup=lockup,
+    )
+
+
+THEMES = {  # the cover slab is the raised surface in dark, ink in light
+    "dark": theme(DARK, DARK["surface-raised"], "duckgrep-lockup-dark.svg"),
+    "light": theme(LIGHT, LIGHT["ink"], "duckgrep-lockup-light.svg"),
 }
 
 
@@ -104,7 +99,7 @@ def card(w, h, t, pad):
       <g fill="{Y}">{dots}
         <circle cx="{slab_x + 150}" cy="{h - 120}" r="150"/>
         <rect x="{w - 116}" y="{pad}" width="64" height="{h}" rx="32"/></g>
-      <circle cx="{slab_x - 60}" cy="{pad + 40}" r="28" fill="#ff6900"/>
+      <circle cx="{slab_x - 60}" cy="{pad + 40}" r="28" fill="{ORANGE}"/>
     </svg>
     <div class="left"><div class="lock">{lock}</div>
       <div class="lede">Grep finds strings.<br>duckgrep <span class="hl">answers questions.</span></div>

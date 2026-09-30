@@ -65,6 +65,10 @@
   }
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 :root[data-theme="dark"] {
   --duck-yellow: #fff100;
   --duck-yellow-hover: #eddd0c;
@@ -87,6 +91,7 @@
   --code-function: #00af00;
   --code-comment: #888888;
   --code-error: #ff6a6a;
+  color-scheme: dark;
 }
 
 .type-display { font-family: var(--font-sans); font-size: 64px; line-height: 60px; font-weight: 700; letter-spacing: -0.02em; }
