@@ -70,29 +70,37 @@ The question: does a Claude Code agent find code with fewer tool calls, tokens a
   - 10 Rust localizations: 5 from SWE-bench Multilingual and 5 SWE-bench-Live issues from after the model's training cutoff.
   - 10 Python and 10 Rust structural questions about callers, two-hop callers and importers, with keys from jedi and rust-analyzer.
 - **Setups:** three, each with Claude Code's Bash, Read, Grep and Glob. The baseline has nothing more; the others add duckgrep's `query` tool or Serena's navigation tools.
-- **Runs:** two repetitions of each task and setup, 240 runs in all. They used Claude Code 2.1.285 with Sonnet 5.5 at medium effort, on the harness at main 407a30a. All 240 completed, at a total cost of $7.40.
-- **Turns to locate:** recomputed from the saved transcripts with the rule in `bench/eval/locate.py` (`python -m bench.eval rescore`). A function now counts as located when a result shows its definition, not merely its name. Under the first rule, duckgrep's structural gains below were −0.25 and −0.20 rounds with intervals spanning zero, because its JSON-escaped rows hid the names.
+- **Runs:** two repetitions of each task and setup, 240 runs in all, made on 2026-09-30 with Claude Code 2.1.285 and Sonnet 5.5 at medium effort. All 240 completed, at a total cost of $7.40.
+- **Harness version:** main 407a30a, taken from the operator's notes, because the pilot predates the per-run record of the harness commit. The records were then rescored with this branch's code, and only turns to locate changed, in 31 records.
+- **Turns to locate:** a function counts as located when a result identifies it, by either of two routes:
+  - its definition line in its file;
+  - its qualified name in its file, from a structured tool. A duckgrep row names the function that encloses a call, whereas a grep hit on the call gives only its file and line.
+
+  A call, a docstring or a same-named token does not count. The first implementation counted them, and it also missed duckgrep's JSON-escaped rows; see `bench/eval/locate.py` and `python -m bench.eval rescore`.
 
 **Findings.**
 - **Structural questions: agents use duckgrep, and it saves round trips.** Agents called it in 75% of runs. Accuracy stayed level: 100% and 95% success, against the baseline's 100% and 90%. With duckgrep:
-  - Round trips fell to ×0.83 [0.75, 0.91] on Python (better on 90% of tasks) and ×0.87 [0.77, 0.97] on Rust (75%).
-  - Agents saw a gold location about half a round earlier: −0.45 [−0.75, −0.15] rounds on Python and −0.50 [−0.75, −0.25] on Rust.
-  - Tool calls (−14% to −15%) and tokens (−10% to −13%) point the same way, but their intervals include no change.
-- **Localization: neither tool was used.** Given an issue, the agent went straight to Grep and Read in all 80 duckgrep and Serena runs. Those tables therefore measure what it costs to carry the tool, which for duckgrep is nothing measurable (tokens ×1.01 and ×0.93).
-- **Serena costs more than it gives here.** It was used in 2 of 120 runs. Its tool definitions and instructions add 44% to 53% tokens and 7% to 17% cost to every run, and it beat the baseline on at most 20% of tasks.
+  - Python round trips fell from typically 3.8 to 3.0: ×0.83 [0.75, 0.91] on log(1 + n), better on 8 of 10 tasks and worse on none.
+  - Rust round trips fell from typically 3.6 to 3.0: ×0.87 [0.77, 0.97], better on 5 tasks and tied on 5.
+  - Tool calls (typically 2.7 against 3.4, and 2.4 against 2.9) and tokens (×0.87 and ×0.90) point the same way. But their intervals include no change, and differences of that size also appear where duckgrep went unused (see below).
+- **What the saved round is.** In round 1, every setup showed a line of a gold caller (its file and line) in 32 of 40 runs. duckgrep's rows also name the function each call sits in, which a grep hit doesn't. So agents with duckgrep identified the gold callers about half a round sooner: turns to locate −0.45 [−0.75, −0.15] on Python and −0.50 [−0.75, −0.25] on Rust. This is the round-trip saving seen from another side, not separate evidence.
+- **Localization: neither tool was used.** Given an issue, the agent used only the built-in tools (Grep, Read and Bash) in all 80 duckgrep and Serena runs, so those tables measure noise and the cost of carrying a tool.
+  - The noise is large. With duckgrep unused, Rust localization still shows tool calls at ×0.87 [0.77, 1.00], and the post-cutoff subset shows turns to locate at −1.10 [−2.30, −0.20].
+  - duckgrep's tool definition adds about 900 tokens to each request, some 3,000 per run, or about 10% of a Python localization run. That's too little for these tables to resolve: tokens came out at ×1.01 and ×0.93.
+- **Serena costs more than it gives here.** Its tools were called in 2 of its 80 runs. Its tool definitions and instructions add about 4,300 tokens to each request. On a typical run that's 44% to 53% more tokens and 7% to 17% more cost, and Serena was cheaper than the baseline on at most a fifth of tasks.
 - **Accuracy doesn't separate the setups.** Every failed run was checked against the fix and the source, and there was no scoring bug or wrong key.
-  - The one interval that excludes zero, Serena's −15 points on Python localization, comes from runs that never called Serena. They had the same tool traces as successful runs, with a different final answer.
+  - The only accuracy intervals that exclude zero are Serena's on localization: −15 points of success on Python, and −0.16 F1 on the post-cutoff Rust issues. Neither comes from Serena, which those runs never called. Two of the Python misses (astropy, seaborn) have the same tool traces as successful runs, with a different final answer. The other two are the sympy miss the baseline also made.
   - 17 of the 34 failures come from keys stricter than the issue. pixi-6335 and rspack-14803 fail all 6 runs although every run named the core fix: their keys include edits the issue gives no reason for, such as visibility-only `pub(crate)` → `pub` hunks and an unrelated feature in pixi's PR. rust-analyzer-22751 and tokio-6603 lose runs that named an equivalent fix site.
-  - The rest are agent misses: stopping at the symptom (sympy), misreading the issue (rust-analyzer), or passing over or misattributing a grep hit. duckgrep's enclosing-function column avoids that last error: on ripgrep's two-hop question the baseline went 0/2 and duckgrep 2/2.
-- **No comparison can pass the correction.** With 10 tasks per table the smallest possible Wilcoxon p is 0.002, and Holm multiplies it by 80. The intervals and win rates are the evidence.
+  - The rest are agent misses: stopping at the symptom (sympy), misreading the issue (rust-analyzer), or passing over or misattributing a grep hit.
+- **No comparison can pass the correction.** With 10 tasks per table the smallest possible Wilcoxon p is 0.002, and Holm multiplies it by 80. The intervals and win rates are the evidence, read against the noise above.
 
 **For the full run.**
-- **Add tasks, not repetitions.** Run-to-run variance is 24% to 39% of the total, so 2 repetitions are enough. From the pilot's paired spread, 80% power after correction needs:
-  - 17 to 46 tasks per table for duckgrep's round trips and turns to locate on structural questions;
-  - about 80 for tool calls;
-  - 150 to 230 for tokens.
+- **Add tasks, not repetitions.** Run-to-run variance is 24% to 39% of the total, so 2 repetitions are enough. From the pilot's paired spread (80% power after Holm correction over 80 tests; t-approximation with ×1.15 for the Wilcoxon test), detecting duckgrep's effects on structural questions needs:
+  - its round-trip saving: about 22 tasks per table on Python and 51 on Rust;
+  - tool calls: about 88;
+  - tokens: 151 to 235.
 
-  50 structural questions per language is the useful size.
+  About 50 structural questions per language is the useful size.
 - **Localization needs the hinted setup** that the spec plans as the follow-up. More tasks under a neutral prompt only measure whether the agent discovers the tool, and the pilot shows it doesn't.
 - **Before building the suite:**
   - derive keys without visibility-only hunks;
@@ -164,9 +172,9 @@ How to read the tables: each row pairs a setup with the baseline task by task, a
 | cost ($) | 10 | 0.0254 | duckgrep 0.0225 | ×0.88 [0.69, 1.13] | 0.432 | 1.000 | 70% |
 | cost ($) | 10 | 0.0254 | serena 0.0292 | ×1.15 [1.04, 1.28] | 0.049 | 1.000 | 20% |
 | turns to locate | 10 | 1.6 | duckgrep 1.1 | -0.45 [-0.75, -0.15] | 0.062 | 1.000 | 75% |
-| turns to locate | 10 | 1.6 | serena 1.9 | +0.30 [+0.00, +0.75] | 0.500 | 1.000 | 40% |
+| turns to locate | 10 | 1.6 | serena 1.8 | +0.20 [+0.00, +0.50] | 0.500 | 1.000 | 40% |
 | located | 10 | 100% | duckgrep 100% | +0 pp [+0, +0] | 1.000 | 1.000 | 50% |
-| located | 10 | 100% | serena 95% | -5 pp [-15, +0] | 1.000 | 1.000 | 45% |
+| located | 10 | 100% | serena 100% | +0 pp [+0, +0] | 1.000 | 1.000 | 50% |
 | success | 10 | 100% | duckgrep 100% | +0 pp [+0, +0] | 1.000 | 1.000 | 50% |
 | success | 10 | 100% | serena 90% | -10 pp [-25, +0] | 0.500 | 1.000 | 40% |
 | F1 | 10 | 1.00 | duckgrep 0.98 | -0.02 [-0.05, +0.00] | 0.500 | 1.000 | 40% |

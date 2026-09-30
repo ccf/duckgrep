@@ -83,7 +83,7 @@ Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, name
 - `bench/eval/` is the A/B harness (spec in `docs/specs/2026-09-29-ab-eval-harness-design.md`):
   - It runs the real `claude` CLI in a scrubbed environment under three setups, which differ only in one MCP server.
   - It parses stream-json and scores against answer keys, which come from fix patches or from jedi and rust-analyzer SCIP.
-  - Turns to locate (`locate.py`) counts a function located when a tool result shows its definition (line, qualified name, or definition line), never a call or a same-named token. `rescore` recomputes every measurement from the saved transcripts.
+  - Turns to locate (`locate.py`) counts a function located when a result identifies it: its definition line in its file, or its qualified name from a duckgrep row or Serena symbol. A call, a docstring or a same-named token never counts. Paths follow the shell's `cd` across Bash calls. `rescore` recomputes every measurement from the saved transcripts.
   - Suites are committed JSONL files; raw runs go under the gitignored `bench/eval/runs/`.
 - `brand/` is the design system. `brand/README.md` holds the rules for the README, docs, site and social cards (name, messaging, voice, colour, type); `brand/tools/` regenerates its derived files (tokens.css, logos, favicons, cards).
 
