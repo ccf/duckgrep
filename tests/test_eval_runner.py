@@ -168,6 +168,9 @@ def test_execute_counts_a_function_located_when_its_definition_shows(tmp_path):
     # round 1's grep now also shows a call to hello; its definition first shows in round 2's read
     shown = "src/a.py:4:def needle_fn():"
     events = json.loads(json.dumps(events).replace(shown, shown + "\\nsrc/a.py:5:    return hello()"))
+    # the recording's sanitised root stands for the worktree it ran in; a path outside the run's own is another checkout
+    wt = workspace.worktree_path(cache, "baseline", "o/r", commit)
+    events = json.loads(json.dumps(events).replace("/work/proj", str(wt)))
     exe, _ = fake_claude(tmp_path, events)
     hello = Task("t1", "localization", "python", "o/r", commit, "p", ("src/a.py:hello",), "s")
     rec = runner.execute(runner.Run(hello, "baseline", 1), cache, tmp_path / "out", 1, exe)

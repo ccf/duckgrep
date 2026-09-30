@@ -34,6 +34,8 @@ SED = re.compile(r"\bsed\s+-n\s+['\"]?(\d+),(\d+)p")
 CD = re.compile(r"^\s*cd\s+(\S+)\s*$")
 SEPARATORS = re.compile(r"&&|\|\||;|\||\n")
 SERENA_MARK = re.compile(r"^\s*>\s*(\d+):")  # a reference line in Serena's content_around_reference
+PATH_TEXT = re.compile(rf"^\s*(?P<path>{SOURCE}):(?P<text>.*)$")  # grep without -n across files
+SECTION = re.compile(r"^==> (?P<path>.+?) <==$")  # head and tail across files
 GENERIC = {"__init__.py", "__main__.py", "mod.rs", "lib.rs", "main.rs"}  # file names that need their directory
 
 
@@ -71,7 +73,10 @@ def targets(entries: Iterable[str], read: Callable[[str], str | None]) -> list[T
 class Evidence:
     pairs: list[tuple[str, int]] = field(default_factory=list)  # (path, line) shown
     names: list[tuple[str, str]] = field(default_factory=list)  # (path, qualified name) named by a structured tool
-    loose: list[str] = field(default_factory=list)  # output lines that could not be placed in a file
+    # output lines without a usable line number, with the file(s) they may be from: () when that is unknown
+    loose: list[tuple[tuple[str, ...], str]] = field(default_factory=list)
+    # numbered lines that may come from any of several files the call names: (those files, number, text)
+    numbered: list[tuple[tuple[str, ...], int, str]] = field(default_factory=list)
     files: list[str] = field(default_factory=list)  # source files the call's input names
     paths: list[str] = field(default_factory=list)  # source files its output lists
     text: str = ""  # the call's input and result (duckgrep's decoded)
@@ -93,9 +98,10 @@ def _path(path: str, cwd: str, roots: tuple[str, ...]) -> str:
     return "" if path == "." else path
 
 
-def same_path(shown: str, path: str) -> bool:
-    """`shown` names `path`: equal, or, for an absolute path outside the known roots, ending with it."""
-    return shown == path or (shown.startswith("/") and shown.endswith("/" + path))
+def same_path(shown: str, path: str, strict: bool = False) -> bool:
+    """`shown` names `path`: equal, or, with no worktree roots to go by (`strict` false), an absolute path ending
+    with it. With roots, an absolute path left after stripping them is outside the worktree: another checkout."""
+    return shown == path or (not strict and shown.startswith("/") and shown.endswith("/" + path))
 
 
 def _is_glob(token: str) -> bool:
@@ -103,20 +109,20 @@ def _is_glob(token: str) -> bool:
     return "*" in token or name.startswith(".")
 
 
-def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bool, str, str, list]:
-    """The files a command names (resolved), whether it names a glob, the directory its output paths are
-    relative to, the shell's directory after it, and the (file, first, last) ranges `sed -n` prints of a file
-    it reads itself (not of piped output)."""
+def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bool, list[str], str, list]:
+    """The files a command names (resolved), whether it names a glob, the directories its commands ran in (which
+    relative output paths may be relative to), the shell's directory after it, and the (file, first, last)
+    ranges `sed -n` prints of a file it reads itself (not of piped output)."""
     files: list[str] = []
     ranges: list[tuple[str, int, int]] = []
+    dirs: list[str] = []
     globbed = False
-    here = None
     for part in SEPARATORS.split(command):
         if m := CD.match(part):
             cwd = _path(m.group(1), cwd, roots)
             continue
-        if here is None and part.strip():
-            here = cwd  # output paths are relative to where the first command ran
+        if part.strip() and cwd not in dirs:
+            dirs.append(cwd)
         named = []
         for token in FILE.findall(part):
             if _is_glob(token):
@@ -126,7 +132,7 @@ def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bo
         files += named
         if len(named) == 1:
             ranges += [(named[0], int(a), int(b)) for a, b in SED.findall(part)]
-    return sorted(set(files)), globbed, cwd if here is None else here, cwd, ranges
+    return sorted(set(files)), globbed, dirs or [cwd], cwd, ranges
 
 
 def _duckgrep(result: str, ev: Evidence) -> None:
@@ -159,11 +165,19 @@ def _duckgrep(result: str, ev: Evidence) -> None:
                 continue
             ev.pairs += [(path, int(row[i])) for i in lines if i < len(row) and row[i].strip().isdigit()]
             ev.names += [(path, row[i].strip()) for i in quals if i < len(row) and row[i].strip()]
-    ev.loose += [cell for row in rows[1:] for cell in row]
+    ev.loose += [((), cell) for row in rows[1:] for cell in row]
+
+
+def _serena_text(text: str, path: str | None, ev: Evidence) -> None:
+    """A string in Serena's output: its lines, and the 0-based line of each `> N:` reference marker."""
+    ev.loose += [((path,) if path else (), line) for line in text.splitlines()]
+    if path:
+        ev.pairs += [(path, int(m.group(1)) + 1) for line in text.splitlines() if (m := SERENA_MARK.match(line))]
 
 
 def _serena(node, path: str | None, ev: Evidence) -> None:
-    """Serena's JSON: symbols (name path, 0-based body location) under a relative path or a file key."""
+    """Serena's JSON: symbols (name path, 0-based body location) under a relative path or a file key, and the
+    reference lines in their snippets (0-based too: Serena 1.7.0 printed fd's time.rs line 75 as `> 74:`)."""
     if isinstance(node, dict):
         path = node.get("relative_path", path)
         if "name_path" in node and path:
@@ -172,18 +186,15 @@ def _serena(node, path: str | None, ev: Evidence) -> None:
             if isinstance(start, int):
                 ev.pairs.append((path, start + 1))
         for key, value in node.items():
-            inner = key if FILE.fullmatch(key) else path
-            if isinstance(value, str) and key not in ("name_path", "relative_path", "kind"):
-                ev.loose += value.splitlines()
+            if isinstance(value, str):
+                if key not in ("name_path", "relative_path", "kind"):
+                    _serena_text(value, path, ev)
             else:
-                _serena(value, inner, ev)
+                _serena(value, key if FILE.fullmatch(key) else path, ev)
     elif isinstance(node, list):
         for value in node:
             if isinstance(value, str):
-                ev.loose += value.splitlines()
-                for line in value.splitlines():
-                    if (m := SERENA_MARK.match(line)) and path:
-                        ev.pairs.append((path, int(m.group(1)) + 1))
+                _serena_text(value, path, ev)
             else:
                 _serena(value, path, ev)
 
@@ -200,13 +211,13 @@ def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Ev
     ev = Evidence(text=json.dumps(call.input) + "\n" + call.result)
     ranges: list[tuple[str, int, int]] = []
     if call.name == "Bash":
-        ev.files, globbed, here, cwd, ranges = _bash(call.input.get("command", ""), cwd, roots)
+        ev.files, globbed, dirs, cwd, ranges = _bash(call.input.get("command", ""), cwd, roots)
     else:  # Claude Code's Grep and Glob work, and print paths, relative to the shell's directory
         structured = call.name.startswith(("mcp__duckgrep", "mcp__serena"))
-        here = "" if structured else cwd
+        dirs = [""] if structured else [cwd]
         tokens = [t for v in call.input.values() if isinstance(v, str) for t in FILE.findall(v)]
         globbed = any(_is_glob(t) for t in tokens)
-        ev.files = sorted({_path(t, here, roots) for t in tokens if not _is_glob(t)})
+        ev.files = sorted({_path(t, dirs[0], roots) for t in tokens if not _is_glob(t)})
     if call.name == "Read":
         path = _path(call.input.get("file_path", ""), "", roots)
         for line in call.result.splitlines():
@@ -218,27 +229,45 @@ def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Ev
         try:
             data = json.loads(call.result)
         except json.JSONDecodeError:
-            ev.loose += call.result.splitlines()
+            ev.loose += [((), line) for line in call.result.splitlines()]
         else:
             _serena(data, call.input.get("relative_path") or None, ev)
     else:  # Grep, Bash, Glob and anything else: text
         one = ev.files[0] if len(ev.files) == 1 and not globbed else None
+
+        def candidates(path: str) -> tuple[str, ...]:  # a relative path, under each directory the command ran in
+            return tuple(dict.fromkeys(_path(path, d, roots) for d in dirs))
+
+        several = tuple(ev.files) if ev.files and not one else ()
+        section: tuple[str, ...] = (one,) if one else ()
         for line in call.result.splitlines():
             if m := PATH_LINE.match(line):
-                ev.pairs.append((_path(m.group("path"), here, roots), int(m.group("n"))))
+                ev.pairs += [(p, int(m.group("n"))) for p in candidates(m.group("path"))]
             elif one and (n := _number(line)) is not None:
                 ev.pairs.append((one, n))
+            elif several and (n := _number(line)) is not None:
+                ev.numbered.append((several, n, line))
+            elif m := SECTION.match(line.strip()):
+                section = candidates(m.group("path"))
+            elif m := PATH_TEXT.match(line):
+                ev.loose.append((candidates(m.group("path")), m.group("text")))
             else:
-                ev.loose.append(line)
+                ev.loose.append((section, line))
                 if FILE.fullmatch(line.strip()) and not _is_glob(line.strip()):
-                    ev.paths.append(_path(line, here, roots))  # a file list: Grep's files mode, Glob, ls
+                    ev.paths += candidates(line)  # a file list: Grep's files mode, Glob, ls
         for path, a, b in ranges:
             ev.pairs += [(path, n) for n in range(a, b + 1)]
     return ev, cwd
 
 
 def _names_path(text: str, path: str) -> bool:
-    return bool(re.search(rf"(?<![\w.@-]){re.escape(path)}(?!\w)", text))
+    """The text names `path` itself, not a longer path that ends with it."""
+    return bool(re.search(rf"(?<![\w./@-]){re.escape(path)}(?!\w)", text))
+
+
+def _names_file(text: str, name: str) -> bool:
+    """The text names a file or directory called `name`, anywhere in a path."""
+    return bool(re.search(rf"(?<![\w.@-]){re.escape(name)}(?!\w)", text))
 
 
 def _mentions(text: str, path: str) -> bool:
@@ -247,9 +276,9 @@ def _mentions(text: str, path: str) -> bool:
         return True
     parts = path.split("/")
     name = parts[-1]
-    if not _names_path(text, name):
+    if not _names_file(text, name):
         return False
-    return name not in GENERIC or (len(parts) > 1 and _names_path(text, parts[-2]))
+    return name not in GENERIC or (len(parts) > 1 and _names_file(text, parts[-2]))
 
 
 def canon(name_path: str) -> str:
@@ -288,21 +317,31 @@ def definition(target: Target) -> re.Pattern | None:
     return None
 
 
-def _located(ev: Evidence, t: Target, call: Call) -> bool:
+def _located(ev: Evidence, t: Target, call: Call, strict: bool) -> bool:
     if not t.qualname:
         shown = ev.files + ev.paths + [p for p, _ in ev.pairs]
-        return _names_path(ev.text, t.path) or any(same_path(p, t.path) for p in shown)
-    if any(same_path(p, t.path) and any(a <= n <= b for a, b in t.spans) for p, n in ev.pairs):
+        return _names_path(ev.text, t.path) or any(same_path(p, t.path, strict) for p in shown)
+    if any(same_path(p, t.path, strict) and any(a <= n <= b for a, b in t.spans) for p, n in ev.pairs):
         return True
-    if any(same_path(p, t.path) and _same_symbol(n, t.qualname) for p, n in ev.names):
+    if any(same_path(p, t.path, strict) and _same_symbol(n, t.qualname) for p, n in ev.names):
         return True
-    if any(same_path(p, t.path) for p, _ in ev.pairs):
-        return False  # the call numbered lines of the gold file, and its def line was not among them
     pattern = definition(t)
-    if pattern is None or not any(pattern.search(line) for line in ev.loose):
-        return False
-    if ev.files:  # the definition must come from a file the call names
-        return any(same_path(f, t.path) for f in ev.files)
+    if pattern is not None and any(
+        any(same_path(f, t.path, strict) for f in files)
+        and any(a <= n <= b for a, b in t.spans)
+        and pattern.search(text)
+        for files, n, text in ev.numbered
+    ):
+        return True  # the gold's def line, by number and text, in output that may be from any of several files
+    if any(same_path(p, t.path, strict) for p, _ in ev.pairs):
+        return False  # the call numbered lines of the gold file, and its def line was not among them
+    shown = [paths for paths, line in ev.loose if pattern is not None and pattern.search(line)]
+    if any(same_path(p, t.path, strict) for paths in shown for p in paths):
+        return True  # a definition line attributed to the gold file
+    if not any(paths == () for paths in shown):
+        return False  # every definition shown is attributed to another file
+    if ev.files:  # unattributed: it can only be the gold file's if that is the one file the call names
+        return len(ev.files) == 1 and same_path(ev.files[0], t.path, strict)
     named = re.search(rf"(?<![\w.]){re.escape(t.qualname)}(?!\w)", json.dumps(call.input))
     return _mentions(ev.text, t.path) or bool(named)
 
@@ -313,6 +352,6 @@ def turns_to_locate(tr: Transcript, found: list[Target], roots: tuple[str, ...] 
     cwd = ""
     for call in sorted(tr.calls, key=lambda c: c.round):
         ev, cwd = evidence(call, cwd, roots)
-        if any(_located(ev, t, call) for t in found):
+        if any(_located(ev, t, call, bool(roots)) for t in found):
             return call.round
     return None

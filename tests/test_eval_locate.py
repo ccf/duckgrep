@@ -257,3 +257,60 @@ def test_where_a_call_numbers_the_gold_file_its_numbers_decide():
     cmd = "sed -n 1060,1080p crates/ignore/src/walk.rs"
     out = "impl Iterator for WalkEventIter {\n    fn next(&mut self) -> Option<walkdir::Result<WalkEvent>> {"
     assert locate.turns_to_locate(run(("Bash", {"command": cmd}, out)), [walk_next]) is None
+
+
+def test_unnumbered_output_of_several_files_credits_only_what_it_attributes():
+    f = Target("a.py", "A.f", ((3, 3),))
+    both = ("Bash", {"command": "cat a.py b.py"}, "class A:\n    pass\nclass B:\n    def f(self):")
+    assert locate.turns_to_locate(run(both), [f]) is None  # the def could be b.py's
+    grep = ("Bash", {"command": "grep 'def f' a.py b.py"}, "b.py:    def f(self):")  # grep without -n
+    assert locate.turns_to_locate(run(grep), [f]) is None
+    head = ("Bash", {"command": "head -5 a.py b.py"}, "==> a.py <==\nclass A:\n    def f(self):\n==> b.py <==\nx = 1")
+    assert locate.turns_to_locate(run(head), [f]) == 1
+
+
+def test_output_paths_resolve_against_each_directory_a_command_ran_in():
+    t = Target("tests/test_x.py", "test_y", ((7, 7),))
+    cmd = "cd src; grep -rn 'def y' .; cd ../tests; grep -rn 'def test_y' ."
+    out = "./y.py:3:def y():\n./test_x.py:7:def test_y():"
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, out)), [t]) == 1
+
+
+def test_a_path_outside_the_worktree_is_another_checkout():
+    send = Target("requests/adapters.py", "HTTPAdapter.send", ((324, 324),))
+    site = ("Read", {"file_path": "/usr/lib/python3/site-packages/requests/adapters.py"}, "324\t    def send(self):")
+    assert locate.turns_to_locate(run(site), [send], roots=("/wt",)) is None
+    assert locate.turns_to_locate(run(site), [send]) == 1  # no roots given: the path's ending is all there is
+
+
+def test_numbered_lines_from_several_files_count_where_number_and_definition_agree():
+    # two grep -n on single files: neither prints its path, but the line number and the def text pin the gold
+    extract = Target("src/main.rs", "extract_time_constraints", ((431, 431),))
+    cmd = 'grep -n "fn " src/filter/time.rs; grep -n "fn \\|TimeFilter::before" src/main.rs'
+    out = (
+        "13:    fn from_str(ref_time: &SystemTime, s: &str) {\n431:fn extract_time_constraints(matches: &ArgMatches) {"
+    )
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, out)), [extract]) == 1
+    elsewhere = Target("src/main.rs", "from_str", ((13, 13),))  # time.rs's line 13, not main.rs's
+    assert (
+        locate.turns_to_locate(run(("Bash", {"command": cmd}, out.replace("from_str", "other"))), [elsewhere]) is None
+    )
+
+
+def test_a_file_key_needs_its_own_path_not_a_longer_one():
+    b = Target("src/b.py")
+    longer = ("Bash", {"command": "grep -rl 'import m' ."}, "lib/src/b.py\nvendor/src/b.py")
+    assert locate.turns_to_locate(run(longer), [b]) is None
+    assert locate.turns_to_locate(run(("Bash", {"command": "grep -rl 'import m' ."}, "src/b.py")), [b]) == 1
+
+
+def test_serena_reference_lines_are_zero_based_too():
+    # Serena 1.7.0 on sharkdp/fd: its `> 74:` line is time.rs line 75, `assert!(!TimeFilter::before(`
+    assertion = Target("src/filter/time.rs", "x", ((75, 75),))
+    refs = {"src/filter/time.rs": {"Function": [{"name_path": "tests/is_time_filter_applicable",
+            "content_around_reference": "...  73:            .applies_to(&ref_time));\n  >  74:        assert!(!TimeFilter::before(&ref_time, \"1min\")"}]}}  # fmt: skip
+    ev, _ = locate.evidence(stream.Call("1", "mcp__serena__find_referencing_symbols", 1, {}, json.dumps(refs)))
+    assert ("src/filter/time.rs", 75) in ev.pairs
+    assert (
+        locate.turns_to_locate(run(("mcp__serena__find_referencing_symbols", {}, json.dumps(refs))), [assertion]) == 1
+    )
