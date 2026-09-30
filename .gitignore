@@ -6,3 +6,4 @@ dist/
 build/
 .venv/
 .ruff_cache/
+bench/eval/runs/

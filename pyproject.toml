@@ -35,10 +35,20 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
+eval = [
+    "jedi>=0.20.0",
+    "numpy>=2.0",
+    "protobuf>=7.35.1,<8",  # bench/eval/scip_pb2.py was generated for protobuf 7.35.1
+    "scipy>=1.13",
+    "unidiff>=1.0",
+]
+
+[tool.uv]
+default-groups = ["dev", "eval"]  # the eval harness's tests run in the normal suite
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["tests/fixture"]  # test data: tests assert exact lines in it
+extend-exclude = ["tests/fixture", "bench/eval/scip_pb2.py"]  # test data; generated protobuf code
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
@@ -46,3 +56,4 @@ ignore = ["E501"]  # the formatter owns line length; long SQL strings stay as wr
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # tests import bench.eval
