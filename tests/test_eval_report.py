@@ -126,3 +126,19 @@ def test_write_section_replaces_its_own_block(tmp_path):
     text = path.read_text()
     assert text.count("<!-- eval:pilot -->") == 1 and "second" in text and "first" not in text
     assert text.startswith("# Benchmark results\n\nearlier text\n")
+
+
+def test_a_run_that_never_reached_the_model_is_left_out_of_token_and_cost_means():
+    rows = [rec("a", "baseline", 1, tokens=0, cost=0.0), rec("a", "baseline", 2, tokens=1000, cost=0.2)]
+    assert report.task_means(rows, M["tokens"]) == {("a", "baseline"): 1000.0}
+    assert report.task_means(rows, M["cost ($)"]) == {("a", "baseline"): 0.2}
+    assert "1 never reached the model" in report.build(rows, [], "x")
+
+
+def test_setups_are_compared_on_the_repetitions_both_have():
+    rows = []
+    for i in range(3):  # the batch stopped before duckgrep's second repetitions
+        rows += [rec(f"t{i}", "baseline", 1, calls=10), rec(f"t{i}", "baseline", 2, calls=20)]
+        rows += [rec(f"t{i}", "duckgrep", 1, calls=10)]
+    [c] = [c for c in report.comparisons(rows) if c.setup == "duckgrep" and c.metric.name == "tool calls"]
+    assert c.effect == pytest.approx(1.0) and c.n == 3

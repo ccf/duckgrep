@@ -64,22 +64,21 @@ def load(path: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def task_means(records: list[dict], metric: Metric) -> dict[tuple[str, str], float]:
-    """Mean over repetitions per (task, setup); a task drops out if any repetition has no value (e.g. an
-    answer never located) or the value can't be logged."""
-    groups: dict[tuple[str, str], list] = defaultdict(list)
+def run_values(records: list[dict], metric: Metric) -> dict[tuple[str, str], dict[int, float]]:
+    """Each usable run's value, by (task, setup) and repetition. A run without a value is left out: on a log
+    scale that is a run that never reached the model (zero tokens), which would otherwise pull its task's mean
+    toward zero."""
+    out: dict[tuple[str, str], dict[int, float]] = defaultdict(dict)
     for r in records:
-        if r["config_ok"]:
-            groups[(r["task"], r["setup"])].append(metric.get(r))
-    out = {}
-    for key, values in groups.items():
-        if any(v is None for v in values):
-            continue
-        mean = float(np.mean(values))
-        if metric.scale == "log" and mean <= 0:
-            continue
-        out[key] = mean
+        value = metric.get(r) if r["config_ok"] else None
+        if value is not None and not (metric.scale == "log" and value <= 0):
+            out[(r["task"], r["setup"])][r["rep"]] = float(value)
     return out
+
+
+def task_means(records: list[dict], metric: Metric) -> dict[tuple[str, str], float]:
+    """Mean over repetitions per (task, setup)."""
+    return {key: float(np.mean(list(reps.values()))) for key, reps in run_values(records, metric).items() if reps}
 
 
 @dataclass
@@ -149,13 +148,18 @@ def comparisons(records: list[dict], seed: int = config.SEED) -> list[Comparison
         else:
             rows = [r for r in records if r["kind"] == kind and r["lang"] == lang]
         for metric in METRICS:
-            means = task_means(rows, metric)
+            values = run_values(rows, metric)
             for setup in CONTRASTS:
-                pairs = [
-                    (means[(t, setup)], means[(t, "baseline")])
-                    for (t, s) in sorted(means)
-                    if s == "baseline" and (t, setup) in means
-                ]
+                pairs = []
+                for t, s in sorted(values):
+                    if s != "baseline" or (t, setup) not in values:
+                        continue
+                    base, other = values[(t, "baseline")], values[(t, setup)]
+                    both = sorted(set(base) & set(other))  # a batch that stopped early may lack some repetitions
+                    if both:
+                        pairs.append(
+                            (float(np.mean([other[r] for r in both])), float(np.mean([base[r] for r in both])))
+                        )
                 if len(pairs) >= 2:
                     found.append(compare(title, setup, metric, pairs, seed))
     for c, p in zip(found, holm([c.p for c in found]), strict=True):
@@ -281,6 +285,7 @@ def summary(records: list[dict]) -> list[str]:
     n = len(records)
     bad = sum(not r["config_ok"] for r in records)
     killed = sum(r["killed"] for r in records)
+    silent = sum(r["config_ok"] and not r["tokens_total"] for r in records)
     errors = sum(r["is_error"] for r in records)
     dirty = sum(bool(r["worktree_changes"]) for r in records)
     cost = sum(r["cost_usd"] for r in records)
@@ -290,6 +295,7 @@ def summary(records: list[dict]) -> list[str]:
     return [
         f"{n} runs: {bad} failed the configuration check twice (excluded), {killed} hit the wall-clock limit "
         "(their tokens are summed from their API calls, output as a lower bound), "
+        f"{silent} never reached the model (left out of token and cost means), "
         f"{errors} ended in an error (turn or budget cap), {dirty} changed their worktree (restored after). "
         f"Cost ${cost:,.2f} at list rates (Claude Code billed ${cli:,.2f}). Claude Code {', '.join(versions)}; "
         f"model {', '.join(models)}.",
