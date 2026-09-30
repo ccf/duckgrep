@@ -35,10 +35,26 @@ Built with `python -m bench.eval --suite full build`. Each choice below is a sui
 These rules close the pilot audit's findings:
 - **Visibility-only edits are not the fix.** A hunk whose only change is a Rust visibility modifier (`fn` ↔ `pub fn` ↔ `pub(crate) fn`) no longer makes its function a key. In pixi-6335, two of five key entries were such hunks.
 - **At most 3 functions.** This matches Python's bound. Bigger fixes more often bundle work the issue doesn't ask for.
-- **Curation of Rust localization keys.** Before the run, each Rust key is audited against its issue and patch. A task is dropped when its fix bundles work the issue gives no reason for: an unrelated feature, or a refactor in the same pull request. That was pixi-6335's case. A task is kept when the extra entries are part of the fix itself, such as plumbing for the chosen implementation or a parallel code path. Dropped ids and their reasons go in `bench/eval/suites/full-curation.jsonl`, which the builder applies.
+- **Curation of localization keys.** Before the run, every localization key is audited against its issue and patch. That's both languages: the Rust findings were mostly generic incidental edits.
+  - A task is dropped when its fix bundles work the issue gives no reason for: an unrelated feature, a refactor, or a docs or style cleanup in the same pull request. pixi-6335 was the pilot's example.
+  - A task is kept when the extra entries are part of the fix itself, such as plumbing for the chosen implementation or a parallel code path. In doubt, it's kept.
+  - An auditor proposes each drop and an independent verifier confirms it.
+  - Dropped ids and their reasons go in `bench/eval/suites/full-curation.jsonl`, which the builder applies.
+  - Result: 8 of 78 Rust tasks and 1 of 164 Python tasks were dropped. All nine proposed drops were confirmed.
 - **Recursion is stated.** Structural questions say that a function calling itself counts as its own caller ("including test functions and, if it calls itself, the function itself"). Keys already include self-recursion. In the pilot, one run left it out on purpose.
 - **No duplicate questions.** A repo's question whose key equals an earlier question's key is dropped. The pilot's two requests two-hop questions had the same answer.
 - **Python keys get a reference check.** Rust keys already require every reference of the target to be a counted call site. Python keys now do too, through jedi's references. A target that's also used as a value (a callback, `map(f, …)`) makes a "who calls it" question ambiguous, so the question is dropped.
+
+### Suite as built
+
+- **Localization: 233 tasks.**
+  - Python: 163.
+  - Rust: 70, in three strata: `multilingual` 15, `live-earlier` 34 and `live` 21.
+- **Structural questions: 494.**
+  - Python: 237, from 12 repos.
+  - Rust: 257, from 13 repos.
+  - Most repos yielded the maximum of 20 questions.
+- **Total: 727 tasks.**
 
 ### Structural questions
 
