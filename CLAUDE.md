@@ -11,9 +11,9 @@ README "Known gaps / next" is the roadmap; `bench/RESULTS.md` holds the measured
 ## Commands
 
 ```bash
-uv sync                                    # .venv with dev tools (pytest, ruff, pre-commit)
+uv sync                                    # .venv with dev tools and the eval harness's dependencies
 uv run pre-commit install                  # once per clone: ruff check --fix, ruff format, pytest on commit
-uv run pytest                              # whole suite, a few seconds
+uv run pytest                              # whole suite, under a minute
 uv run pytest tests/test_duckgrep.py::test_reexports   # one test
 uv run pytest -k test_edges                # the parametrized resolution cases
 uv run pre-commit run --all-files
@@ -26,6 +26,13 @@ uv run python bench/latency.py <repo> <file-to-edit> <symbol> <qualname>
 uv run python bench/vs_grep.py <django-checkout>
 uv run --group bench python bench/accuracy.py <python-repo> [n]   # jedi as the reference
 uv run python bench/mcp_smoke.py [repo]    # drives the MCP server over stdio
+
+# The A/B harness. Its cache (clones, worktrees) is ~/.cache/code-tasks; DUCKGREP_EVAL_CACHE moves it, never into ~/git
+uv run python -m bench.eval build        # draw the pilot suites (network): bench/eval/suites/pilot-*.jsonl
+uv run python -m bench.eval prepare      # clones, one worktree per setup, duckgrep index, Serena warm-up
+uv run python -m bench.eval check        # free: each setup's tools and MCP servers, login refused
+uv run python -m bench.eval run --tasks A,B --reps 1 --name smoke   # costs money; rerun to resume
+uv run python -m bench.eval report --write                          # paired statistics into bench/RESULTS.md
 ```
 
 ## Workflow
@@ -71,6 +78,10 @@ Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, name
 
   `_imports_<lang>()` normalises each import into the same key space: relative imports, the `go.mod` module prefix, Rust `crate`/`self`/`super`, other crates' names, uniform paths and inline `mod` blocks. That context (go.mod module paths, Cargo crate names) is stored in `meta('module_ctx')`; when it changes, every file of that language is re-parsed.
 - The extractor is table-driven: each language is a `Spec` of node types (definitions, calls, member access) and of which parent/field puts an identifier into a context such as `write`, `type` or `import`. Language quirks live in `_def_targets`, `_imports_<lang>` and `module_keys`, not in the walker.
+- `bench/eval/` is the A/B harness (spec in `docs/specs/2026-09-29-ab-eval-harness-design.md`):
+  - It runs the real `claude` CLI in a scrubbed environment under three setups, which differ only in one MCP server.
+  - It parses stream-json and scores against answer keys, which come from fix patches or from jedi and rust-analyzer SCIP.
+  - Suites are committed JSONL files; raw runs go under the gitignored `bench/eval/runs/`.
 
 ## Gotchas
 
@@ -88,3 +99,6 @@ Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, name
   Without these, a test's `git init` inside a worktree's commit hook re-initialised the shared repo as bare. Commit through the hook; never `--no-verify`.
 - `tests/fixture/` is test data: tests assert exact line numbers in it, so ruff and the whitespace hooks skip it. Tests copy it into `tmp_path` before indexing. New tests build their repos with `helpers.make_repo`.
 - Agent SQL runs on a read-only connection with `enable_external_access = false` and a 30 s timeout. Results stop at `max_rows` ("there are more"), and cell text is verbatim apart from newlines (⏎) and cells over 300 characters (…). The MCP tool returns errors as text rather than raising.
+- **The eval agent sees its working directory.** So worktree and cache paths never name a setup or duckgrep.
+- **`python -m bench.eval check` runs without `USER`.** Login then fails before any model call, which makes it free.
+- **The eval tests never call a model.** A fake `claude` script stands in for the CLI.
