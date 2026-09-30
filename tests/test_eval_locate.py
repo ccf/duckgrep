@@ -314,3 +314,29 @@ def test_serena_reference_lines_are_zero_based_too():
     assert (
         locate.turns_to_locate(run(("mcp__serena__find_referencing_symbols", {}, json.dumps(refs))), [assertion]) == 1
     )
+
+
+def test_a_relative_hit_from_one_of_several_directories_needs_the_definition_text():
+    # ./a.py:7 was printed while searching src; it is not tests/a.py's line 7
+    h = Target("tests/a.py", "h", ((7, 7),))
+    cmd = "cd src; grep -rn 'def f' .; cd ../tests; grep -rn 'def g' ."
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, "./a.py:7:def f():")), [h]) is None
+    unnumbered = ("Bash", {"command": "cd src; grep -r 'def h' .; cd ../tests; grep -r 'def g' ."}, "./a.py:def h():")
+    assert locate.turns_to_locate(run(unnumbered), [h]) is None  # src's or tests' a.py: cannot tell
+
+
+def test_numbers_of_the_gold_file_do_not_hide_its_unnumbered_definition():
+    bar = Target("a.py", "A.bar", ((30, 30),))
+    cmd = "grep -n foo a.py; grep 'def bar' a.py"
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, "12:x = foo()\n    def bar(self):")), [bar]) == 1
+
+
+def test_a_glob_leaves_unnumbered_lines_unattributed_but_a_numbered_definition_still_counts():
+    needle = Target("src/a.py", "needle_fn", ((4, 4),))
+    cat = ("Bash", {"command": "cat src/a.py src/*.py"}, "def needle_fn():")
+    assert locate.turns_to_locate(run(cat), [needle]) is None  # any globbed file could have printed it
+    # a numbered line must still be the gold's def line by number and by text: a glob adds no doubt worth a miss
+    awk = ("Bash", {"command": "awk '{print NR\": \"$0}' src/a.py src/*.py"}, "4:def needle_fn():")
+    assert locate.turns_to_locate(run(awk), [needle]) == 1
+    other = ("Bash", {"command": "awk '{print NR\": \"$0}' src/a.py src/*.py"}, "4:def other_fn():")
+    assert locate.turns_to_locate(run(other), [needle]) is None

@@ -157,7 +157,8 @@ def measure(tr: stream.Transcript, task: Task, setup_name: str, cache: Path) -> 
 
 def rescore(out_dir: Path, tasks: list[Task], cache: Path) -> Counter:
     """Recompute every record's `measure` from its saved transcript, after a change to how runs are measured.
-    The results as first written are kept in results.orig.jsonl. Returns how many records each field changed in."""
+    The results as first written are kept in results.orig.jsonl. Returns how many records each field changed in,
+    and under "missing" how many were kept as recorded, lacking their transcript, task or source."""
     results = out_dir / "results.jsonl"
     original = out_dir / "results.orig.jsonl"
     if not original.exists():
@@ -167,7 +168,11 @@ def rescore(out_dir: Path, tasks: list[Task], cache: Path) -> Counter:
     rows = []
     for rec in recorded(results):
         transcript = out_dir / rec["task"] / f"{rec['setup']}-{rec['rep']}.jsonl.gz"
-        if rec["task"] in by_id and transcript.exists():
+        task = by_id.get(rec["task"])
+        read = workspace.reader(cache, task.repo, task.commit) if task else None
+        # without the task's source at its commit, turns to locate would lose its definition lines: keep the record
+        sources = task is not None and all(read(e.partition(":")[0]) is not None for e in task.gold)
+        if sources and transcript.exists():
             with gzip.open(transcript, "rt") as f:
                 new = measure(stream.read(f), by_id[rec["task"]], rec["setup"], cache)
             changed.update(k for k, v in new.items() if rec.get(k) != v)

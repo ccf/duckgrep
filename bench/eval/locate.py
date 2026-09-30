@@ -78,6 +78,8 @@ class Evidence:
     # numbered lines that may come from any of several files the call names: (those files, number, text)
     numbered: list[tuple[tuple[str, ...], int, str]] = field(default_factory=list)
     files: list[str] = field(default_factory=list)  # source files the call's input names
+    globbed: bool = False  # the input also names a glob: files beyond `files` may have printed
+    ranges: list[tuple[str, int, int]] = field(default_factory=list)  # (file, first, last) that `sed -n` printed
     paths: list[str] = field(default_factory=list)  # source files its output lists
     text: str = ""  # the call's input and result (duckgrep's decoded)
 
@@ -238,23 +240,33 @@ def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Ev
         def candidates(path: str) -> tuple[str, ...]:  # a relative path, under each directory the command ran in
             return tuple(dict.fromkeys(_path(path, d, roots) for d in dirs))
 
-        several = tuple(ev.files) if ev.files and not one else ()
-        section: tuple[str, ...] = (one,) if one else ()
+        ev.globbed = globbed
+        several = tuple(ev.files) if ev.files and not one else ()  # numbered lines: number and text decide
+        section: tuple[str, ...] | None = (one,) if one else ()
         for line in call.result.splitlines():
             if m := PATH_LINE.match(line):
-                ev.pairs += [(p, int(m.group("n"))) for p in candidates(m.group("path"))]
+                where = candidates(m.group("path"))
+                if len(where) == 1:
+                    ev.pairs.append((where[0], int(m.group("n"))))
+                else:  # printed from one of several directories: the definition text must say whose
+                    ev.numbered.append((where, int(m.group("n")), line))
             elif one and (n := _number(line)) is not None:
                 ev.pairs.append((one, n))
             elif several and (n := _number(line)) is not None:
                 ev.numbered.append((several, n, line))
             elif m := SECTION.match(line.strip()):
-                section = candidates(m.group("path"))
+                where = candidates(m.group("path"))
+                section = where if len(where) == 1 else None
             elif m := PATH_TEXT.match(line):
-                ev.loose.append((candidates(m.group("path")), m.group("text")))
+                where = candidates(m.group("path"))
+                if len(where) == 1:  # a line whose file is ambiguous is no evidence
+                    ev.loose.append((where, m.group("text")))
             else:
-                ev.loose.append((section, line))
+                if section is not None:
+                    ev.loose.append((section, line))
                 if FILE.fullmatch(line.strip()) and not _is_glob(line.strip()):
                     ev.paths += candidates(line)  # a file list: Grep's files mode, Glob, ls
+        ev.ranges = ranges
         for path, a, b in ranges:
             ev.pairs += [(path, n) for n in range(a, b + 1)]
     return ev, cwd
@@ -333,15 +345,15 @@ def _located(ev: Evidence, t: Target, call: Call, strict: bool) -> bool:
         for files, n, text in ev.numbered
     ):
         return True  # the gold's def line, by number and text, in output that may be from any of several files
-    if any(same_path(p, t.path, strict) for p, _ in ev.pairs):
-        return False  # the call numbered lines of the gold file, and its def line was not among them
+    if any(same_path(f, t.path, strict) for f, _, _ in ev.ranges):
+        return False  # sed printed numbered ranges of the gold file, and its def line was not among them
     shown = [paths for paths, line in ev.loose if pattern is not None and pattern.search(line)]
     if any(same_path(p, t.path, strict) for paths in shown for p in paths):
         return True  # a definition line attributed to the gold file
     if not any(paths == () for paths in shown):
         return False  # every definition shown is attributed to another file
-    if ev.files:  # unattributed: it can only be the gold file's if that is the one file the call names
-        return len(ev.files) == 1 and same_path(ev.files[0], t.path, strict)
+    if ev.files or ev.globbed:  # unattributed: the gold file's only if it is the one file the call reads
+        return len(ev.files) == 1 and not ev.globbed and same_path(ev.files[0], t.path, strict)
     named = re.search(rf"(?<![\w.]){re.escape(t.qualname)}(?!\w)", json.dumps(call.input))
     return _mentions(ev.text, t.path) or bool(named)
 

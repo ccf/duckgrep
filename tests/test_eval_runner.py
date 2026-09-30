@@ -493,3 +493,16 @@ def test_rescore_recomputes_what_a_transcript_gives_and_keeps_the_original(tmp_p
     assert json.loads((out / "results.orig.jsonl").read_text()) == stale
     runner.rescore(out, [t], cache)  # again: the original stays the first version
     assert json.loads((out / "results.orig.jsonl").read_text()) == stale
+
+
+def test_rescore_keeps_a_record_whose_source_is_gone(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache, out = tmp_path / "cache", tmp_path / "out"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    exe, _ = fake_claude(tmp_path, recorded_stream('```json\n{"locations": ["src/a.py:needle_fn"]}\n```'))
+    t = task(1, commit)
+    rec = runner.execute(runner.Run(t, "baseline", 1), cache, out, 1, exe)
+    (out / "results.jsonl").write_text(json.dumps({**rec, "turns_to_locate": 7}) + "\n")
+    (cache / "repos" / "o__r.git").rename(cache / "repos" / "moved.git")  # the clone left the cache
+    changed = runner.rescore(out, [t], cache)
+    assert json.loads((out / "results.jsonl").read_text())["turns_to_locate"] == 7 and changed["missing"] == 1
