@@ -1,7 +1,7 @@
 # A/B evaluation harness: design
 
 - **Date:** 2026-09-29
-- **Status:** approved in brainstorming; awaiting written-spec review
+- **Status:** approved; implemented by `docs/plans/2026-09-29-ab-eval-harness.md`
 - **Branch:** `eval/ab-harness`
 
 ## Goal
