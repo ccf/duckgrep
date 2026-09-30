@@ -223,3 +223,37 @@ def test_a_glob_is_not_a_file():
     ev, _ = locate.evidence(stream.Call("1", *both[:1], 1, both[1], both[2]))
     assert ev.files == ["src/a.py"] and ev.pairs == []
     assert locate.turns_to_locate(run(both), [other]) is None
+
+
+def test_grep_output_follows_the_shells_directory():
+    skip = Target("crates/ignore/src/walk.rs", "Walk.skip_entry", ((932, 932),))
+    cd = ("Bash", {"command": "cd crates/ignore/src"}, "")
+    grep = ("Grep", {"pattern": "fn skip_entry", "path": "/wt", "output_mode": "content"},
+            "walk.rs:932:    fn skip_entry(&self, ent: &DirEntry) -> Result<bool, Error> {")  # fmt: skip
+    assert locate.turns_to_locate(run(cd, grep), [skip], roots=("/wt",)) == 2
+    dot = ("Bash", {"command": "cd crates/ignore/src; grep -rn 'fn skip_entry' ."}, "./walk.rs:932:    fn skip_entry(")
+    assert locate.turns_to_locate(run(dot), [skip]) == 1
+
+
+def test_duckgrep_rows_listing_only_paths_name_a_file():
+    importer = Target("src/b.py")
+    rows = json.dumps({"result": "path\nsrc/a.py\nsrc/b.py"})
+    call = ("mcp__duckgrep__query", {"sql": "SELECT path FROM imports_resolved WHERE target_path = 'm.py'"}, rows)
+    assert locate.turns_to_locate(run(call), [importer]) == 1
+    assert locate.turns_to_locate(run(call), [Target("src/c.py")]) is None
+
+
+def test_a_sed_range_counts_only_when_sed_reads_the_file():
+    before = Target("src/filter/time.rs", "TimeFilter.before", ((30, 30),))
+    piped = ("Bash", {"command": 'grep -n "^impl" src/filter/time.rs | sed -n 1,40p'}, "12:impl TimeFilter {")
+    assert locate.turns_to_locate(run(piped), [before]) is None
+    read = ("Bash", {"command": "sed -n 25,35p src/filter/time.rs"}, "    pub fn before(ref_time: &SystemTime) {")
+    assert locate.turns_to_locate(run(read), [before]) == 1
+
+
+def test_where_a_call_numbers_the_gold_file_its_numbers_decide():
+    # two ranges of walk.rs that show another type's `fn next(`: the def line of Walk.next is not among them
+    walk_next = Target("crates/ignore/src/walk.rs", "Walk.next", ((973, 973),))
+    cmd = "sed -n 1060,1080p crates/ignore/src/walk.rs"
+    out = "impl Iterator for WalkEventIter {\n    fn next(&mut self) -> Option<walkdir::Result<WalkEvent>> {"
+    assert locate.turns_to_locate(run(("Bash", {"command": cmd}, out)), [walk_next]) is None

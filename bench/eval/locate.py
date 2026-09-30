@@ -73,7 +73,8 @@ class Evidence:
     names: list[tuple[str, str]] = field(default_factory=list)  # (path, qualified name) named by a structured tool
     loose: list[str] = field(default_factory=list)  # output lines that could not be placed in a file
     files: list[str] = field(default_factory=list)  # source files the call's input names
-    text: str = ""  # the call's input and result
+    paths: list[str] = field(default_factory=list)  # source files its output lists
+    text: str = ""  # the call's input and result (duckgrep's decoded)
 
 
 def _path(path: str, cwd: str, roots: tuple[str, ...]) -> str:
@@ -102,10 +103,12 @@ def _is_glob(token: str) -> bool:
     return "*" in token or name.startswith(".")
 
 
-def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bool, str, str]:
+def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bool, str, str, list]:
     """The files a command names (resolved), whether it names a glob, the directory its output paths are
-    relative to, and the shell's directory after it."""
+    relative to, the shell's directory after it, and the (file, first, last) ranges `sed -n` prints of a file
+    it reads itself (not of piped output)."""
     files: list[str] = []
+    ranges: list[tuple[str, int, int]] = []
     globbed = False
     here = None
     for part in SEPARATORS.split(command):
@@ -114,21 +117,28 @@ def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bo
             continue
         if here is None and part.strip():
             here = cwd  # output paths are relative to where the first command ran
+        named = []
         for token in FILE.findall(part):
             if _is_glob(token):
                 globbed = True
             else:
-                files.append(_path(token, cwd, roots))
-    return sorted(set(files)), globbed, cwd if here is None else here, cwd
+                named.append(_path(token, cwd, roots))
+        files += named
+        if len(named) == 1:
+            ranges += [(named[0], int(a), int(b)) for a, b in SED.findall(part)]
+    return sorted(set(files)), globbed, cwd if here is None else here, cwd, ranges
 
 
 def _duckgrep(result: str, ev: Evidence) -> None:
-    """duckgrep's rows: a path column goes with the line and name columns of its side (dst_* or the rest)."""
+    """duckgrep's rows: a path column goes with the line and name columns of its side (dst_* or the rest).
+    Its tabs and newlines arrive JSON-escaped, so the text is taken from the decoded rows."""
     try:
         tsv = json.loads(result).get("result", "")
     except (json.JSONDecodeError, AttributeError):
         tsv = result
+    ev.text = ev.text[: -len(result)] + str(tsv) if result and ev.text.endswith(result) else ev.text
     rows = [r.split("\t") for r in str(tsv).splitlines() if r.strip()]
+    ev.paths += [c.strip() for r in rows[1:] for c in r if FILE.fullmatch(c.strip())]
     if not rows:
         return
     head = [h.strip().lower() for h in rows[0]]
@@ -188,13 +198,15 @@ def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Ev
     """What one tool call showed: numbered lines placed in files, symbols it named, and the rest; and the shell's
     directory after it."""
     ev = Evidence(text=json.dumps(call.input) + "\n" + call.result)
+    ranges: list[tuple[str, int, int]] = []
     if call.name == "Bash":
-        ev.files, globbed, here, cwd = _bash(call.input.get("command", ""), cwd, roots)
-    else:
+        ev.files, globbed, here, cwd, ranges = _bash(call.input.get("command", ""), cwd, roots)
+    else:  # Claude Code's Grep and Glob work, and print paths, relative to the shell's directory
+        structured = call.name.startswith(("mcp__duckgrep", "mcp__serena"))
+        here = "" if structured else cwd
         tokens = [t for v in call.input.values() if isinstance(v, str) for t in FILE.findall(v)]
         globbed = any(_is_glob(t) for t in tokens)
-        ev.files = sorted({_path(t, "", roots) for t in tokens if not _is_glob(t)})
-        here = ""
+        ev.files = sorted({_path(t, here, roots) for t in tokens if not _is_glob(t)})
     if call.name == "Read":
         path = _path(call.input.get("file_path", ""), "", roots)
         for line in call.result.splitlines():
@@ -218,9 +230,10 @@ def evidence(call: Call, cwd: str = "", roots: tuple[str, ...] = ()) -> tuple[Ev
                 ev.pairs.append((one, n))
             else:
                 ev.loose.append(line)
-        if one and call.name == "Bash":
-            for a, b in SED.findall(call.input.get("command", "")):
-                ev.pairs += [(one, n) for n in range(int(a), int(b) + 1)]
+                if FILE.fullmatch(line.strip()) and not _is_glob(line.strip()):
+                    ev.paths.append(_path(line, here, roots))  # a file list: Grep's files mode, Glob, ls
+        for path, a, b in ranges:
+            ev.pairs += [(path, n) for n in range(a, b + 1)]
     return ev, cwd
 
 
@@ -277,12 +290,14 @@ def definition(target: Target) -> re.Pattern | None:
 
 def _located(ev: Evidence, t: Target, call: Call) -> bool:
     if not t.qualname:
-        shown = ev.files + [p for p, _ in ev.pairs]
+        shown = ev.files + ev.paths + [p for p, _ in ev.pairs]
         return _names_path(ev.text, t.path) or any(same_path(p, t.path) for p in shown)
     if any(same_path(p, t.path) and any(a <= n <= b for a, b in t.spans) for p, n in ev.pairs):
         return True
     if any(same_path(p, t.path) and _same_symbol(n, t.qualname) for p, n in ev.names):
         return True
+    if any(same_path(p, t.path) for p, _ in ev.pairs):
+        return False  # the call numbered lines of the gold file, and its def line was not among them
     pattern = definition(t)
     if pattern is None or not any(pattern.search(line) for line in ev.loose):
         return False
