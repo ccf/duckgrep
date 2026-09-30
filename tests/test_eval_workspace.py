@@ -42,6 +42,20 @@ def test_a_worktree_holds_no_history_after_its_commit(tmp_path):
     assert "the answer" not in workspace.git("log", "--all", "--oneline", cwd=wt)
 
 
+def test_a_file_git_would_normalise_is_checked_out_byte_for_byte_and_clean(tmp_path):
+    # dioxus: `*.md text eol=lf`, and a readme committed with CRLF, reads as changed straight after checkout
+    src, _ = origin(tmp_path, {"readme.md": "one\r\ntwo\r\n", "a.rs": "fn a() {}\n"})
+    (src / ".gitattributes").write_text("*.md text eol=lf\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(src)]
+    subprocess.run(git + ["add", ".gitattributes"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "attributes"], check=True)
+    commit = workspace.git("rev-parse", "HEAD", cwd=src).strip()
+    wt = workspace.worktree("o/r", commit, "baseline", tmp_path / "cache", url=str(src))
+    assert workspace.changes(wt) == []
+    assert (wt / "readme.md").read_bytes() == b"one\r\ntwo\r\n"
+    assert workspace.reset(wt, commit) == ([], False)
+
+
 def test_reset_puts_back_the_commit_files_and_refs_but_keeps_the_index(tmp_path):
     src, _ = origin(tmp_path, {**FILES, ".gitignore": "__pycache__/\n"})
     (src / "pkg/a.py").write_text("def f():\n    return 2\n")

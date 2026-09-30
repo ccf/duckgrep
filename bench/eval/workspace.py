@@ -117,6 +117,10 @@ def worktree(repo: str, commit: str, setup: str, cache: Path, url: str | None = 
     git("init", "-q", str(tmp))
     (tmp / ".git" / "objects" / "info" / "alternates").write_text(f"{(bare / 'objects').resolve()}\n")
     git("checkout", "-q", "--detach", commit, cwd=tmp)
+    if changes(tmp):  # a file its attributes normalise (`*.md text eol=lf`, committed with CRLF) reads as changed
+        (tmp / ".git" / "info").mkdir(exist_ok=True)
+        (tmp / ".git" / "info" / "attributes").write_text("* -text\n")  # so compare the commit's bytes as they are
+        git("checkout", "-q", "--force", "--detach", commit, cwd=tmp)
     tmp.rename(path)
     return path
 
