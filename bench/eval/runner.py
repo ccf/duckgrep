@@ -95,7 +95,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 def _mcp_file(setup: setups.Setup, task: Task, wt: Path, cache: Path, tmp: Path) -> Path | None:
     """Write the run's --mcp-config file (and its own SERENA_HOME) into `tmp`; None for the baseline."""
-    home = setups.serena_home(tmp / "serena-home", cache) if setup.name == "serena" else None
+    home = setups.serena_home(tmp / "serena-home", cache) if setup.base == "serena" else None
     cfg = setups.mcp_config(setup, wt, task.repo, cache, home)
     if cfg is None:
         return None

@@ -51,6 +51,8 @@ def clone(repo: str, cache: Path, url: str | None = None) -> Path:
 
 # The agent sees its working directory, so the path to a worktree must not name the setup or the tool under test.
 GROUPS = {"baseline": "t1", "duckgrep": "t2", "serena": "t3"}
+# a hinted setup shares its base's worktree: only the system prompt differs, and runs of one worktree never overlap
+GROUPS |= {name: GROUPS[s.base] for name, s in setups.SETUPS.items()}
 
 
 def reader(cache: Path, repo: str, commit: str):
@@ -225,10 +227,11 @@ def prepare(tasks, setup_names: list[str], cache: Path, log=print, save=None) ->
     it; what exists already is left alone."""
     built = []
     todo = sorted({(t.repo, t.commit, t.lang) for t in tasks})
-    if "serena" in setup_names and any(lang == "rust" for *_, lang in todo):
+    bases = list(dict.fromkeys(setups.SETUPS[s].base for s in setup_names))  # a hinted setup shares its base's build
+    if "serena" in bases and any(lang == "rust" for *_, lang in todo):
         rust_analyzer(cache)
     for repo, commit, lang in todo:
-        for setup in setup_names:
+        for setup in bases:
             require_space(cache)
             path = worktree(repo, commit, setup, cache)
             row: dict = {}

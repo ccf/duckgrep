@@ -265,3 +265,46 @@ def test_listing_gives_the_files_at_a_commit(tmp_path):
     workspace.clone("o/r", tmp_path / "cache", url=str(src))
     assert workspace.listing(tmp_path / "cache", "o/r", commit) == {"pkg/__init__.py", "pkg/a.py"}
     assert workspace.listing(tmp_path / "cache", "o/gone", commit) is None
+
+
+def test_a_hinted_setup_shares_its_bases_worktree(tmp_path):
+    for base in ("duckgrep", "serena"):
+        assert workspace.worktree_path(tmp_path, f"{base}-hint", "o/r", "c" * 40) == workspace.worktree_path(
+            tmp_path, base, "o/r", "c" * 40
+        )
+    assert workspace.worktree_path(tmp_path, "duckgrep", "o/r", "c" * 40) != workspace.worktree_path(
+        tmp_path, "serena", "o/r", "c" * 40
+    )
+
+
+@pytest.mark.parametrize("pair", [["duckgrep", "duckgrep-hint"], ["duckgrep-hint", "duckgrep"], ["duckgrep-hint"]])
+def test_prepare_builds_one_index_for_a_setup_and_its_hinted_twin(tmp_path, monkeypatch, pair):
+    src, commit = origin(tmp_path, FILES)
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    indexed = []
+    real_index = workspace.index_duckgrep
+    monkeypatch.setattr(workspace, "index_duckgrep", lambda path: indexed.append(path) or real_index(path))
+    task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
+    built = workspace.prepare([task], pair, tmp_path / "cache", log=lambda _: None)
+    assert len(indexed) == 1 and [b["setup"] for b in built] == ["duckgrep"]
+
+
+def test_prepare_warms_serena_up_once_for_serena_and_serena_hint(tmp_path, monkeypatch):
+    src, commit = origin(tmp_path, FILES)
+    cache = tmp_path / "cache"
+    real = workspace.worktree
+    monkeypatch.setattr(workspace, "worktree", lambda repo, c, s, cache: real(repo, c, s, cache, url=str(src)))
+    warmed = []
+
+    def warmup(path, repo, lang, cache):
+        warmed.append(path)
+        project = workspace.serena_project_file(cache, path)
+        project.parent.mkdir(parents=True)
+        project.write_text("")
+        return {"serena_seconds": 1.0, "serena_mb": 0.1}
+
+    monkeypatch.setattr(workspace, "serena_warmup", warmup)
+    task = Task("t", "localization", "python", "o/r", commit, "p", ("pkg/a.py:f",), "s")
+    built = workspace.prepare([task], ["serena-hint", "serena"], cache, log=lambda _: None)
+    assert len(warmed) == 1 and [b["setup"] for b in built] == ["serena"]

@@ -8,7 +8,7 @@ import time
 import pytest
 from eval_helpers import origin
 
-from bench.eval import config, runner, workspace
+from bench.eval import config, runner, setups, workspace
 from bench.eval.suite import Task
 
 RUNS = os.path.join(os.path.dirname(__file__), "eval_runs")
@@ -218,6 +218,20 @@ def test_execute_turns_an_auth_failure_into_an_infrastructure_error(tmp_path):
     with pytest.raises(runner.InfrastructureError):
         runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
     assert not (workspace.worktree_path(cache, "baseline", "o/r", commit) / "stray.txt").exists()
+
+
+@pytest.mark.parametrize("name, server", [("duckgrep-hint", "duckgrep"), ("serena-hint", "serena")])
+def test_a_hinted_run_uses_its_bases_worktree_and_server_and_adds_the_hint(tmp_path, name, server):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, server, cache, url=str(src))
+    mcp = tmp_path / "mcp-seen.json"
+    copy = f"open({str(mcp)!r}, 'w').write(open(sys.argv[sys.argv.index('--mcp-config') + 1]).read())"
+    exe, seen = fake_claude(tmp_path, recorded_stream("no answer"), extra=copy)
+    rec = runner.execute(runner.Run(task(1, commit), name, 1), cache, tmp_path / "out", 1, exe)
+    argv = json.loads(seen.read_text())["argv"]
+    assert argv[argv.index("--append-system-prompt") + 1] == setups.SETUPS[name].hint
+    assert list(json.loads(mcp.read_text())["mcpServers"]) == [server] and rec["setup"] == name
 
 
 def test_execute_puts_back_a_moved_head_and_ignored_files(tmp_path):

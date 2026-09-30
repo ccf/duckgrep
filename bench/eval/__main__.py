@@ -82,7 +82,7 @@ def check(tasks: list, setup_names: list[str], cache, claude: str) -> bool:
         for setup in setup_names:
             problems = runner.probe(sample, setup, cache, claude)
             ok = ok and not problems
-            print(f"{setup:9} {lang:7} {'ok' if not problems else '; '.join(problems)}")
+            print(f"{setup:13} {lang:7} {'ok' if not problems else '; '.join(problems)}")
     return ok
 
 
