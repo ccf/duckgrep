@@ -28,7 +28,7 @@ from .suite import Task
 
 class InfrastructureError(RuntimeError):
     """The run failed outside the agent (login, rate limit, API outage). The run is not recorded. A transient
-    error is retried; a permanent one (login, billing, a bad request) stops the batch. `cost` is what the run
+    error is retried; a permanent one (login, billing, credentials) stops the batch. `cost` is what the run
     spent before it failed, which still counts against the batch's cap."""
 
     def __init__(self, message: str, cost: float = 0.0, permanent: bool = False):
@@ -303,6 +303,8 @@ class Batch:
         self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
         # the Claude Code version the batch began on, from its earliest recorded run (None until one has a version)
         self.cli_version = next((r["cli_version"] for r in earlier if r.get("cli_version")), None)
+        # recorded runs in a row, up to the latest, that ended on an API error; a resume continues the streak
+        self.api_errors = next((i for i, r in enumerate(reversed(earlier)) if not r.get("api_error")), len(earlier))
         self.stopped: str | None = None
         self.interrupted = False
         self.completed = 0
@@ -375,6 +377,12 @@ class Batch:
                 self.stopped = self.stopped or (
                     f"Claude Code changed mid-batch: {rec['task']} {rec['setup']}-{rec['rep']} ran {version}, "
                     f"the batch began on {self.cli_version}"
+                )
+                self.cond.notify_all()
+            self.api_errors = self.api_errors + 1 if rec.get("api_error") else 0
+            if self.api_errors >= config.API_ERROR_STREAK:  # never record a systematic failure as thousands of runs
+                self.stopped = self.stopped or (
+                    f"{self.api_errors} runs in a row ended on an API error, the last {rec['api_error']}"
                 )
                 self.cond.notify_all()
 

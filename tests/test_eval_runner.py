@@ -446,6 +446,40 @@ def test_execute_turns_an_auth_failure_into_an_infrastructure_error(tmp_path):
     assert not (workspace.worktree_path(cache, "baseline", "o/r", commit) / "stray.txt").exists()
 
 
+def test_execute_records_a_run_that_ended_on_its_own_api_error(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    events = recorded_stream("API Error: 400 due to tool use concurrency issues.")
+    result = events.pop()
+    events += [
+        {"type": "assistant", "error": "invalid_request", "message": {"model": "<synthetic>", "content": []}},
+        {**result, "terminal_reason": "api_error", "is_error": True},
+    ]
+    exe, _ = fake_claude(tmp_path, events)
+    rec = runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
+    assert rec["api_error"] == "invalid_request" and rec["is_error"] and not rec["score"]["success"]
+
+
+def test_a_streak_of_runs_ending_on_an_api_error_stops_the_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "API_ERROR_STREAK", 3)
+    runs = runner.schedule([task(i) for i in range(6)], ["baseline"], 1, seed=1)
+    errors = iter(["max_output_tokens", "invalid_request", None, "invalid_request", "invalid_request"])
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "api_error": next(errors, "invalid_request")}
+
+    stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "3 runs in a row" in stopped and "invalid_request" in stopped
+    assert len(results(tmp_path / "out")) == 6  # a success broke the first streak
+
+    runs = runner.schedule([task(i) for i in range(6, 9)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None
+    ).run()  # a resume continues the streak it stopped on
+    assert "4 runs in a row" in stopped and len(results(tmp_path / "out")) == 7
+
+
 @pytest.mark.parametrize("name, server", [("duckgrep-hint", "duckgrep"), ("serena-hint", "serena")])
 def test_a_hinted_run_uses_its_bases_worktree_and_server_and_adds_the_hint(tmp_path, name, server):
     src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})

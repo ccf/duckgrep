@@ -13,6 +13,7 @@ MAX_TURNS = 40
 MAX_BUDGET_USD = 1.50
 WALL_LIMIT_S = 15 * 60
 RETRY_WAITS_S = (60, 300, 900)  # a transient API error is retried after each wait in turn, then stops the batch
+API_ERROR_STREAK = 10  # recorded runs in a row that ended on an API error stop the batch: a systematic failure
 PARALLEL = 3
 PREPARE_PARALLEL = 6  # repo/commit pairs `prepare` builds at once
 RUST_LSP_LIMIT = 3  # rust-analyzers at once, in runs and in prepare's warm-ups: each can take several GB
