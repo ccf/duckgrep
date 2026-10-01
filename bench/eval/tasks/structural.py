@@ -13,6 +13,7 @@ import os
 import random
 import re
 import subprocess
+import sys
 import sysconfig
 from collections import defaultdict
 from collections.abc import Callable, Collection
@@ -184,7 +185,14 @@ def _reachable(links: dict[str, set[str]], start: str) -> set[str]:
 
 def python_analysis(root: Path) -> Analysis:
     import jedi
+    import parso.cache
 
+    # parso drops cached modules unused for 10 minutes once it holds 600, and a module it loads from its disk cache
+    # keeps the age it was pickled with, so late in a build it dropped modules jedi still used (a KeyError, read as
+    # an unresolved call) and whole repos lost their questions. Each repo starts from an empty cache that never
+    # evicts, so a key depends on the repo alone.
+    parso.cache.parser_cache.clear()
+    parso.cache._CACHED_SIZE_TRIGGER = sys.maxsize
     a = Analysis(root)
     sources: dict[str, str] = {}
     imports: dict[str, list[tuple[str, int]]] = {}

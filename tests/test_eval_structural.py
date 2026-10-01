@@ -213,6 +213,18 @@ def test_a_target_asked_about_its_callers_is_not_asked_about_again_through_two_h
     assert "Store.get" in asked["callers"] | asked["two-hop"] and not asked["callers"] & asked["two-hop"]
 
 
+def test_python_callers_do_not_depend_on_what_parso_cached_before(tmp_path, monkeypatch):
+    # parso drops cached modules unused for 10 minutes once it holds 600, and a module loaded from its disk cache
+    # keeps the age it was pickled with: late in a build, jedi then failed with KeyError and whole repos lost their
+    # questions. Here every cached module is that stale.
+    import parso.cache
+
+    monkeypatch.setattr(parso.cache, "_CACHED_SIZE_TRIGGER", 0)
+    monkeypatch.setattr(parso.cache, "_CACHED_FILE_MINIMUM_SURVIVAL", -60)
+    a = st.python_analysis(python_repo(tmp_path))
+    assert st._entries(a.callers(defn(a, "Store.get"))) == {"pkg/core.py:load", "pkg/core.py:run"}
+
+
 def test_python_module_names():
     assert st.python_module("src/requests/utils.py") == "requests.utils"
     assert st.python_module("pkg/__init__.py") == "pkg"
