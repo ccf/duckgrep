@@ -50,6 +50,7 @@ PROBE_TIMEOUT_S = 300
 
 
 INTERRUPTED = "interrupted; rerun the same command to resume"
+STREAK = "API-error streak"  # why the runs of a streak of API errors were taken back
 _live: dict[subprocess.Popen, str] = {}  # the runs in flight (process -> run id), for an interrupt
 _live_lock = threading.Lock()
 _stopping = threading.Event()  # set by an interrupt under _live_lock, so a run starting as it comes is not missed
@@ -398,6 +399,12 @@ class Batch:
         self.interrupted = False
         self.completed = 0
         self.working = 0  # workers still running
+        if self.api_errors >= config.API_ERROR_STREAK:  # a stop cut short taking a streak back: finish it
+            self._take_back(self.api_errors)
+            log(f"took back the {self.api_errors} runs in a row that ended on an API error; they are redone")
+            self.api_errors = 0
+            done = {(r["task"], r["setup"], r["rep"]) for r in recorded(self.results)}
+            self.pending = [r for r in runs if r.key not in done]
 
     def _cut_partial_lines(self, log: Callable[[str], None]) -> None:
         """A line cut off mid-write is dropped; its run's cost is unknown, so it is charged at the per-run cap, and
@@ -512,7 +519,7 @@ class Batch:
             key = (rec["task"], rec["setup"], rec["rep"])
             if rec.get("api_error") and self.api_errors >= config.API_ERROR_STREAK:
                 # the streak below stopped the batch; a run of it that was still in flight isn't kept either
-                self._charge_unrecorded(key, charged(rec), "API-error streak", self._set_aside(key))
+                self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key))
                 return
             with open(self.results, "a") as f:
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
@@ -533,19 +540,30 @@ class Batch:
             if self.api_errors >= config.API_ERROR_STREAK:
                 # one such run is its own outcome (a request too long); a streak is something else failing, a CLI
                 # or API change, so none of it is kept: a resume redoes those runs
-                for dropped in self._unwrite(self.api_errors):
-                    self.spent -= charged(dropped)
-                    self.completed = max(0, self.completed - 1)
-                    k = (dropped["task"], dropped["setup"], dropped["rep"])
-                    self._charge_unrecorded(k, charged(dropped), "API-error streak", self._set_aside(k))
+                self._take_back(self.api_errors)
                 self.stopped = self.stopped or (
                     f"{self.api_errors} runs in a row ended on an API error, the last {rec['api_error']}; none of "
                     "them is kept, so a resume redoes them"
                 )
                 self.cond.notify_all()
 
-    def _unwrite(self, n: int) -> list[dict]:
-        """Take the last `n` records back out of the results file, and return them. Called holding `cond`."""
+    def _take_back(self, n: int) -> None:
+        """Take the last `n` records, a streak of runs that ended on an API error, back out of the results, and
+        charge them as unrecorded spend. The charges are written first: a stop between the two steps then counts
+        the spend twice rather than not at all, and the next batch on these results finishes the job, finding the
+        charges already there."""
+        streak = recorded(self.results)[-n:]
+        keys = [(r["task"], r["setup"], r["rep"]) for r in streak]
+        charges = [(u["task"], u["setup"], u["rep"], u["why"]) for u in recorded(self.unrecorded)[-n:]]
+        if charges != [(*key, STREAK) for key in keys]:
+            for key, rec in zip(keys, streak, strict=True):
+                self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key))
+        self._unwrite(n)
+        self.spent -= sum(charged(r) for r in streak)  # their charges count instead
+        self.completed = max(0, self.completed - n)
+
+    def _unwrite(self, n: int) -> None:
+        """Cut the last `n` records from the results file. Called holding `cond`."""
         lines = self.results.read_text().splitlines(keepends=True)
         tmp = self.results.with_suffix(".tmp")
         with open(tmp, "w") as f:
@@ -553,7 +571,6 @@ class Batch:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, self.results)
-        return [json.loads(line) for line in lines[-n:]]
 
     def _set_aside(self, key: tuple[str, str, int]) -> str | None:
         """Keep an attempt that won't be recorded out of the next one's way: its transcript (compressed, or raw when

@@ -503,6 +503,30 @@ def test_a_streak_of_runs_ending_on_an_api_error_stops_the_batch_and_none_of_it_
     assert again.run() is None and len(results(out)) == 6  # a resume redoes the streak's runs
 
 
+def test_a_stop_in_the_middle_of_taking_a_streak_back_loses_no_spend(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "API_ERROR_STREAK", 3)
+    runs = runner.schedule([task(i) for i in range(3)], ["baseline"], 1, seed=1)
+
+    def execute(r, *a):
+        return {**fake_record(r, 1, cost=0.1), "api_error": "invalid_request"}
+
+    def killed(self, n):
+        raise RuntimeError("the harness died here")
+
+    out = tmp_path / "out"
+    real = runner.Batch._unwrite
+    monkeypatch.setattr(runner.Batch, "_unwrite", killed)
+    runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert len(results(out)) == 3  # the records were still there when it died
+    assert [u["why"] for u in unrecorded(out)] == ["API-error streak"] * 3  # but their charges were written first
+    monkeypatch.setattr(runner.Batch, "_unwrite", real)
+    said = []
+    again = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=said.append)
+    assert results(out) == [] and len(again.pending) == 3  # the next batch finishes taking them back
+    assert again.spent == pytest.approx(0.3) and len(unrecorded(out)) == 3  # and charges them once
+    assert any("API error" in line for line in said)
+
+
 def test_runs_in_flight_when_a_streak_stops_the_batch_are_not_kept_either(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "API_ERROR_STREAK", 2)
     runs = runner.schedule([task(i, commit=f"{i}" * 40) for i in range(1, 7)], ["baseline"], 1, seed=1)
