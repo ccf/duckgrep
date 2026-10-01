@@ -201,6 +201,25 @@ def test_every_charged_attempt_keeps_its_transcript(tmp_path):
     assert [u.get("transcript") for u in unrecorded(tmp_path / "out")] == ["baseline-1.unrecorded-1.jsonl.gz"]
 
 
+def test_an_attempt_that_failed_before_its_transcript_was_compressed_keeps_it_too(tmp_path):
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    tries = []
+
+    def execute(r, cache, out, attempt, claude):
+        tries.append(attempt)
+        if len(tries) == 1:  # the cache went unreadable, say, before the stream was compressed
+            (out / r.task.id).mkdir(parents=True, exist_ok=True)
+            (out / r.task.id / f"{r.setup}-{r.rep}.jsonl").write_text("raw try 1")
+            raise runner.InfrastructureError("overloaded", cost=0.1)
+        return fake_record(r, attempt)
+
+    assert (
+        runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run() is None
+    )
+    assert (tmp_path / "out/t1/baseline-1.unrecorded-1.jsonl").read_text() == "raw try 1"
+    assert [u.get("transcript") for u in unrecorded(tmp_path / "out")] == ["baseline-1.unrecorded-1.jsonl"]
+
+
 def test_a_permanent_error_on_a_retry_stops_the_batch_at_once(tmp_path):
     runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
     calls = []

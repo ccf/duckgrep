@@ -532,21 +532,21 @@ class Batch:
                 self.cond.notify_all()
 
     def _set_aside(self, r: Run) -> str | None:
-        """Keep an attempt that won't be recorded out of the next one's way: its transcript and stderr become
-        <setup>-<rep>.unrecorded-<n>.*, so the run's own name only ever holds the recorded attempt. Returns the
-        transcript's new name, None if the attempt left none."""
+        """Keep an attempt that won't be recorded out of the next one's way: its transcript (compressed, or raw when
+        it failed first) and stderr become <setup>-<rep>.unrecorded-<n>.*, so the run's own name only ever holds
+        the recorded attempt. Returns the transcript's new name, None if the attempt left none."""
         run_dir, stem = self.out_dir / r.task.id, f"{r.setup}-{r.rep}"
-        transcript = run_dir / f"{stem}.jsonl.gz"
-        if not transcript.exists():
+        kinds = (".jsonl.gz", ".jsonl", ".stderr")
+        transcripts = [ext for ext in kinds[:2] if (run_dir / f"{stem}{ext}").exists()]
+        if not transcripts:
             return None
         n = 1
-        while (run_dir / f"{stem}.unrecorded-{n}.jsonl.gz").exists():
+        while any((run_dir / f"{stem}.unrecorded-{n}{ext}").exists() for ext in kinds):
             n += 1
-        stderr = run_dir / f"{stem}.stderr"
-        if stderr.exists():
-            stderr.rename(run_dir / f"{stem}.unrecorded-{n}.stderr")
-        transcript.rename(run_dir / f"{stem}.unrecorded-{n}.jsonl.gz")
-        return f"{stem}.unrecorded-{n}.jsonl.gz"
+        for ext in kinds:
+            if (run_dir / f"{stem}{ext}").exists():
+                (run_dir / f"{stem}{ext}").rename(run_dir / f"{stem}.unrecorded-{n}{ext}")
+        return f"{stem}.unrecorded-{n}{transcripts[0]}"
 
     def _charge_unrecorded(self, r: Run, cost: float, why: str, transcript: str | None = None) -> None:
         """Count what a run spent that no results line will show, so a resume counts it too."""
