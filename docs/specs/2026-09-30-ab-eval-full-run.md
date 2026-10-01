@@ -85,9 +85,16 @@ There are five. The three from the pilot are unchanged. Two new ones append a hi
 
 | Setup | Base | Hint |
 |---|---|---|
-| `duckgrep-hint` | `duckgrep` | "The repository in the current directory is indexed by duckgrep. Its query tool answers questions about the code in one SQL query: where a symbol is defined, who calls it, what it calls, what imports a module, and text search that names the enclosing function. Use it first to find code, and read files once you know where to look." |
-| `serena-hint` | `serena` | "Serena's tools navigate the repository in the current directory by symbol: find_symbol finds where a symbol is defined, find_referencing_symbols finds who uses it, get_symbols_overview lists what a file defines, and search_for_pattern searches text. Use them first to find code, and read files once you know where to look." |
+| `duckgrep-hint` | `duckgrep` | "The repository in the current directory is indexed by duckgrep. To find code, call its query tool before Grep, Glob or Read: SELECT * FROM defs('name') finds where a symbol is defined, callers('name') who calls it, and grep('regex') searches the text and names each match's enclosing function. Read a file once you know where to look." |
+| `serena-hint` | `serena` | "Serena's tools navigate the repository in the current directory by symbol. To find code, call them before Grep, Glob or Read: find_symbol finds where a symbol is defined, find_referencing_symbols who calls it, and search_for_pattern searches the text. Read a file once you know where to look." |
 
+- **Why these words:** a first, gentler pair only asked agents to use the tool "first", and on localization it didn't hold for duckgrep.
+  - In the 40-run smoke test, duckgrep-hint used duckgrep in 0 of 4 localization runs, and serena-hint used Serena in 2 of 4.
+  - On 8 more localization tasks (4 Python, 4 Rust), each pair ran once per hinted setup.
+    - duckgrep-hint: 5 of 8 runs with the first pair, 7 of 8 with these, where duckgrep's query was the first call in 7 runs, not 3.
+    - serena-hint: 5 of 8 with either pair.
+  - Spend and success didn't move beyond noise.
+  - The difference is concreteness: Serena's tool names say what they do, while duckgrep's one tool takes SQL. So its hint shows the three calls, and a test runs them on the schema the server ships.
 - **Parity:** the hints are parallel in form and length. They name the tool's capabilities and ask for it to be used first. Neither names the evaluation or anything about the task.
 - **Prompts:** the task prompt stays identical across all five setups.
 - **Worktrees:** a hinted setup shares its base setup's worktree group, so the paths the agent sees still don't name a setup.

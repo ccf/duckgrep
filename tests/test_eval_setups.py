@@ -1,3 +1,4 @@
+import re
 import sys
 
 import pytest
@@ -138,15 +139,27 @@ def test_the_harness_environment_is_off_the_agents_path(monkeypatch):
 
 
 HINTS = {
-    "duckgrep-hint": "The repository in the current directory is indexed by duckgrep. Its query tool answers questions "
-    "about the code in one SQL query: where a symbol is defined, who calls it, what it calls, what imports a module, "
-    "and text search that names the enclosing function. Use it first to find code, and read files once you know "
-    "where to look.",
-    "serena-hint": "Serena's tools navigate the repository in the current directory by symbol: find_symbol finds where "
-    "a symbol is defined, find_referencing_symbols finds who uses it, get_symbols_overview lists what a file "
-    "defines, and search_for_pattern searches text. Use them first to find code, and read files once you know "
-    "where to look.",
+    "duckgrep-hint": "The repository in the current directory is indexed by duckgrep. To find code, call its query "
+    "tool before Grep, Glob or Read: SELECT * FROM defs('name') finds where a symbol is defined, callers('name') who "
+    "calls it, and grep('regex') searches the text and names each match's enclosing function. Read a file once you "
+    "know where to look.",
+    "serena-hint": "Serena's tools navigate the repository in the current directory by symbol. To find code, call "
+    "them before Grep, Glob or Read: find_symbol finds where a symbol is defined, find_referencing_symbols who calls "
+    "it, and search_for_pattern searches the text. Read a file once you know where to look.",
 }
+
+
+def test_the_duckgrep_hint_shows_queries_that_run(tmp_path):
+    # an agent copies the hint's SQL as it stands, so it must run on the schema the server ships
+    from helpers import make_repo, rows
+
+    root = make_repo(tmp_path / "r", {"pkg/a.py": "def name():\n    return 1\n\n\ndef user():\n    return name()\n"})
+    calls = re.findall(r"\b(\w+)\('(\w+)'\)", setups.DUCKGREP_HINT)
+    assert calls == [("defs", "name"), ("callers", "name"), ("grep", "regex")]
+    for macro, arg in calls:
+        rows(root, f"SELECT * FROM {macro}('{arg}')")  # an unknown macro raises
+    assert any("pkg/a.py" in map(str, r) for r in rows(root, "SELECT * FROM defs('name')"))
+    assert any("user" in map(str, r) for r in rows(root, "SELECT * FROM callers('name')"))
 
 
 def test_a_hinted_setup_has_its_base_and_its_verbatim_hint():
