@@ -1,11 +1,12 @@
-"""The three setups. Same model, CLI, built-in tools and prompt; they differ only in one MCP server."""
+"""The five setups. Same model, CLI, built-in tools and task prompt; they differ only in one MCP server, and a
+hinted setup also appends a sentence about that server to the system prompt."""
 
 from __future__ import annotations
 
 import os
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import config
@@ -19,23 +20,46 @@ class Setup:
     servers: frozenset[str]  # MCP servers the init event must list, each connected
     tools: frozenset[str]  # MCP tools the init event must list besides the built-ins
     allow: tuple[str, ...]  # extra --allowedTools entries
+    base: str  # the setup whose server, worktree and prepare step this one uses: its own name unless hinted
+    hint: str | None = None  # appended to Claude Code's system prompt
 
     @property
     def expected_tools(self) -> set[str]:
         return set(config.BUILTIN_TOOLS) | set(self.tools)
 
 
-SETUPS = {
-    "baseline": Setup("baseline", frozenset(), frozenset(), ()),
+DUCKGREP_HINT = (
+    "The repository in the current directory is indexed by duckgrep. Its query tool answers questions about the code "
+    "in one SQL query: where a symbol is defined, who calls it, what it calls, what imports a module, and text "
+    "search that names the enclosing function. Use it first to find code, and read files once you know where to look."
+)
+SERENA_HINT = (
+    "Serena's tools navigate the repository in the current directory by symbol: find_symbol finds where a symbol is "
+    "defined, find_referencing_symbols finds who uses it, get_symbols_overview lists what a file defines, and "
+    "search_for_pattern searches text. Use them first to find code, and read files once you know where to look."
+)
+
+_BASE = {
+    "baseline": Setup("baseline", frozenset(), frozenset(), (), "baseline"),
     "duckgrep": Setup(
-        "duckgrep", frozenset({"duckgrep"}), frozenset({"mcp__duckgrep__query"}), ("mcp__duckgrep__query",)
+        "duckgrep",
+        frozenset({"duckgrep"}),
+        frozenset({"mcp__duckgrep__query"}),
+        ("mcp__duckgrep__query",),
+        "duckgrep",
     ),
     "serena": Setup(
         "serena",
         frozenset({"serena"}),
         frozenset(f"mcp__serena__{t}" for t in config.SERENA_TOOLS),
         ("mcp__serena__*",),
+        "serena",
     ),
+}
+SETUPS = {
+    **_BASE,
+    "duckgrep-hint": replace(_BASE["duckgrep"], name="duckgrep-hint", hint=DUCKGREP_HINT),
+    "serena-hint": replace(_BASE["serena"], name="serena-hint", hint=SERENA_HINT),
 }
 
 
@@ -66,8 +90,8 @@ def sweep(run_id: str) -> None:
         try:
             if p.environ().get(RUN_MARKER) == run_id:
                 marked.append(p)
-        except (psutil.Error, OSError):
-            continue  # gone, a zombie, or another user's
+        except (psutil.Error, OSError, SystemError):
+            continue  # gone (macOS raises SystemError if it exits mid-read), a zombie, or another user's
     for p in marked:
         try:
             p.terminate()
@@ -92,6 +116,7 @@ def environment(with_user: bool = True, run_id: str | None = None) -> dict[str, 
         env[RUN_MARKER] = run_id
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     env["ENABLE_TOOL_SEARCH"] = "false"  # MCP tools load directly, not through an extra ToolSearch call
+    env["DISABLE_AUTOUPDATER"] = "1"  # Claude Code must not change under a batch
     return env
 
 
@@ -127,6 +152,8 @@ def command(setup: Setup, prompt: str, mcp_config: Path | None, claude: str = "c
         "--max-budget-usd",
         f"{config.MAX_BUDGET_USD:.2f}",
     ]
+    if setup.hint:
+        argv += ["--append-system-prompt", setup.hint]
     return argv
 
 
@@ -161,9 +188,9 @@ def serena_argv(worktree: Path) -> list[str]:
 
 def mcp_config(setup: Setup, worktree: Path, repo: str, cache: Path, home: Path | None = None) -> dict | None:
     """The --mcp-config document for a run, or None for the baseline."""
-    if setup.name == "baseline":
+    if setup.base == "baseline":
         return None
-    if setup.name == "duckgrep":
+    if setup.base == "duckgrep":
         server = {"command": sys.executable, "args": ["-m", "duckgrep", "-C", str(worktree), "mcp"]}
         return {"mcpServers": {"duckgrep": server}}
     if home is None:
@@ -173,12 +200,17 @@ def mcp_config(setup: Setup, worktree: Path, repo: str, cache: Path, home: Path 
     return {"mcpServers": {"serena": server}}
 
 
+def cargo_target(cache: Path, repo: str) -> Path:
+    """One build directory per repo, shared by every Serena run and warm-up on it."""
+    return cache / "cargo-target" / repo.lower().replace("/", "__")
+
+
 def rust_env(cache: Path, repo: str) -> dict[str, str]:
     """Variables for anything that runs cargo: its caches live in the eval cache, the worktree stays clean, and
     the installed stable toolchain is used whatever the repo pins, so rustup never installs anything."""
     return {
         "PATH": f"{cache / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
         "CARGO_HOME": str(cache / "cargo-home"),
-        "CARGO_TARGET_DIR": str(cache / "cargo-target" / repo.lower().replace("/", "__")),
+        "CARGO_TARGET_DIR": str(cargo_target(cache, repo)),
         "RUSTUP_TOOLCHAIN": "stable",
     }

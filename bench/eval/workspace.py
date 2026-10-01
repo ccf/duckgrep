@@ -10,8 +10,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import config, datasets, setups
@@ -35,22 +39,35 @@ def slug(repo: str) -> str:
     return repo.lower().replace("/", "__")
 
 
+_locks: dict[Path, threading.RLock] = {}
+_locks_guard = threading.Lock()
+
+
+def _lock(key: Path) -> threading.RLock:
+    """One re-entrant lock per resource (a repo's clone, a cargo target directory), for `prepare`'s threads."""
+    with _locks_guard:
+        return _locks.setdefault(key, threading.RLock())
+
+
 def clone(repo: str, cache: Path, url: str | None = None) -> Path:
     """A full bare clone of `repo`, made once. Not a partial clone: duckgrep indexes `git log --numstat`, and an
     agent may read history too, and in a blobless clone each old blob is a separate network fetch."""
     dest = cache / "repos" / f"{slug(repo)}.git"
-    if not dest.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(dest.name + ".part")
-        if tmp.exists():
-            shutil.rmtree(tmp)
-        git("clone", "--bare", url or f"https://github.com/{repo}.git", str(tmp))
-        tmp.rename(dest)
+    with _lock(dest):  # two commits of one repo prepared at once clone it once
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".part")
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            git("clone", "--bare", url or f"https://github.com/{repo}.git", str(tmp))
+            tmp.rename(dest)
     return dest
 
 
 # The agent sees its working directory, so the path to a worktree must not name the setup or the tool under test.
 GROUPS = {"baseline": "t1", "duckgrep": "t2", "serena": "t3"}
+# a hinted setup shares its base's worktree: only the system prompt differs, and runs of one worktree never overlap
+GROUPS |= {name: GROUPS[s.base] for name, s in setups.SETUPS.items()}
 
 
 def reader(cache: Path, repo: str, commit: str):
@@ -93,14 +110,19 @@ def worktree(repo: str, commit: str, setup: str, cache: Path, url: str | None = 
     if (path / ".git").exists():
         return path
     bare = clone(repo, cache, url)
-    if git("cat-file", "-t", commit, cwd=bare, check=False).strip() != "commit":
-        git("fetch", "origin", f"{commit}:refs/eval/{commit}", cwd=bare)  # a ref keeps gc from pruning it
+    with _lock(bare):  # fetches into one clone never run together
+        if git("cat-file", "-t", commit, cwd=bare, check=False).strip() != "commit":
+            git("fetch", "origin", f"{commit}:refs/eval/{commit}", cwd=bare)  # a ref keeps gc from pruning it
     tmp = path.with_name(path.name + ".part")
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     git("init", "-q", str(tmp))
     (tmp / ".git" / "objects" / "info" / "alternates").write_text(f"{(bare / 'objects').resolve()}\n")
     git("checkout", "-q", "--detach", commit, cwd=tmp)
+    if changes(tmp):  # a file its attributes normalise (`*.md text eol=lf`, committed with CRLF) reads as changed
+        (tmp / ".git" / "info").mkdir(exist_ok=True)
+        (tmp / ".git" / "info" / "attributes").write_text("* -text\n")  # so compare the commit's bytes as they are
+        git("checkout", "-q", "--force", "--detach", commit, cwd=tmp)
     tmp.rename(path)
     return path
 
@@ -128,6 +150,96 @@ def reset(path: Path, commit: str) -> tuple[list[str], bool]:
 def free_gb(path: Path) -> float:
     path.mkdir(parents=True, exist_ok=True)
     return shutil.disk_usage(path).free / 1e9
+
+
+class Watch:
+    """Outages of the cache's volume, as a probe from a thread of its own sees them. macOS's privacy service has
+    stalled for a minute or two at a time, refusing every process the volume (EPERM) until it came back; work done
+    meanwhile fails in ways that look like its own (a git read, a lookup that finds nothing) and must be redone."""
+
+    def __init__(self, probe: Callable[[], object], every_s: float, stall_s: float):
+        self.outages: list[tuple[float, float | None]] = []  # (start, end) on the monotonic clock; end None: lasting
+        self._probe, self._every, self._stall = probe, every_s, stall_s
+        self._cond = threading.Condition()
+        self._probed = time.monotonic()  # when the latest finished probe began
+        self._probing: float | None = None  # when the probe under way began
+        self._closed = False
+
+    def _check(self) -> None:
+        began = time.monotonic()
+        with self._cond:
+            self._probing = began
+        try:
+            self._probe()
+            readable = time.monotonic() - began <= self._stall  # a probe that hung was an outage, however it ended
+        except OSError:
+            readable = False
+        with self._cond:
+            self._probing = None
+            if not readable and not self.down():
+                self.outages.append((self._probed, None))  # it was last known readable when the probe before began
+            elif readable and self.down():
+                self.outages[-1] = (self.outages[-1][0], began)
+            self._probed = began
+            self._cond.notify_all()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._closed, self._every)
+                if self._closed:
+                    return
+            self._check()
+
+    def _hung(self) -> float | None:
+        """When the probe under way began, if it has been hanging longer than `stall_s`: a stalled volume can
+        block a syscall instead of refusing it."""
+        began = self._probing
+        return began if began is not None and time.monotonic() - began > self._stall else None
+
+    def down(self) -> bool:
+        """Whether an outage lasts, a probe that hangs included."""
+        return (bool(self.outages) and self.outages[-1][1] is None) or self._hung() is not None
+
+    def downtime(self) -> float:
+        """How long the outage that lasts has lasted; 0.0 when the volume is readable."""
+        if self.outages and self.outages[-1][1] is None:
+            return time.monotonic() - self.outages[-1][0]
+        hung = self._hung()
+        return time.monotonic() - hung if hung is not None else 0.0
+
+    def overlaps(self, t0: float, t1: float) -> bool:
+        """Whether an outage touched the span [t0, t1]. It first waits for a probe begun after t1, so an outage
+        that began as the span ended is seen too; when none comes in time, the probe hangs, and that is one."""
+        with self._cond:
+            fresh = self._cond.wait_for(lambda: self._probed >= t1 or self._closed, self._stall + 2 * self._every)
+            if not fresh:
+                return True
+            return any(start <= t1 and (end is None or end >= t0) for start, end in self.outages)
+
+
+@contextmanager
+def watch(
+    cache: Path, every_s: float | None = None, probe: Callable[[], object] | None = None, stall_s: float | None = None
+) -> Iterator[Watch]:
+    """Probe the cache's volume every `every_s` (config.VOLUME_PROBE_S) while the block runs. The first probe is
+    made before the block starts. A cache that cannot be listed, missing included, counts as an outage, and so does
+    a probe that hangs longer than `stall_s` (config.VOLUME_STALL_S)."""
+    w = Watch(
+        probe or (lambda: os.listdir(cache)),
+        config.VOLUME_PROBE_S if every_s is None else every_s,
+        config.VOLUME_STALL_S if stall_s is None else stall_s,
+    )
+    w._check()
+    thread = threading.Thread(target=w._run, daemon=True)
+    thread.start()
+    try:
+        yield w
+    finally:
+        with w._cond:
+            w._closed = True
+            w._cond.notify_all()
+        thread.join(timeout=5)  # a probe stuck in a stalled syscall is left behind: the thread is a daemon
 
 
 def require_space(path: Path, minimum: float = config.MIN_FREE_GB) -> None:
@@ -219,34 +331,75 @@ def serena_project_file(cache: Path, path: Path) -> Path:
     return cache / "serena-projects" / path.name / ".serena" / "project.yml"
 
 
-def prepare(tasks, setup_names: list[str], cache: Path, log=print, save=None) -> list[dict]:
-    """Worktrees for every (repo, commit, setup), with the duckgrep index or the Serena warm-up. Returns what was
-    newly built, with its cost, and hands each row to `save` as soon as it is measured, so a later failure keeps
-    it; what exists already is left alone."""
+def _prepare_pair(
+    repo: str, commit: str, lang: str, bases: list[str], cache: Path, log, save, slots: threading.Semaphore
+) -> list[dict]:
+    """One (repo, commit): a worktree per base setup, with its index or warm-up. Each row is saved as soon as it
+    is measured. A Rust warm-up holds its repo's cargo target, then one of `slots`: rust-analyzers at once."""
     built = []
-    todo = sorted({(t.repo, t.commit, t.lang) for t in tasks})
-    if "serena" in setup_names and any(lang == "rust" for *_, lang in todo):
-        rust_analyzer(cache)
-    for repo, commit, lang in todo:
-        for setup in setup_names:
-            require_space(cache)
-            path = worktree(repo, commit, setup, cache)
-            row: dict = {}
-            if setup == "duckgrep" and not (path / ".duckgrep" / "index.duckdb").exists():
-                row = index_duckgrep(path)
-            elif setup == "serena" and not serena_project_file(cache, path).exists():
+    for setup in bases:
+        require_space(cache)
+        path = worktree(repo, commit, setup, cache)
+        row: dict = {}
+        if setup == "duckgrep" and not (path / ".duckgrep" / "index.duckdb").exists():
+            row = index_duckgrep(path)
+        elif setup == "serena" and not serena_project_file(cache, path).exists():
+            # Serena's rust-analyzer builds in a cargo target directory shared by every commit of the repo
+            if lang == "rust":
+                with _lock(setups.cargo_target(cache, repo)), slots:  # the repo's lock first, never the reverse
+                    row = serena_warmup(path, repo, lang, cache)
+            else:
                 row = serena_warmup(path, repo, lang, cache)
-            leftover = changes(path)
-            if leftover and not (setup == "serena" and row):
-                raise RuntimeError(f"preparing {path} changed it: {leftover[:5]}")
-            if leftover:  # the warm-up's own: rust-analyzer's cargo writes a Cargo.lock into a repo that commits none
-                reset(path, commit)  # and every run restores it the same way
-            if row:
-                row = {"setup": setup, "repo": repo, "commit": commit, **row}
-                if leftover:
-                    row["restored"] = leftover
-                built.append(row)
-                if save:
-                    save(row)
-                log(f"prepared {setup} {repo}@{commit[:12]}: {row}")
+        leftover = changes(path)
+        if leftover and not (setup == "serena" and row):
+            raise RuntimeError(f"preparing {path} changed it: {leftover[:5]}")
+        if leftover:  # the warm-up's own: rust-analyzer's cargo writes a Cargo.lock into a repo that commits none
+            reset(path, commit)  # and every run restores it the same way
+        if row:
+            row = {"setup": setup, "repo": repo, "commit": commit, **row}
+            if leftover:
+                row["restored"] = leftover
+            built.append(row)
+            if save:
+                save(row)
+            log(f"prepared {setup} {repo}@{commit[:12]}: {row}")
     return built
+
+
+def prepare(
+    tasks, setup_names: list[str], cache: Path, log=print, save=None, workers: int = config.PREPARE_PARALLEL
+) -> list[dict]:
+    """Worktrees for every (repo, commit, setup), with the duckgrep index or the Serena warm-up, `workers` pairs
+    at a time. Returns what was newly built, in task order, with its cost, and hands each row to `save` (from any
+    thread) as soon as it is measured, so a later failure keeps it; what exists already is left alone. A pair that
+    fails does not stop the others: once all are done, the failures are raised together."""
+    todo = sorted({(t.repo, t.commit, t.lang) for t in tasks})
+    bases = list(dict.fromkeys(setups.SETUPS[s].base for s in setup_names))  # a hinted setup shares its base's build
+    if "serena" in bases and any(lang == "rust" for *_, lang in todo):
+        rust_analyzer(cache)
+    rows: dict[int, list[dict]] = {}
+    failures: list[str] = []
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        slots = threading.BoundedSemaphore(config.RUST_LSP_LIMIT)
+        futures = {pool.submit(_prepare_pair, *pair, bases, cache, log, save, slots): i for i, pair in enumerate(todo)}
+        waiting = set(futures)
+        while waiting:  # polling, so Ctrl-C reaches this thread whatever the workers are doing
+            finished, waiting = wait(waiting, timeout=0.2)
+            for done in finished:
+                i = futures[done]
+                try:
+                    rows[i] = done.result()
+                except Exception as e:
+                    repo, commit, _ = todo[i]
+                    failures.append(f"{repo}@{commit[:12]}: {e}")
+    except KeyboardInterrupt:  # the pairs not yet started are dropped; those running finish and save their rows
+        log(f"interrupted: waiting for the {sum(f.running() for f in futures)} repo/commit pairs in flight")
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown()
+    if failures:
+        raise RuntimeError(
+            f"preparing failed for {len(failures)} of {len(todo)} repo/commit pairs:\n" + "\n".join(failures)
+        )
+    return [row for i in sorted(rows) for row in rows[i]]

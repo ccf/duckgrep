@@ -112,3 +112,55 @@ def test_rust_tasks_filter_on_date_repo_and_size(monkeypatch, tmp_path):
     live = loc.rust_tasks("live", 10, 2, seed=1, cache=tmp_path)
     assert [t.id for t in live] == ["new-1"] and live[0].gold == ("src/lib.rs:run",) and live[0].stratum == "live"
     assert sorted(t.id for t in loc.rust_tasks("multilingual", 10, 2, seed=1, cache=tmp_path)) == ["new-1", "old-1"]
+
+
+def test_rust_tasks_of_every_date_are_split_by_the_cutoff_and_bounded_in_size(monkeypatch, tmp_path):
+    base = "pub fn a() -> u32 {\n    1\n}\n\npub fn b() -> u32 {\n    1\n}\n\npub fn c() -> u32 {\n    1\n}\n\npub fn d() -> u32 {\n    1\n}\n"
+
+    def row(iid, created, touched):
+        after = base
+        for name in touched:
+            after = after.replace(f"pub fn {name}() -> u32 {{\n    1", f"pub fn {name}() -> u32 {{\n    2")
+        diff = "".join(
+            __import__("difflib").unified_diff(
+                base.splitlines(True), after.splitlines(True), "a/src/lib.rs", "b/src/lib.rs"
+            )
+        )
+        return {
+            "instance_id": iid,
+            "repo": "o/r",
+            "base_commit": "c" * 40,
+            "patch": "diff --git a/src/lib.rs b/src/lib.rs\n" + diff,
+            "problem_statement": "It returns the wrong number.",
+            "created_at": created,
+        }
+
+    table = [
+        row("new", "2026-07-01T00:00:00Z", "a"),
+        row("old", "2025-01-01T00:00:00Z", "ab"),
+        row("big", "2026-07-01T00:00:00Z", "abcd"),  # four functions: over the bound of three
+    ]
+    monkeypatch.setattr(datasets, "rows", lambda name, cache=None: table)
+    monkeypatch.setattr(datasets, "fetch_file", lambda repo, commit, path, cache=None: base)
+    got = {
+        t.id: t.stratum
+        for t in loc.rust_tasks("live", 10, 10, seed=1, cache=tmp_path, every_date=True, max_functions=3)
+    }
+    assert got == {"new": "live", "old": "live-earlier"}
+
+
+def test_the_full_profile_takes_every_eligible_task_and_the_pilot_keeps_its_draw():
+    from bench.eval import config
+
+    full, pilot = config.PROFILES["full"], config.PROFILES["pilot"]
+    assert full.python >= 1000 and full.python_per_repo >= 1000 and full.live_every_date and full.rust_functions == 3
+    assert (pilot.python, pilot.python_per_repo, pilot.multilingual, pilot.live, pilot.rust_per_repo) == (
+        10,
+        3,
+        5,
+        5,
+        2,
+    )
+    assert not pilot.live_every_date and pilot.rust_functions == 10 and pilot.repos == config.STRUCTURAL_REPOS
+    assert pilot.questions == (2, 2, 1) and full.questions == (8, 8, 4)
+    assert set(config.STRUCTURAL_REPOS) <= set(full.repos) and len({r.repo for r in full.repos}) == len(full.repos)

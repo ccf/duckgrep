@@ -1,6 +1,8 @@
 """Small git repos standing in for GitHub in the eval tests."""
 
 import subprocess
+import threading
+import time
 
 from bench.eval import workspace
 
@@ -16,3 +18,17 @@ def origin(tmp_path, files, name="origin"):
     subprocess.run(git + ["add", "-A"], check=True)
     subprocess.run(git + ["commit", "-q", "-m", "init"], check=True)
     return root, workspace.git("rev-parse", "HEAD", cwd=root).strip()
+
+
+class Volume:
+    """A cache volume that can be made unreadable, as macOS's privacy service did for a minute or two at a time."""
+
+    def __init__(self):
+        self.lost = threading.Event()
+        self.stuck = threading.Event()  # a probe hangs in its syscall until this is cleared
+
+    def probe(self):
+        while self.stuck.is_set():
+            time.sleep(0.002)
+        if self.lost.is_set():
+            raise PermissionError(1, "Operation not permitted")

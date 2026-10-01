@@ -6,6 +6,7 @@ stream is kept as runs/<name>/<task>/<setup>-<rep>.jsonl.gz.
 
 from __future__ import annotations
 
+import fcntl
 import gzip
 import json
 import os
@@ -27,20 +28,32 @@ from .suite import Task
 
 
 class InfrastructureError(RuntimeError):
-    """The run failed outside the agent (login, rate limit, API outage). The batch stops; the run is redone later.
-    `cost` is what the run spent before it failed, which still counts against the batch's cap."""
+    """The run failed outside the agent (login, rate limit, API outage). The run is not recorded. A transient
+    error is retried; a permanent one (login, billing, credentials) stops the batch. `cost` is what the run
+    spent before it failed, which still counts against the batch's cap."""
 
-    def __init__(self, message: str, cost: float = 0.0):
+    def __init__(self, message: str, cost: float = 0.0, permanent: bool = False):
         super().__init__(message)
         self.cost = cost
+        self.permanent = permanent
+
+
+class Interrupted(RuntimeError):
+    """The batch was interrupted before the run started: nothing ran, nothing was spent."""
+
+
+class Busy(RuntimeError):
+    """Another process is running a batch on the same results directory."""
 
 
 PROBE_TIMEOUT_S = 300
 
 
 INTERRUPTED = "interrupted; rerun the same command to resume"
+STREAK = "API-error streak"  # why the runs of a streak of API errors were taken back
 _live: dict[subprocess.Popen, str] = {}  # the runs in flight (process -> run id), for an interrupt
 _live_lock = threading.Lock()
+_stopping = threading.Event()  # set by an interrupt under _live_lock, so a run starting as it comes is not missed
 
 
 def charged(rec: dict) -> float:
@@ -75,6 +88,42 @@ def recorded(results: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def started_on(results: Path) -> str | None:
+    """The Claude Code version a batch began on: its earliest recorded run's. None until a run has one."""
+    if not results.exists():
+        return None
+    with open(results) as f:
+        for line in f:
+            try:
+                version = json.loads(line).get("cli_version")
+            except json.JSONDecodeError:
+                continue  # a last line cut off mid-write; the batch cuts it when it starts
+            if version:
+                return version
+    return None
+
+
+def cut_partial_line(path: Path) -> int:
+    """Cut a last line the harness left partly written (killed mid-append) back to the last whole line, so that
+    reading never fails and the next append starts a line of its own. Returns the bytes cut."""
+    if not path.exists():
+        return 0
+    with open(path, "rb+") as f:
+        size = end = f.seek(0, os.SEEK_END)
+        keep = 0
+        while end > 0:
+            start = max(0, end - (1 << 16))
+            f.seek(start)
+            newline = f.read(end - start).rfind(b"\n")
+            if newline >= 0:
+                keep = start + newline + 1
+                break
+            end = start
+        if keep < size:
+            f.truncate(keep)
+    return size - keep
+
+
 def finished(results: Path) -> set[tuple[str, str, int]]:
     return {(r["task"], r["setup"], r["rep"]) for r in recorded(results)}
 
@@ -95,7 +144,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 def _mcp_file(setup: setups.Setup, task: Task, wt: Path, cache: Path, tmp: Path) -> Path | None:
     """Write the run's --mcp-config file (and its own SERENA_HOME) into `tmp`; None for the baseline."""
-    home = setups.serena_home(tmp / "serena-home", cache) if setup.name == "serena" else None
+    home = setups.serena_home(tmp / "serena-home", cache) if setup.base == "serena" else None
     cfg = setups.mcp_config(setup, wt, task.repo, cache, home)
     if cfg is None:
         return None
@@ -134,6 +183,26 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
     if tr.api_error != "authentication_failed":
         problems.append("the probe did not stop at login; check that it cost nothing")
     return problems
+
+
+def unprepared(runs: list[Run], cache: Path) -> list[str]:
+    """What `prepare` has not built for the scheduled runs, one line per worktree. A missing worktree would stop
+    the batch whenever its turn came; a missing index or Serena project would let that run build it on the clock."""
+    missing = {}
+    for r in runs:
+        base = setups.SETUPS[r.setup].base
+        wt = workspace.worktree_path(cache, r.setup, r.task.repo, r.task.commit)
+        if wt in missing:
+            continue
+        if not (wt / ".git").exists():
+            missing[wt] = f"{wt}: no worktree"
+        elif base == "duckgrep" and not (wt / ".duckgrep" / "index.duckdb").exists():
+            missing[wt] = f"{wt}: no duckgrep index"
+        elif base == "serena" and not workspace.serena_project_file(cache, wt).exists():
+            missing[wt] = f"{wt}: Serena is not warmed up"
+        else:
+            missing[wt] = None
+    return [m for m in missing.values() if m]
 
 
 def visible(cache: Path, task: Task, left: list[str]) -> set[str] | None:
@@ -216,6 +285,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
             started = time.monotonic()
             killed = False
             run_id = uuid.uuid4().hex
+            if _stopping.is_set():  # the interrupt came while this run was being set up
+                raise Interrupted(INTERRUPTED)
             with open(raw, "w") as out, open(run_dir / f"{run.setup}-{run.rep}.stderr", "w") as err:
                 proc = subprocess.Popen(
                     argv,
@@ -228,6 +299,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                 )
                 with _live_lock:
                     _live[proc] = run_id
+                    if _stopping.is_set():  # the interrupt came between the check above and Popen, and missed it
+                        os.killpg(proc.pid, signal.SIGKILL)
                 try:
                     proc.wait(timeout=config.WALL_LIMIT_S)
                 except subprocess.TimeoutExpired:
@@ -237,18 +310,26 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
                     setups.sweep(run_id)
                     with _live_lock:
                         _live.pop(proc, None)
+                        interrupted = _stopping.is_set()
             wall = time.monotonic() - started
         with open(raw) as f:
             tr = stream.read(f)
         with open(raw, "rb") as src, gzip.open(raw.with_name(raw.name + ".gz"), "wb") as dst:
             shutil.copyfileobj(src, dst)
         raw.unlink()
-        if stream.infrastructure_error(tr) and not killed:
-            spent = tr.result.get("total_cost_usd")
-            if spent is None:
-                spent = stream.cost(stream.tokens(tr.result, tr.usage_by_message))
+        spent = tr.result.get("total_cost_usd")
+        if spent is None:
+            spent = stream.cost(stream.tokens(tr.result, tr.usage_by_message))
+        if not tr.result and not killed and not interrupted:  # a crash, say under memory pressure: not the setup's
             raise InfrastructureError(
-                f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}", cost=spent
+                f"{task.id}/{run.setup}-{run.rep}: claude exited with status {proc.returncode} before its result",
+                cost=spent,
+            )
+        if stream.infrastructure_error(tr) and not killed and not interrupted:
+            raise InfrastructureError(
+                f"{task.id}/{run.setup}-{run.rep}: {tr.api_error or tr.result.get('result')}",
+                cost=spent,
+                permanent=stream.permanent_error(tr),
             )
         record = {
             "task": task.id,
@@ -271,8 +352,10 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
 
 
 class Batch:
-    """Runs a schedule with `parallel` workers. Runs that share a worktree never overlap. The spending cap covers
-    what earlier invocations of the same batch spent, so resuming never renews it."""
+    """Runs a schedule with `parallel` workers. Runs that share a resource never overlap: a worktree, or the cargo
+    target directory that every Serena run on one Rust repo builds in. The spending cap covers what earlier
+    invocations of the same batch spent, so resuming never renews it. No run starts while the cache's volume is
+    unreadable, and none that overlapped such an outage is recorded."""
 
     def __init__(
         self,
@@ -284,88 +367,343 @@ class Batch:
         execute_fn: Callable[..., dict] = execute,
         claude: str = "claude",
         log: Callable[[str], None] = print,
+        volume_probe: Callable[[], object] | None = None,
     ):
         self.results = out_dir / "results.jsonl"
         self.unrecorded = out_dir / "unrecorded.jsonl"  # spend of runs never recorded: interrupted, failed
-        earlier = recorded(self.results)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.lock = _hold(out_dir / ".lock")  # until run() ends: two batches on one directory pay twice
+        try:
+            self._cut_partial_lines(log)
+            earlier = recorded(self.results)
+            unrecorded = recorded(self.unrecorded)
+        except BaseException:
+            self.lock.close()
+            raise
         done = {(r["task"], r["setup"], r["rep"]) for r in earlier}
         self.pending = [r for r in runs if r.key not in done]
         self.cache, self.out_dir, self.parallel = cache, out_dir, parallel
         self.max_total_usd, self.execute, self.claude, self.log = max_total_usd, execute_fn, claude, log
-        self.busy: set[Path] = set()
+        self.volume_probe = volume_probe  # None: list the cache (workspace.watch)
+        self.volume: workspace.Watch | None = None  # while run() runs
+        self.unmeasurable_since: float | None = None  # when free_gb began to fail, while it fails
+        self.busy: set[Path] = set()  # the resources of the runs in flight
+        self.analyzers = 0  # runs in flight that start a rust-analyzer: Serena on a Rust task
         self.cond = threading.Condition()
-        self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in recorded(self.unrecorded))
+        self.spent = sum(charged(r) for r in earlier) + sum(u["cost_usd"] for u in unrecorded)
+        # the Claude Code version the batch began on, from its earliest recorded run (None until one has a version)
+        self.cli_version = next((r["cli_version"] for r in earlier if r.get("cli_version")), None)
+        # recorded runs in a row, up to the latest, that ended on an API error; a resume continues the streak
+        self.api_errors = next((i for i, r in enumerate(reversed(earlier)) if not r.get("api_error")), len(earlier))
         self.stopped: str | None = None
         self.interrupted = False
         self.completed = 0
         self.working = 0  # workers still running
+        if self.api_errors >= config.API_ERROR_STREAK:  # a stop cut short taking a streak back: finish it
+            self._take_back(self.api_errors)
+            log(f"took back the {self.api_errors} runs in a row that ended on an API error; they are redone")
+            self.api_errors = 0
+            done = {(r["task"], r["setup"], r["rep"]) for r in recorded(self.results)}
+            self.pending = [r for r in runs if r.key not in done]
+
+    def _cut_partial_lines(self, log: Callable[[str], None]) -> None:
+        """A line cut off mid-write is dropped; its run's cost is unknown, so it is charged at the per-run cap, and
+        a record's run is redone."""
+        for path in (self.unrecorded, self.results):
+            cut = cut_partial_line(path)
+            if cut:
+                row = dict.fromkeys(("task", "setup", "rep")) | {"why": "partial record", "file": path.name}
+                with open(self.unrecorded, "a") as f:
+                    f.write(json.dumps({**row, "cost_usd": config.MAX_BUDGET_USD}) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                log(f"cut {cut} bytes of a partly written last line from {path}; charged ${config.MAX_BUDGET_USD:.2f}")
+
+    @staticmethod
+    def _starts_rust_analyzer(r: Run) -> bool:
+        return setups.SETUPS[r.setup].base == "serena" and r.task.lang == "rust"
+
+    def _resources(self, r: Run) -> set[Path]:
+        held = {workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)}
+        if setups.SETUPS[r.setup].base == "serena" and r.task.lang == "rust":
+            held.add(setups.cargo_target(self.cache, r.task.repo))
+        return held
+
+    def _limit(self, uncharged: float = 0.0) -> str | None:
+        """Why no attempt may start now: the spending cap, counting `uncharged` spend on top of what is charged, or
+        the disk. Called holding `cond`."""
+        spent = self.spent + uncharged
+        if spent >= self.max_total_usd:
+            return f"spent ${spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
+        if workspace.free_gb(self.cache) < config.MIN_FREE_GB:
+            return f"less than {config.MIN_FREE_GB} GB free under {self.cache}"
+        return None
+
+    def _may_retry(self, uncharged: float = 0.0) -> bool:
+        """Whether a retry may start: a retry spends like a new run, so it stops at the same limits. `uncharged`
+        is spend not charged yet: the discarded attempt a record will carry."""
+        with self.cond:
+            try:
+                self.stopped = self.stopped or self._limit(uncharged)
+            except OSError:  # the disk cannot be measured now: the next _take measures it, or waits
+                pass
+            return not self.stopped
+
+    def _volume_back(self) -> bool:
+        """Wait, holding `cond`, while the cache's volume is unreadable; False if the batch stopped meanwhile. An
+        outage of VOLUME_OUTAGE_LIMIT_S stops it."""
+        while not self.stopped and self.volume is not None and self.volume.down():
+            lasted = self.volume.downtime()
+            if lasted >= config.VOLUME_OUTAGE_LIMIT_S:
+                self.stopped = f"the cache's volume has been unreadable for {lasted:.0f} s"
+                self.cond.notify_all()
+                break
+            self.cond.wait(config.VOLUME_PROBE_S)
+        return not self.stopped
+
+    def _hit_outage(self, began: float) -> bool:
+        return self.volume is not None and self.volume.overlaps(began, time.monotonic())
+
+    def _spent_by(self, r: Run) -> float:
+        """What an attempt that raised may have spent: what its transcript streamed, nothing if it left none."""
+        for name, opener in ((f"{r.setup}-{r.rep}.jsonl.gz", gzip.open), (f"{r.setup}-{r.rep}.jsonl", open)):
+            path = self.out_dir / r.task.id / name
+            if path.exists():
+                try:
+                    with opener(path, "rt") as f:
+                        tr = stream.read(f)
+                except (OSError, EOFError):
+                    return config.MAX_BUDGET_USD
+                spent = tr.result.get("total_cost_usd")
+                return stream.cost(stream.tokens(tr.result, tr.usage_by_message)) if spent is None else spent
+        return 0.0
 
     def _take(self) -> Run | None:
         with self.cond:
             while True:
                 if self.stopped or not self.pending:
                     return None  # nothing pending is a finished batch, whatever it spent
-                if self.spent >= self.max_total_usd:
-                    self.stopped = f"spent ${self.spent:.2f}, the batch cap is ${self.max_total_usd:.2f}"
-                elif workspace.free_gb(self.cache) < config.MIN_FREE_GB:
-                    self.stopped = f"less than {config.MIN_FREE_GB} GB free under {self.cache}"
+                if not self._volume_back():
+                    return None
+                try:
+                    self.stopped = self._limit()
+                    self.unmeasurable_since = None
+                except OSError as e:  # the volume, again: wait as for an outage
+                    now = time.monotonic()
+                    self.unmeasurable_since = self.unmeasurable_since or now
+                    if now - self.unmeasurable_since < config.VOLUME_OUTAGE_LIMIT_S:
+                        self.cond.wait(config.VOLUME_PROBE_S)
+                        continue
+                    self.stopped = f"the cache has been unreadable for {now - self.unmeasurable_since:.0f} s: {e!r}"
                 if self.stopped:
                     return None
                 for i, r in enumerate(self.pending):
-                    wt = workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit)
-                    if wt not in self.busy:
-                        self.busy.add(wt)
+                    lsp = self._starts_rust_analyzer(r)
+                    if lsp and self.analyzers >= config.RUST_LSP_LIMIT:
+                        continue  # each rust-analyzer can take several GB
+                    held = self._resources(r)
+                    if not held & self.busy:
+                        self.busy |= held
+                        self.analyzers += lsp
                         return self.pending.pop(i)
                 self.cond.wait()
 
     def _release(self, r: Run) -> None:
         with self.cond:
-            self.busy.discard(workspace.worktree_path(self.cache, r.setup, r.task.repo, r.task.commit))
+            self.busy -= self._resources(r)
+            self.analyzers -= self._starts_rust_analyzer(r)
             self.cond.notify_all()
 
     def _record(self, rec: dict) -> None:
         with self.cond:
+            key = (rec["task"], rec["setup"], rec["rep"])
+            if rec.get("api_error") and self.api_errors >= config.API_ERROR_STREAK:
+                # the streak below stopped the batch; a run of it that was still in flight isn't kept either
+                self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key))
+                return
+            rec = {**rec, "record_id": uuid.uuid4().hex}  # tells two records of one run apart
             with open(self.results, "a") as f:
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             self.spent += charged(rec)
             self.completed += 1
+            version = rec.get("cli_version")  # a run cut off before its init event has none
+            if version and self.cli_version is None:
+                self.cli_version = version
+            elif version and version != self.cli_version:  # kept, but the batch no longer measures one version
+                self.stopped = self.stopped or (
+                    f"Claude Code changed mid-batch: {rec['task']} {rec['setup']}-{rec['rep']} ran {version}, "
+                    f"the batch began on {self.cli_version}"
+                )
+                self.cond.notify_all()
+            self.api_errors = self.api_errors + 1 if rec.get("api_error") else 0
+            if self.api_errors >= config.API_ERROR_STREAK:
+                # one such run is its own outcome (a request too long); a streak is something else failing, a CLI
+                # or API change, so none of it is kept: a resume redoes those runs
+                self._take_back(self.api_errors)
+                self.stopped = self.stopped or (
+                    f"{self.api_errors} runs in a row ended on an API error, the last {rec['api_error']}; none of "
+                    "them is kept, so a resume redoes them"
+                )
+                self.cond.notify_all()
 
-    def _charge_unrecorded(self, r: Run, cost: float, why: str) -> None:
-        """Count what a run spent that no results line will show, so a resume counts it too."""
+    def _take_back(self, n: int) -> None:
+        """Take the last `n` records, a streak of runs that ended on an API error, back out of the results, and
+        charge them as unrecorded spend. The charges are written first, each naming its record: a stop at any point
+        then loses no spend, and the next batch on these results finishes the job, charging only what isn't yet."""
+        streak = recorded(self.results)[-n:]
+        done = {u.get("record_id") for u in recorded(self.unrecorded) if u.get("why") == STREAK}
+        for rec in streak:  # a charge names the record it stands for, so each is charged once, however a stop fell
+            if rec.get("record_id") is None or rec["record_id"] not in done:
+                key = (rec["task"], rec["setup"], rec["rep"])
+                self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key), rec.get("record_id"))
+        self._unwrite(n)
+        self.spent -= sum(charged(r) for r in streak)  # their charges count instead
+        self.completed = max(0, self.completed - n)
+
+    def _unwrite(self, n: int) -> None:
+        """Cut the last `n` records from the results file. Called holding `cond`."""
+        lines = self.results.read_text().splitlines(keepends=True)
+        tmp = self.results.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            f.writelines(lines[:-n])
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.results)
+
+    def _set_aside(self, key: tuple[str, str, int]) -> str | None:
+        """Keep an attempt that won't be recorded out of the next one's way: its transcript (compressed, or raw when
+        it failed first) and stderr become <setup>-<rep>.unrecorded-<n>.*, so the run's own name only ever holds
+        the recorded attempt. `key` is the run's (task, setup, rep). Returns the transcript's new name, None if the
+        attempt left none."""
+        task_id, setup, rep = key
+        run_dir, stem = self.out_dir / task_id, f"{setup}-{rep}"
+        kinds = (".jsonl.gz", ".jsonl", ".stderr")
+        transcripts = [ext for ext in kinds[:2] if (run_dir / f"{stem}{ext}").exists()]
+        if not transcripts:
+            return None
+        n = 1
+        while any((run_dir / f"{stem}.unrecorded-{n}{ext}").exists() for ext in kinds):
+            n += 1
+        for ext in kinds:
+            if (run_dir / f"{stem}{ext}").exists():
+                (run_dir / f"{stem}{ext}").rename(run_dir / f"{stem}.unrecorded-{n}{ext}")
+        return f"{stem}.unrecorded-{n}{transcripts[0]}"
+
+    def _charge_unrecorded(
+        self,
+        key: tuple[str, str, int],
+        cost: float,
+        why: str,
+        transcript: str | None = None,
+        record_id: str | None = None,
+    ) -> None:
+        """Count what a run (its (task, setup, rep)) spent that no results line will show, so a resume counts it.
+        `record_id` names the record it replaces, when one was taken back."""
+        row = {"task": key[0], "setup": key[1], "rep": key[2], "why": why, "cost_usd": cost}
+        if transcript:
+            row["transcript"] = transcript
+        if record_id:
+            row["record_id"] = record_id
         with self.cond:
             with open(self.unrecorded, "a") as f:
-                f.write(
-                    json.dumps({"task": r.task.id, "setup": r.setup, "rep": r.rep, "why": why, "cost_usd": cost}) + "\n"
-                )
+                f.write(json.dumps(row) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             self.spent += cost
 
-    def _worker(self) -> None:
-        while (r := self._take()) is not None:
+    def _pause(self, seconds: float) -> bool:
+        """Wait on the batch's condition, so an interrupt (or any stop) ends the wait; False if it was cut short."""
+        deadline = time.monotonic() + seconds
+        with self.cond:
+            while not self.stopped:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return True
+                self.cond.wait(left)
+        return False
+
+    def _attempt(self, r: Run, attempt: int) -> dict:
+        """One execution, redone after each of RETRY_WAITS_S while it fails with a transient API error, or while
+        it overlaps an outage of the cache's volume, whatever it returned or raised then: such a run's tools and
+        git calls failed for reasons outside it. Every failed try is charged as unrecorded spend; the last failure,
+        a permanent one, one after the batch stopped or reached a limit, or a harness fault is raised."""
+        for wait in (*config.RETRY_WAITS_S, None):
+            began = time.monotonic()
+            rec, failure = None, None
             try:
-                rec = self.execute(r, self.cache, self.out_dir, 1, self.claude)
+                rec = self.execute(r, self.cache, self.out_dir, attempt, self.claude)
+            except Interrupted:
+                raise
+            except Exception as e:
+                failure = e
+            outage = self._hit_outage(began)
+            if not outage and failure is None:
+                return rec
+            if not outage and not isinstance(failure, InfrastructureError):
+                raise failure  # a harness fault
+            if rec is not None:
+                cost = charged(rec)
+            else:
+                cost = failure.cost if isinstance(failure, InfrastructureError) else self._spent_by(r)
+            self._charge_unrecorded(
+                r.key, cost, "cache unreadable" if outage else "infrastructure error", self._set_aside(r.key)
+            )
+            if outage:
+                error = InfrastructureError(
+                    f"{r.task.id}/{r.setup}-{r.rep} ran while the cache's volume was unreadable"
+                    + (f": {failure}" if failure else "")
+                )
+            else:
+                error = failure
+            if (not outage and error.permanent) or wait is None:
+                raise error
+            self.log(
+                f"{'cache unreadable' if outage else 'transient API error'}, retrying {r.key} in {wait:g} s: {error}"
+            )
+            with self.cond:
+                back = self._volume_back()
+            if not back or not self._pause(wait) or not self._may_retry():
+                raise error
+        raise AssertionError("unreachable")
+
+    def _worker(self) -> None:
+        while True:
+            try:
+                r = self._take()
+            except Exception as e:  # the cache's volume unreadable, say: never let the batch look finished
+                with self.cond:
+                    self.stopped = self.stopped or f"could not start another run: {e!r}"
+                    self.cond.notify_all()
+                return
+            if r is None:
+                return
+            try:
+                rec = self._attempt(r, 1)
                 if not rec["config_ok"] and not self.interrupted:  # discard, and retry once
                     self.log(f"config check failed, retrying: {r.key} {rec['config_problems']}")
-                    first = rec
+                    first, kept = rec, self._set_aside(r.key)
+                    if not self._may_retry(charged(first)):
+                        self._charge_unrecorded(r.key, charged(first), "discarded attempt", kept)
+                        continue
                     try:
-                        rec = self.execute(r, self.cache, self.out_dir, 2, self.claude)
+                        rec = self._attempt(r, 2)
                     except BaseException:
-                        self._charge_unrecorded(r, charged(first), "discarded attempt")
+                        self._charge_unrecorded(r.key, charged(first), "discarded attempt", kept)
                         raise
                     rec["discarded_cost_usd"] = charged(first)
                 if self.interrupted:  # a run the interrupt cut short is redone on resume, never scored
-                    self._charge_unrecorded(r, charged(rec), "interrupted")
+                    self._charge_unrecorded(r.key, charged(rec), "interrupted", self._set_aside(r.key))
                     continue
                 self._record(rec)
                 self.log(
                     f"[{self.completed}] {r.task.id} {r.setup}-{r.rep}: {rec['tool_calls']} calls, "
                     f"${rec['cost_usd']:.3f}, success={rec['score']['success']}"
                 )
-            except InfrastructureError as e:
-                self._charge_unrecorded(r, e.cost, "infrastructure error")
+            except Interrupted:  # nothing started; the batch has stopped already
+                pass
+            except InfrastructureError as e:  # already charged; retries are spent
                 with self.cond:
                     self.stopped = self.stopped or f"infrastructure error: {e}"
                     self.cond.notify_all()
@@ -377,13 +715,14 @@ class Batch:
                 self._release(r)
 
     def interrupt(self) -> None:
-        """Stop now: start nothing more and kill the runs in flight. They reset their worktrees as they unwind
-        and are not recorded, so a resume redoes them."""
+        """Stop now: start nothing more and kill the runs in flight, and any run about to start. They reset their
+        worktrees as they unwind and are not recorded, so a resume redoes them."""
         with self.cond:
             self.interrupted = True
             self.stopped = INTERRUPTED
             self.cond.notify_all()
         with _live_lock:
+            _stopping.set()
             live = list(_live.items())
         for proc, run_id in live:
             try:
@@ -411,20 +750,44 @@ class Batch:
         """Run everything pending; return why the batch stopped early, or None if it finished. Ctrl-C and
         SIGTERM interrupt it cleanly."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.working = self.parallel
-        for _ in range(self.parallel):
-            threading.Thread(target=self._work, daemon=True).start()
+        _stopping.clear()  # an earlier batch's interrupt
         main = threading.current_thread() is threading.main_thread()
         previous = signal.signal(signal.SIGTERM, _raise_interrupt) if main else None
         try:
-            self._wait()
-        except KeyboardInterrupt:
-            self.interrupt()
-            self._wait()
+            with workspace.watch(self.cache, probe=self.volume_probe) as self.volume:
+                self.working = self.parallel
+                for _ in range(self.parallel):
+                    threading.Thread(target=self._work, daemon=True).start()
+                try:
+                    self._wait()
+                except KeyboardInterrupt:
+                    self.interrupt()
+                    self._wait()
         finally:
             if main:
                 signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+            if not self.working:
+                _stopping.clear()  # the interrupt is over; runs executed after this batch must start
+                self.lock.close()  # and another invocation may take the directory
         return self.stopped
+
+
+def _hold(path: Path):
+    """An exclusive lock on `path`, held while the returned file stays open. Busy if another process holds it."""
+    f = open(path, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.seek(0)
+        holder = f.read().strip()
+        f.close()
+        raise Busy(
+            f"another run is using {path.parent}" + (f" (pid {holder})" if holder else "") + "; wait for it or stop it"
+        ) from None
+    f.truncate(0)
+    f.write(str(os.getpid()))
+    f.flush()
+    return f
 
 
 def _raise_interrupt(signum, frame) -> None:

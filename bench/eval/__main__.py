@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,10 +43,13 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--seed", type=int, default=config.SEED)
     p = sub.add_parser("prepare", help="clone and check out every task's repo; build indexes and warm Serena up")
     p.add_argument("--setups", type=setup_list, default=list(SETUPS))
+    p.add_argument("--parallel", type=int, default=config.PREPARE_PARALLEL, help="repo/commit pairs built at once")
     c = sub.add_parser("check", help="verify each setup's configuration, free")
     c.add_argument("--setups", type=setup_list, default=list(SETUPS))
+    c.add_argument("--claude", help="the Claude Code binary (default: where `claude` on PATH points now)")
     r = sub.add_parser("run", help="run the suite; this costs money")
     r.add_argument("--setups", type=setup_list, default=list(SETUPS))
+    r.add_argument("--claude", help="the Claude Code binary (default: where `claude` on PATH points now)")
     r.add_argument("--reps", type=int, default=config.REPETITIONS)
     r.add_argument("--parallel", type=int, default=config.PARALLEL)
     r.add_argument("--tasks", help="comma-separated task ids (default: every task)")
@@ -57,20 +63,63 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+BUILD_TRIES = 3
+
+
+def draw(builder, volume: Path, **kw) -> list | None:
+    """The builder's tasks, drawn while the cache at `volume` stayed readable throughout; None if every try met an
+    outage. An outage fails git reads and jedi lookups in ways that look like answers (a file absent at its commit,
+    a call nothing resolves), so a draw it overlapped is drawn again, whether it returned or raised."""
+    for _ in range(BUILD_TRIES):
+        with workspace.watch(volume) as w:
+            while w.down() and w.downtime() < config.VOLUME_OUTAGE_LIMIT_S:
+                time.sleep(config.VOLUME_PROBE_S)
+            if w.down():
+                return None
+            t0 = time.monotonic()
+            try:
+                tasks = builder.build(**kw)
+            except Exception:
+                if not w.overlaps(t0, time.monotonic()):
+                    raise
+            else:
+                if not w.overlaps(t0, time.monotonic()):
+                    return tasks
+        print("the cache went unreadable while drawing; drawing again", file=sys.stderr)
+    return None
+
+
 def build(a) -> int:
+    """Draw the suite's tasks by its profile (an unknown name draws like the pilot), minus those its curation
+    file, <suite>-curation.jsonl, drops: one {"id", "reason"} per line, with "kind" when it isn't localization.
+    Every id must name a task this build draws: a typo, or a task a filter already rejects, fails the build."""
     cache = config.cache_dir()
-    if a.kind in ("localization", "all"):
-        from .tasks import localization
+    profile = config.PROFILES.get(a.suite, config.PROFILES["pilot"])
+    curation = config.SUITES_DIR / f"{a.suite}-curation.jsonl"
+    rows = report.load(curation)
+    dropped = {r["id"] for r in rows}
+    from .tasks import localization, structural
 
-        tasks = localization.build(seed=a.seed, cache=cache)
-        suite.save(config.SUITES_DIR / f"{a.suite}-localization.jsonl", tasks)
-        print(f"{len(tasks)} localization tasks")
-    if a.kind in ("structural", "all"):
-        from .tasks import structural
-
-        tasks = structural.build(seed=a.seed, cache=cache)
-        suite.save(config.SUITES_DIR / f"{a.suite}-structural.jsonl", tasks)
-        print(f"{len(tasks)} structural tasks")
+    drawn = {}
+    for kind, builder in (("localization", localization), ("structural", structural)):
+        if a.kind in (kind, "all"):
+            tasks = draw(builder, cache, seed=a.seed, profile=profile, cache=cache)
+            if tasks is None:
+                print(f"the cache kept going unreadable while drawing {kind} tasks; nothing saved", file=sys.stderr)
+                return 3
+            drawn[kind] = tasks
+    ids = {t.id for tasks in drawn.values() for t in tasks}
+    stale = sorted(r["id"] for r in rows if r.get("kind", "localization") in drawn and r["id"] not in ids)
+    if stale:
+        print(f"{curation.name} names tasks this build did not draw: {stale}", file=sys.stderr)
+        return 2
+    for kind, tasks in drawn.items():
+        kept = [t for t in tasks if t.id not in dropped]
+        suite.save(config.SUITES_DIR / f"{a.suite}-{kind}.jsonl", kept)
+        print(
+            f"{len(kept)} {kind} tasks"
+            + (f" ({len(tasks) - len(kept)} dropped by curation)" if len(kept) < len(tasks) else "")
+        )
     return 0
 
 
@@ -82,7 +131,7 @@ def check(tasks: list, setup_names: list[str], cache, claude: str) -> bool:
         for setup in setup_names:
             problems = runner.probe(sample, setup, cache, claude)
             ok = ok and not problems
-            print(f"{setup:9} {lang:7} {'ok' if not problems else '; '.join(problems)}")
+            print(f"{setup:13} {lang:7} {'ok' if not problems else '; '.join(problems)}")
     return ok
 
 
@@ -94,11 +143,29 @@ def harness(root: Path = REPO) -> dict:
     return {"commit": commit, "dirty": dirty}
 
 
-def claude_path() -> str:
-    found = shutil.which("claude")
+CLAUDE_VERSIONS = Path(".local") / "share" / "claude" / "versions"  # under HOME: where the native installer keeps each
+
+
+def claude_path(given: str | None = None) -> str:
+    """The binary itself, not the installer's link: the link moves to each new version as it lands, even mid-batch."""
+    found = shutil.which(given or "claude")
     if not found:
-        sys.exit("claude is not on PATH")
-    return found
+        sys.exit(f"{given} is not an executable" if given else "claude is not on PATH")
+    return os.path.realpath(found)
+
+
+def version_mismatch(claude: str, version: str, results: Path) -> str | None:
+    """Why `claude` (which says `version`) may not resume the batch whose results are `results`: its earliest
+    recorded run ran another Claude Code. None when it may."""
+    began = runner.started_on(results)
+    have = version.split()[0] if version.split() else None
+    if began is None or have == began:
+        return None
+    why = f"{claude} is Claude Code {have}, but the batch began on {began}"
+    kept = Path.home() / CLAUDE_VERSIONS / began
+    if kept.exists():
+        return f"{why}; pass --claude {kept}"
+    return f"{why}, which is no longer installed under {Path.home() / CLAUDE_VERSIONS}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -135,29 +202,45 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "prepare":
         out = config.RUNS_DIR / a.suite
         out.mkdir(parents=True, exist_ok=True)
-        with open(out / "prepare.jsonl", "a") as f:
+        lock = threading.Lock()  # prepare calls save from several threads
 
-            def save(row: dict) -> None:  # as each is measured: preparing takes an hour, and a later step can fail
+        def save(row: dict) -> None:
+            # as each is measured, since preparing takes hours and a later step can fail; and into a file opened
+            # for the row, since a pair still building when prepare gives up saves after it has returned
+            with lock, open(out / "prepare.jsonl", "a") as f:
                 f.write(json.dumps(row) + "\n")
-                f.flush()
 
-            workspace.prepare(tasks, a.setups, cache, save=save)
+        workspace.prepare(tasks, a.setups, cache, save=save, workers=a.parallel)
         return 0
     wanted = a.tasks.split(",") if getattr(a, "tasks", None) else None
     chosen = [t for t in tasks if wanted is None or t.id in wanted]
     if wanted and len(chosen) != len(set(wanted)):
         print(f"unknown task ids: {sorted(set(wanted) - {t.id for t in chosen})}", file=sys.stderr)
         return 2
-    claude = claude_path()
+    claude = claude_path(a.claude)
     version = subprocess.run([claude, "--version"], capture_output=True, text=True).stdout.strip()
-    print(f"claude {version}")
+    print(f"claude {version} ({claude})")
+    out = config.RUNS_DIR / (a.name or a.suite) if a.cmd == "run" else None
+    if out is not None and (why := version_mismatch(claude, version, out / "results.jsonl")):
+        print(f"refusing to resume: {why}", file=sys.stderr)
+        return 1
     if not check(chosen, a.setups, cache, claude):  # before every batch too: a misconfigured setup costs nothing yet
         return 1
-    if a.cmd == "check":
+    if out is None:
         return 0
+    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
+    missing = runner.unprepared(runs, cache)
+    if missing:
+        shown = "\n  ".join(missing[:5]) + ("\n  ..." if len(missing) > 5 else "")
+        print(f"{len(missing)} worktrees are not prepared; run `prepare` first:\n  {shown}", file=sys.stderr)
+        return 1
     workspace.require_space(cache)
-    out = config.RUNS_DIR / (a.name or a.suite)
     out.mkdir(parents=True, exist_ok=True)
+    try:
+        batch = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude)  # holds `out` from here
+    except runner.Busy as e:
+        print(f"refusing to start: {e}", file=sys.stderr)
+        return 1
     meta = {
         "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "harness": harness(),
@@ -167,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         "reps": a.reps,
         "seed": config.SEED,
         "claude": version,
+        "claude_path": claude,
         "model": config.MODEL,
         "effort": config.EFFORT,
         "max_turns": config.MAX_TURNS,
@@ -176,9 +260,8 @@ def main(argv: list[str] | None = None) -> int:
     earlier = json.loads(path.read_text()) if path.exists() else []
     earlier = [earlier] if isinstance(earlier, dict) else earlier
     path.write_text(json.dumps(earlier + [meta], indent=2) + "\n")
-    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
     print(f"{len(runs)} runs, results in {out}")
-    stopped = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude).run()
+    stopped = batch.run()
     if stopped:
         print(f"stopped early: {stopped}; rerun the same command to resume")
         return 1

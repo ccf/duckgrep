@@ -21,7 +21,7 @@ from scipy import stats
 from . import config
 
 BOOTSTRAP = 10_000
-CONTRASTS = ("duckgrep", "serena")
+CONTRAST_ORDER = ("duckgrep", "duckgrep-hint", "serena", "serena-hint")  # the rest follow, sorted
 TABLES = (
     ("localization", "python", "Python localization"),
     ("localization", "rust", "Rust localization"),
@@ -63,6 +63,12 @@ def load(path: Path) -> list[dict]:
         return []
     with open(path) as f:
         return [json.loads(line) for line in f if line.strip()]
+
+
+def contrasts(records: list[dict]) -> list[str]:
+    """Every setup but the baseline, which each is compared with."""
+    names = {r["setup"] for r in records} - {"baseline"}
+    return [s for s in CONTRAST_ORDER if s in names] + sorted(names - set(CONTRAST_ORDER))
 
 
 def run_values(records: list[dict], metric: Metric) -> dict[tuple[str, str], dict[int, float]]:
@@ -143,6 +149,7 @@ def holm(ps: list[float]) -> list[float]:
 
 def comparisons(records: list[dict], seed: int = config.SEED) -> list[Comparison]:
     found = []
+    setups = contrasts(records)
     for kind, lang, title in TABLES + (("localization", "rust-live", "Rust localization, post-cutoff issues"),):
         if lang == "rust-live":
             rows = [r for r in records if r["kind"] == kind and r["lang"] == "rust" and r["stratum"] == "live"]
@@ -150,7 +157,7 @@ def comparisons(records: list[dict], seed: int = config.SEED) -> list[Comparison
             rows = [r for r in records if r["kind"] == kind and r["lang"] == lang]
         for metric in METRICS:
             values = run_values(rows, metric)
-            for setup in CONTRASTS:
+            for setup in setups:
                 pairs = []
                 for t, s in sorted(values):
                     if s != "baseline" or (t, setup) not in values:
@@ -228,7 +235,7 @@ def adoption_table(records: list[dict]) -> list[str]:
         "| setup | kind | runs | used its tool | its share of calls | calls (used / not) |",
         "|---|---|---:|---:|---:|---|",
     ]
-    for setup in CONTRASTS:
+    for setup in contrasts(records):
         for kind in ("localization", "structural"):
             rows = [r for r in records if r["setup"] == setup and r["kind"] == kind and r["config_ok"]]
             if not rows:
@@ -274,7 +281,7 @@ def variance_table(records: list[dict]) -> list[str]:
         "| setup | metric | within-task SD | between-task SD | within share of variance |",
         "|---|---|---:|---:|---:|",
     ]
-    for setup in ("baseline",) + CONTRASTS:
+    for setup in ["baseline"] + contrasts(records):
         for label, get in (
             ("log tokens", lambda r: math.log(max(r["tokens_total"], 1))),
             ("log(1 + tool calls)", lambda r: math.log1p(r["tool_calls"])),

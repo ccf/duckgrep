@@ -12,7 +12,14 @@ BUILTIN_TOOLS = ("Bash", "Read", "Grep", "Glob")  # Grep and Glob named: the mac
 MAX_TURNS = 40
 MAX_BUDGET_USD = 1.50
 WALL_LIMIT_S = 15 * 60
+RETRY_WAITS_S = (60, 300, 900)  # a transient API error is retried after each wait in turn, then stops the batch
+VOLUME_PROBE_S = 1.0  # how often a batch checks that the cache's volume is readable (macOS's privacy service stalls)
+VOLUME_OUTAGE_LIMIT_S = 900  # an outage this long stops the batch; a shorter one is waited out
+VOLUME_STALL_S = 10.0  # a probe of the volume that hasn't returned in this long is an outage too
+API_ERROR_STREAK = 10  # recorded runs in a row that ended on an API error stop the batch: a systematic failure
 PARALLEL = 3
+PREPARE_PARALLEL = 6  # repo/commit pairs `prepare` builds at once
+RUST_LSP_LIMIT = 3  # rust-analyzers at once, in runs and in prepare's warm-ups: each can take several GB
 REPETITIONS = 2
 SEED = 20260929
 
@@ -105,6 +112,53 @@ STRUCTURAL_REPOS = (
     PinnedRepo("BurntSushi/ripgrep", "rust", "14.1.1", "4649aa9700619f94cf9c66876e9549d83420e16c"),
     PinnedRepo("sharkdp/fd", "rust", "v10.2.0", "b19136871310b01500b4f09eadd7387b8476be47"),
 )
+
+STRUCTURAL_REPOS_FULL = STRUCTURAL_REPOS + (
+    PinnedRepo("pallets/flask", "python", "3.1.0", "ab8149664182b662453a563161aa89013c806dc9"),
+    PinnedRepo("pallets/click", "python", "8.1.8", "934813e4d421071a1b3db3973c02fe2721359a6e"),
+    PinnedRepo("pallets/jinja", "python", "3.1.5", "877f6e51be8e1765b06d911cfaa9033775f051d1"),
+    PinnedRepo("pallets/werkzeug", "python", "3.1.3", "6389612fd1ee1bd93579eed5026e8fd471d04abd"),
+    PinnedRepo("Textualize/rich", "python", "v13.9.4", "43d3b04725ab9731727fb1126e35980c62f32377"),
+    PinnedRepo("encode/httpx", "python", "0.28.1", "26d48e0634e6ee9cdc0533996db289ce4b430177"),
+    PinnedRepo("python-attrs/attrs", "python", "24.3.0", "598494a618410490cfbe0c896b7a544f6d23e0d9"),
+    PinnedRepo("encode/starlette", "python", "0.45.3", "4d72fd87ea1c358691a19468168f7217d8ca6a87"),
+    PinnedRepo("marshmallow-code/marshmallow", "python", "3.23.2", "90931f0bb3ffcecf90860751dc5f55a5c538d711"),
+    PinnedRepo("tqdm/tqdm", "python", "v4.67.1", "0ed5d7f18fa3153834cbac0aa57e8092b217cc16"),
+    PinnedRepo("sharkdp/bat", "rust", "v0.25.0", "25f4f96ea3afb6fe44552f3b38ed8b1540ffa1b3"),
+    PinnedRepo("sharkdp/hyperfine", "rust", "v1.19.0", "12fec42098642a19855ead34c8cb1e0be28c8ead"),
+    PinnedRepo("casey/just", "rust", "1.39.0", "9ec7b60b55cba4d9c095d3b8f119637980286165"),
+    PinnedRepo("ajeetdsouza/zoxide", "rust", "v0.9.7", "d74bce3b7418ed965f5056297db8bb081a29121c"),
+    PinnedRepo("dandavison/delta", "rust", "0.18.2", "a589ff9debaefdd3992384434120f5a03a103481"),
+    PinnedRepo("XAMPPRocky/tokei", "rust", "v13.0.0-alpha.8", "edbd5d5cbb0b7ea0081df0265a8ae6e7742a5051"),
+    PinnedRepo("alacritty/alacritty", "rust", "v0.15.0", "53395536aa4ebebcbc0431e7336c2a6857efcff5"),
+    PinnedRepo("starship/starship", "rust", "v1.22.1", "d60519607cdd67b81a84a37471c27abb0fa948a8"),
+    PinnedRepo("eza-community/eza", "rust", "v0.20.19", "f526208cfe9a80349b5d0cb23cc32a7c78e921e5"),
+    PinnedRepo("clap-rs/clap", "rust", "v4.5.27", "eadcc8f66c128272ea309fed3d53d45b9c700b6f"),
+    PinnedRepo("tokio-rs/tokio", "rust", "tokio-1.43.0", "5f3296df77ad594779d1fe1a1583078ca9832daf"),
+)
+
+
+@dataclass(frozen=True)
+class Profile:
+    """How `build` draws a suite. The pilot's reproduces how it was drawn."""
+
+    python: int  # localization tasks at most, and at most `python_per_repo` of them from one repo
+    python_per_repo: int
+    multilingual: int
+    live: int
+    rust_per_repo: int
+    live_every_date: bool  # the pilot took only Live issues from after the model's training data
+    rust_functions: int  # the most functions a Rust key may name
+    repos: tuple[PinnedRepo, ...]  # the structural questions' repos
+    questions: tuple[int, int, int]  # callers, two-hop and importers questions per repo
+
+
+EVERY = 10**6  # no limit
+PROFILES = {
+    "pilot": Profile(10, 3, 5, 5, 2, False, 10, STRUCTURAL_REPOS, (2, 2, 1)),
+    # every eligible task; Rust keys of 1-3 functions like Python's, since bigger fixes bundle more
+    "full": Profile(EVERY, EVERY, EVERY, EVERY, EVERY, True, 3, STRUCTURAL_REPOS_FULL, (8, 8, 4)),
+}
 
 EVAL_DIR = Path(__file__).resolve().parent
 SUITES_DIR = EVAL_DIR / "suites"

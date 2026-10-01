@@ -151,6 +151,32 @@ def test_rust_insertion_after_a_closing_brace_is_outside_the_function():
     )
 
 
+def test_a_visibility_only_edit_is_not_the_fix():
+    # pixi-6335: `pub(crate) fn invalid()` -> `pub fn invalid()` came with an unrelated feature, not the fix
+    widened = BASE_RS.replace("pub fn new()", "pub(crate) fn new()")
+    assert key("src/walk.rs", widened, BASE_RS, "rust") == ()
+    assert key("src/walk.rs", BASE_RS, BASE_RS.replace("pub fn run()", "fn run()"), "rust") == ()
+    both = BASE_RS.replace("pub fn run()", "pub(super) fn run()").replace("    1\n}", "    2\n}")
+    assert key("src/walk.rs", BASE_RS, both, "rust") == ("src/walk.rs:run",)  # its body changed too
+    typed = BASE_RS.replace("pub fn run() -> u32", "pub(crate) fn run() -> u64")
+    assert key("src/walk.rs", BASE_RS, typed, "rust") == ("src/walk.rs:run",)  # more than visibility
+
+
+def test_only_a_real_visibility_modifier_is_exempt():
+    fmt = ("src/walk.rs:Walker.fmt",)
+    worded = BASE_RS.replace('"walker"', '"pub walker"')  # `pub` in a string is text the function writes
+    assert key("src/walk.rs", worded, BASE_RS, "rust") == fmt
+    spaced = BASE_RS.replace('"walker"', '"a  walker"')  # so is its spacing
+    assert key("src/walk.rs", BASE_RS.replace('"walker"', '"a walker"'), spaced, "rust") == fmt
+    quoted = "pub fn made() -> TokenStream {\n    quote! {\n        pub fn f() {}\n    }\n}\n"  # a macro's tokens
+    assert key("src/gen.rs", quoted, quoted.replace("pub fn f", "pub(crate) fn f"), "rust") == ("src/gen.rs:made",)
+
+
+def test_a_visibility_change_does_not_hide_the_rest_of_its_block():
+    before, after = "fn helper() -> u32 {\n\n    1\n}\n", "pub fn helper() -> u32 {\n    do_work();\n    1\n}\n"
+    assert key("src/lib.rs", before, after, "rust") == ("src/lib.rs:helper",)
+
+
 def test_rust_units_mark_test_code():
     kinds = {u.qualname: u.kind for u in gold.rust_units(BASE_RS)}
     assert kinds["Walker.new"] == "function" and kinds["run"] == "function"

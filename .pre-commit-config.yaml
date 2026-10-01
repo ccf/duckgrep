@@ -12,6 +12,7 @@ repos:
       - id: check-merge-conflict
       - id: no-commit-to-branch  # main changes only through pull requests
       - id: check-added-large-files
+        exclude: ^bench/eval/suites/  # the benchmark's tasks: text, meant to be reviewed
       - id: debug-statements
 
   - repo: https://github.com/astral-sh/uv-pre-commit

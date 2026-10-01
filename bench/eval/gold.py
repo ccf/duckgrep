@@ -225,6 +225,53 @@ def _insertion_owner(units: list[Unit], before: int, added: list[str], base: lis
     return f if len(first) - len(first.lstrip()) > len(head) - len(head.lstrip()) else None
 
 
+def without_visibility(src: str) -> list[str]:
+    """`src`'s lines, each as it reads without its visibility modifiers (`pub`, `pub(crate)`, ...) and the space
+    after them. Only the parser's modifiers go, never `pub` in a string, a comment or a macro's tokens."""
+    data = src.encode()
+    lines = data.split(b"\n")
+    cuts: dict[int, list[tuple[int, int]]] = {}
+    stack = [rust_parser().parse(data).root_node]
+    while stack:
+        n = stack.pop()
+        if n.type == "visibility_modifier" and n.start_point[0] == n.end_point[0]:
+            cuts.setdefault(n.start_point[0], []).append((n.start_point[1], n.end_point[1]))
+        else:
+            stack.extend(n.children)
+    for row, spans in cuts.items():
+        for a, b in sorted(spans, reverse=True):
+            lines[row] = lines[row][:a] + lines[row][b:].lstrip(b" \t")
+    return [line.decode(errors="replace") for line in lines]
+
+
+def _visibility_only(items: list, texts: dict[int, tuple[str, str]]) -> set[int]:
+    """Indices of the hunk's lines that only change a Rust item's visibility (`fn` <-> `pub fn` <->
+    `pub(crate) fn`): each removed line of a change block paired with its added line, when the two differ but
+    read the same without their modifiers. `texts` holds each changed line as written and without them. Such an
+    edit exposes a function to other code; it doesn't fix it."""
+    same: set[int] = set()
+    i = 0
+    while i < len(items):
+        if not items[i].is_removed:
+            i += 1
+            continue
+        removed = []
+        while i < len(items) and items[i].is_removed:
+            removed.append(i)
+            i += 1
+        added = []
+        while i < len(items) and items[i].is_added:
+            added.append(i)
+            i += 1
+        if len(removed) != len(added):
+            continue
+        for r, a in zip(removed, added, strict=True):
+            (old, old_bare), (new, new_bare) = texts[r], texts[a]
+            if old.rstrip() != new.rstrip() and old_bare.rstrip() == new_bare.rstrip():
+                same |= {r, a}
+    return same
+
+
 @dataclass(frozen=True)
 class Key:
     entries: tuple[str, ...]  # sorted: "path:Qual.name" and "path"
@@ -266,6 +313,8 @@ def derive(patch: str, read: Callable[[str], str | None], lang: str) -> Key:
             new_imports = imports_of("\n".join(new))
         except SyntaxError:
             new_imports = set()
+        if lang == "rust":
+            base_bare, new_bare = without_visibility(src), without_visibility("\n".join(new))
 
         def mark(f: Unit | None, path: str = path) -> None:
             if f:
@@ -275,8 +324,21 @@ def derive(patch: str, read: Callable[[str], str | None], lang: str) -> Key:
 
         for hi, (hunk, delta) in enumerate(hunks):
             items = list(hunk)
+            exposed: set[int] = set()
+            if lang == "rust":
+                texts = {}
+                for k, ln in enumerate(items):
+                    if ln.is_removed:
+                        n = ln.source_line_no + delta - 1
+                        texts[k] = (base[n], base_bare[n])
+                    elif ln.is_added:
+                        n = where[(hi, k)] - 1
+                        texts[k] = (new[n], new_bare[n])
+                exposed = _visibility_only(items, texts)
             for i, ln in enumerate(items):
                 if ln.is_removed:
+                    if i in exposed:  # an exposed added line may still start an insertion: its run skips it
+                        continue
                     line = ln.source_line_no + delta
                     if _blank_or_comment(ln.value, lang) or line in old_imports or outermost(units, line, TEST):
                         continue
@@ -286,6 +348,8 @@ def derive(patch: str, read: Callable[[str], str | None], lang: str) -> Key:
                     for j in range(i, len(items)):
                         if not items[j].is_added:
                             break
+                        if j in exposed:
+                            continue
                         if not (_blank_or_comment(items[j].value, lang) or where[(hi, j)] in new_imports):
                             run.append(items[j].value.rstrip("\r\n"))
                     if not run:

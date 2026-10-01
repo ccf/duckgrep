@@ -80,6 +80,60 @@ def test_auth_failure_reports_success_but_is_an_infrastructure_error():
     assert tr.rounds == 0 and m["tool_calls"] == 0 and m["cost_usd"] == 0.0
 
 
+@pytest.mark.parametrize(
+    "error, text, infrastructure, permanent",
+    [
+        ("billing_error", "", True, True),  # login, account, billing, model or cloud credentials: stop the batch
+        ("credential_revoked", "", True, True),  # a value outside the table that names auth, billing or a credential
+        ("max_output_tokens", "", False, False),  # the run's own outcome, after the CLI's recovery gave up
+        ("overloaded", "Not logged in · Please run /login", True, False),  # transient; only no value reads the text
+        ("something_new", "", True, False),  # any other value: transient
+        ("synthetic", "Credit balance is too low", True, True),  # a bare synthetic message: the text decides
+        (None, 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error"}}', True, False),
+    ],
+    ids=["permanent", "names-auth", "run-outcome", "transient", "unknown-value", "text-permanent", "text-transient"],
+)
+def test_an_api_error_is_classed_by_what_a_retry_can_do(error, text, infrastructure, permanent):
+    tr = stream.Transcript(api_error=error, result={"terminal_reason": "api_error", "result": text})
+    assert stream.infrastructure_error(tr) is infrastructure and stream.permanent_error(tr) is permanent
+
+
+def test_every_value_claude_code_names_has_a_class():
+    enum = {
+        "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error",
+        "rate_limit", "overloaded", "invalid_request", "model_not_found", "server_error", "unknown",
+        "max_output_tokens", "cloud_credential_error",
+    }  # fmt: skip
+    assert enum == stream.PERMANENT_ERRORS | stream.RUN_ERRORS | stream.TRANSIENT_ERRORS
+    assert not stream.PERMANENT_ERRORS & stream.RUN_ERRORS and not stream.RUN_ERRORS & stream.TRANSIENT_ERRORS
+    assert "invalid_request" in stream.RUN_ERRORS  # a prompt too long even after compaction, tool-use concurrency
+
+
+@pytest.mark.parametrize(
+    "text, permanent",
+    [
+        ("Not logged in · Please run /login", True),
+        ("Invalid API key · Please run /login", True),
+        ("Credit balance is too low", True),
+        ("Your billing details need attention", True),
+        ("Authentication failed", True),
+        ('API Error: 403 {"type":"error","error":{"type":"permission_error","message":"no"}}', True),
+        ('API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"bad"}}', False),
+        ('API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}', False),
+        ("", False),
+    ],
+)
+def test_an_api_error_only_the_result_names_is_classed_by_its_text(text, permanent):
+    tr = stream.Transcript(result={"terminal_reason": "api_error", "result": text})
+    assert stream.infrastructure_error(tr) and stream.permanent_error(tr) is permanent
+
+
+def test_a_final_answer_is_never_read_as_an_api_error():
+    # an error message mid-run, then an answer that names auth code: only a run that ended on the error is read
+    tr = stream.Transcript(api_error="overloaded", result={"terminal_reason": "completed", "result": "auth.py:login"})
+    assert stream.infrastructure_error(tr) and not stream.permanent_error(tr)
+
+
 def test_truncated_stream_is_an_error():
     with open(os.path.join(RUNS, "plain.jsonl")) as f:
         lines = f.readlines()[:-1] + ['{"type": "resu']

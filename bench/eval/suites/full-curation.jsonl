@@ -1,0 +1,12 @@
+{"id": "apache__datafusion-17139", "lang": "rust", "reason": "Aggregate.try_new_with_schema only rewords an error message the issue never raises; the fix is optimize_projections"}
+{"id": "gleam-lang__gleam-5958", "lang": "rust", "reason": "TypeInterface.from_type and from_type_helper change only through a rename refactor; the fix is ModuleInterface.from_interface"}
+{"id": "nushell__nushell-13246", "lang": "rust", "reason": "Find.examples is a docs edit to an example on a path the fix never touches"}
+{"id": "notify-rs__notify-701", "lang": "rust", "reason": "new_debouncer_opt changes only by a format-string cleanup; the fix is DebounceDataInner.push_event"}
+{"id": "prefix-dev__pixi-6335", "lang": "rust", "reason": "an unrelated feature (writing a conda-meta environment file) bundled with the one-line fix in Project.virtual_packages_for"}
+{"id": "tokio-rs__axum-1119", "lang": "rust", "reason": "the axum-extra file key comes from a new feature bundled with the fix in Router.call"}
+{"id": "tokio-rs__axum-682", "lang": "rust", "reason": "redirect.rs changes only in docs and a deprecation the issue never asks for; the fix is Router.call"}
+{"id": "uutils__coreutils-8433", "lang": "rust", "reason": "format_f32's width change aligns 32-bit floats, which the issue about 16-bit precision never mentions"}
+{"id": "pallets__flask-4045", "lang": "python", "reason": "Blueprint.add_url_rule only turns existing asserts into ValueError, a cleanup the issue gives no reason for; the fix is Blueprint.__init__"}
+{"id": "scikit-learn__scikit-learn-15512", "lang": "python", "reason": "AffinityPropagation.predict only gains an input check (check_array) the issue about non-converged results gives no reason for; the fix is affinity_propagation"}
+{"id": "Automattic__harper-2973", "lang": "rust", "reason": "a near-duplicate of Automattic__harper-2962: another phrase added to the same lint_group registry, at the same base commit"}
+{"id": "Automattic__harper-2976", "lang": "rust", "reason": "a near-duplicate of Automattic__harper-2962: another phrase added to the same lint_group registry"}
