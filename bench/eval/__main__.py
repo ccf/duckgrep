@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,6 +63,32 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+BUILD_TRIES = 3
+
+
+def draw(builder, volume: Path, **kw) -> list | None:
+    """The builder's tasks, drawn while the cache at `volume` stayed readable throughout; None if every try met an
+    outage. An outage fails git reads and jedi lookups in ways that look like answers (a file absent at its commit,
+    a call nothing resolves), so a draw it overlapped is drawn again, whether it returned or raised."""
+    for _ in range(BUILD_TRIES):
+        with workspace.watch(volume) as w:
+            while w.down() and w.downtime() < config.VOLUME_OUTAGE_LIMIT_S:
+                time.sleep(config.VOLUME_PROBE_S)
+            if w.down():
+                return None
+            t0 = time.monotonic()
+            try:
+                tasks = builder.build(**kw)
+            except Exception:
+                if not w.overlaps(t0, time.monotonic()):
+                    raise
+            else:
+                if not w.overlaps(t0, time.monotonic()):
+                    return tasks
+        print("the cache went unreadable while drawing; drawing again", file=sys.stderr)
+    return None
+
+
 def build(a) -> int:
     """Draw the suite's tasks by its profile (an unknown name draws like the pilot), minus those its curation
     file, <suite>-curation.jsonl, drops: one {"id", "reason"} per line, with "kind" when it isn't localization.
@@ -76,7 +103,11 @@ def build(a) -> int:
     drawn = {}
     for kind, builder in (("localization", localization), ("structural", structural)):
         if a.kind in (kind, "all"):
-            drawn[kind] = builder.build(seed=a.seed, profile=profile, cache=cache)
+            tasks = draw(builder, cache, seed=a.seed, profile=profile, cache=cache)
+            if tasks is None:
+                print(f"the cache kept going unreadable while drawing {kind} tasks; nothing saved", file=sys.stderr)
+                return 3
+            drawn[kind] = tasks
     ids = {t.id for tasks in drawn.values() for t in tasks}
     stale = sorted(r["id"] for r in rows if r.get("kind", "localization") in drawn and r["id"] not in ids)
     if stale:

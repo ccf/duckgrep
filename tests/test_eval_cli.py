@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import time
 
 import pytest
 
@@ -299,3 +300,59 @@ def test_run_refuses_to_start_until_every_scheduled_pair_is_prepared(tmp_path, m
     err = capsys.readouterr().err
     assert "3 worktrees are not prepared" in err and "no worktree" in err and "prepare" in err
     assert seen["batches"] == 0 and len(seen["probes"]) == 5  # after the free check, before any paid run
+
+
+def watched_build(tmp_path, monkeypatch, draw):
+    """`build --kind localization` with `draw` as the localization builder and a cache volume a test can lose."""
+    from eval_helpers import Volume
+
+    from bench.eval.tasks import localization
+
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "VOLUME_PROBE_S", 0.005)
+    monkeypatch.setattr(config, "VOLUME_OUTAGE_LIMIT_S", 0.5)
+    volume = Volume()
+    real = cli.workspace.watch
+    monkeypatch.setattr(cli.workspace, "watch", lambda cache, **kw: real(cache, probe=volume.probe))
+    monkeypatch.setattr(localization, "build", lambda **kw: draw(volume))
+    return cli.main(["--suite", "x", "build", "--kind", "localization"])
+
+
+def outage(volume):
+    volume.lost.set()
+    time.sleep(0.05)
+    volume.lost.clear()
+
+
+@pytest.mark.parametrize("ends", ["returned", "raised"])
+def test_build_draws_again_when_the_cache_went_unreadable_while_drawing(tmp_path, monkeypatch, ends):
+    # an outage fails git reads and jedi lookups in ways that look like answers: 73 questions went missing so
+    draws = []
+
+    def draw(volume):
+        draws.append(1)
+        if len(draws) == 1:
+            outage(volume)
+            if ends == "raised":
+                raise FileNotFoundError("the worktree is gone")
+        return [Task(f"t{len(draws)}", "localization", "rust", "o/r", "c", "p", ("a.rs:f",), "s")]
+
+    assert watched_build(tmp_path, monkeypatch, draw) == 0
+    assert len(draws) == 2 and [t.id for t in suite.load(tmp_path / "x-localization.jsonl")] == ["t2"]
+
+
+def test_build_saves_nothing_when_every_draw_meets_an_outage(tmp_path, monkeypatch, capsys):
+    def draw(volume):
+        outage(volume)
+        return [Task("t", "localization", "rust", "o/r", "c", "p", ("a.rs:f",), "s")]
+
+    assert watched_build(tmp_path, monkeypatch, draw) == 3
+    assert "unreadable" in capsys.readouterr().err and not (tmp_path / "x-localization.jsonl").exists()
+
+
+def test_a_draw_that_fails_while_the_cache_is_readable_still_fails(tmp_path, monkeypatch):
+    def draw(volume):
+        raise FileNotFoundError("a real fault")
+
+    with pytest.raises(FileNotFoundError, match="a real fault"):
+        watched_build(tmp_path, monkeypatch, draw)
