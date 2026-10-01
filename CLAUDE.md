@@ -83,7 +83,13 @@ Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, name
 - The extractor is table-driven: each language is a `Spec` of node types (definitions, calls, member access) and of which parent/field puts an identifier into a context such as `write`, `type` or `import`. Language quirks live in `_def_targets`, `_imports_<lang>` and `module_keys`, not in the walker.
 - `bench/eval/` is the A/B harness (spec in `docs/specs/2026-09-29-ab-eval-harness-design.md`):
   - It runs the real `claude` CLI in a scrubbed environment under five setups, which differ only in one MCP server. The two hinted ones (`duckgrep-hint`, `serena-hint`) also append a sentence about it to the system prompt; code that branches on a setup reads `Setup.base`, never the name.
-  - A batch retries transient API errors (waits of 1, 5 and 15 minutes), stops on the first run whose Claude Code version differs from its first, and never overlaps Serena runs on one Rust repo (they share `CARGO_TARGET_DIR`).
+  - A batch:
+    - sorts API errors by Claude Code's categories (`stream.py`): login, billing and similar errors stop it; transient ones are retried after waits of 1, 5 and 15 minutes; a run's own outcome (a request too long) is scored;
+    - charges every attempt it doesn't record and keeps its transcript as `<setup>-<rep>.unrecorded-<n>.*`;
+    - runs one resolved `claude` binary (`--claude` pins it), and refuses to resume on another version;
+    - refuses to start while a scheduled worktree, index or Serena project is missing, or while another `run` holds the results directory;
+    - waits out an outage of the cache's volume and redoes any run it overlapped (`workspace.watch`), and so does `build`;
+    - never overlaps Serena runs on one Rust repo (they share `CARGO_TARGET_DIR`), and runs at most three rust-analyzers at once.
   - It parses stream-json and scores against answer keys, which come from fix patches or from jedi and rust-analyzer SCIP.
   - Turns to locate (`locate.py`) counts a function located when a result identifies it: its definition line in its file, or its qualified name from a duckgrep row or Serena symbol. A call, a docstring or a same-named token never counts. Paths follow the shell's `cd` across Bash calls. `rescore` recomputes every measurement from the saved transcripts.
   - Suites are committed JSONL files; raw runs go under the gitignored `bench/eval/runs/`.
