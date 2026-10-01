@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from eval_helpers import origin
+from eval_helpers import Volume, origin
 
 from bench.eval import config, runner, setups, workspace
 from bench.eval.suite import Task
@@ -67,6 +67,8 @@ def test_batch_records_every_run_once_and_resumes(tmp_path):
 @pytest.fixture(autouse=True)
 def tiny_retry_waits(monkeypatch):
     monkeypatch.setattr(config, "RETRY_WAITS_S", (0.01, 0.01, 0.01))
+    monkeypatch.setattr(config, "VOLUME_PROBE_S", 0.005)
+    monkeypatch.setattr(config, "VOLUME_OUTAGE_LIMIT_S", 0.5)
 
 
 def test_a_failed_configuration_check_is_retried_once(tmp_path):
@@ -446,6 +448,40 @@ def test_execute_turns_an_auth_failure_into_an_infrastructure_error(tmp_path):
     assert not (workspace.worktree_path(cache, "baseline", "o/r", commit) / "stray.txt").exists()
 
 
+def test_execute_records_a_run_that_ended_on_its_own_api_error(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    events = recorded_stream("API Error: 400 due to tool use concurrency issues.")
+    result = events.pop()
+    events += [
+        {"type": "assistant", "error": "invalid_request", "message": {"model": "<synthetic>", "content": []}},
+        {**result, "terminal_reason": "api_error", "is_error": True},
+    ]
+    exe, _ = fake_claude(tmp_path, events)
+    rec = runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
+    assert rec["api_error"] == "invalid_request" and rec["is_error"] and not rec["score"]["success"]
+
+
+def test_a_streak_of_runs_ending_on_an_api_error_stops_the_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "API_ERROR_STREAK", 3)
+    runs = runner.schedule([task(i) for i in range(6)], ["baseline"], 1, seed=1)
+    errors = iter(["max_output_tokens", "invalid_request", None, "invalid_request", "invalid_request"])
+
+    def execute(r, *a):
+        return {**fake_record(r, 1), "api_error": next(errors, "invalid_request")}
+
+    stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert "3 runs in a row" in stopped and "invalid_request" in stopped
+    assert len(results(tmp_path / "out")) == 6  # a success broke the first streak
+
+    runs = runner.schedule([task(i) for i in range(6, 9)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None
+    ).run()  # a resume continues the streak it stopped on
+    assert "4 runs in a row" in stopped and len(results(tmp_path / "out")) == 7
+
+
 @pytest.mark.parametrize("name, server", [("duckgrep-hint", "duckgrep"), ("serena-hint", "serena")])
 def test_a_hinted_run_uses_its_bases_worktree_and_server_and_adds_the_hint(tmp_path, name, server):
     src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
@@ -483,6 +519,18 @@ def test_low_disk_stops_the_batch_before_the_next_run(tmp_path, monkeypatch):
         runs, tmp_path, tmp_path / "out", execute_fn=lambda *a: pytest.fail("ran"), log=lambda _: None
     ).run()
     assert "GB free" in stopped
+
+
+def test_a_lost_cache_volume_stops_the_batch_instead_of_ending_it_as_finished(tmp_path, monkeypatch):
+    def unreadable(path):
+        raise PermissionError(1, "Operation not permitted", str(path))  # a privacy-service outage, say
+
+    monkeypatch.setattr(workspace, "free_gb", unreadable)
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=2, execute_fn=lambda *a: pytest.fail("ran"), log=lambda _: None
+    ).run()
+    assert stopped and "Operation not permitted" in stopped
 
 
 def test_a_harness_fault_stops_the_batch(tmp_path):
@@ -648,6 +696,83 @@ def test_sigterm_stops_the_batch_like_ctrl_c(tmp_path):
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # restored afterwards
 
 
+def test_an_interrupt_before_the_run_starts_keeps_it_from_starting(tmp_path, monkeypatch):
+    batch, wt, started = slow_batch(tmp_path)
+    reset = workspace.reset
+    calls = []
+
+    def interrupted_during_reset(path, commit):  # after _take, before Popen: nothing in flight to kill yet
+        calls.append(1)
+        if len(calls) == 1:
+            batch.interrupt()
+        return reset(path, commit)
+
+    monkeypatch.setattr(runner.workspace, "reset", interrupted_during_reset)
+    t0 = time.monotonic()
+    assert "interrupted" in batch.run() and time.monotonic() - t0 < 10
+    assert not started.exists() and not (tmp_path / "out" / "unrecorded.jsonl").exists()  # nothing spent
+    assert not (tmp_path / "out" / "results.jsonl").exists()
+
+    quick = tmp_path / "quick"  # the interrupt is over: a later batch in the same process runs
+    quick.mkdir()
+    exe, _ = fake_claude(quick, recorded_stream("no answer"))
+    runs = runner.schedule([task(1, workspace.git("rev-parse", "HEAD", cwd=wt).strip())], ["baseline"], 1, seed=1)
+    assert runner.Batch(runs, tmp_path / "cache", tmp_path / "out", claude=exe, log=lambda _: None).run() is None
+    assert len(results(tmp_path / "out")) == 1
+
+
+def test_an_interrupt_just_after_the_run_started_kills_it(tmp_path, monkeypatch):
+    batch, wt, started = slow_batch(tmp_path)
+    popen = runner.subprocess.Popen
+
+    def interrupted_at_start(argv, *a, **k):  # before execute put the process where an interrupt looks
+        proc = popen(argv, *a, **k)
+        if argv[0] == batch.claude:
+            batch.interrupt()
+        return proc
+
+    monkeypatch.setattr(runner.subprocess, "Popen", interrupted_at_start)
+    t0 = time.monotonic()
+    assert "interrupted" in batch.run() and time.monotonic() - t0 < 10  # the fake hangs for 20 s
+    assert not (tmp_path / "out" / "results.jsonl").exists() and not (wt / "stray.txt").exists()
+    assert [u["why"] for u in unrecorded(tmp_path / "out")] == ["interrupted"]
+
+
+def crashing_claude(tmp_path, crashes=1):
+    """A fake claude that streams a run but, the first `crashes` times, dies with status 3 before its result."""
+    count = tmp_path / "count"
+    stream_file = tmp_path / "stream.jsonl"
+    crash = (
+        f"n = len(open({str(count)!r}).read()) if os.path.exists({str(count)!r}) else 0\n"
+        f"open({str(count)!r}, 'a').write('x')\n"
+        f"if n < {crashes}:\n"
+        f"    lines = open({str(stream_file)!r}).read().splitlines()\n"
+        "    sys.stdout.write(''.join(x + '\\n' for x in lines if '\"type\": \"result\"' not in x))\n"
+        "    sys.stdout.flush()\n"
+        "    os._exit(3)"
+    )
+    return fake_claude(tmp_path, recorded_stream("no answer"), extra=crash)[0]
+
+
+def test_a_claude_that_dies_mid_run_is_an_infrastructure_error_not_the_setups_failure(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    workspace.worktree("o/r", commit, "baseline", cache, url=str(src))
+    exe = crashing_claude(tmp_path)
+    with pytest.raises(runner.InfrastructureError, match="exited with status 3") as e:
+        runner.execute(runner.Run(task(1, commit), "baseline", 1), cache, tmp_path / "out", 1, exe)
+    assert not e.value.permanent and e.value.cost > 0  # from the usage streamed before it died
+
+    logged = []
+    runs = runner.schedule([task(1, commit)], ["baseline"], 1, seed=1)
+    (tmp_path / "again").mkdir()
+    batch = runner.Batch(runs, cache, tmp_path / "out2", claude=crashing_claude(tmp_path / "again"), log=logged.append)
+    assert batch.run() is None  # retried, and the retry finished
+    assert len(results(tmp_path / "out2")) == 1
+    assert [u["why"] for u in unrecorded(tmp_path / "out2")] == ["infrastructure error"]
+    assert any("exited with status 3" in line for line in logged)
+
+
 def test_spend_of_runs_that_were_never_recorded_counts_after_a_resume(tmp_path):
     runs = runner.schedule([task(1), task(2), task(3)], ["baseline"], 1, seed=1)
     out = tmp_path / "out"
@@ -784,3 +909,148 @@ def test_serena_runs_on_rust_across_repos_run_at_most_the_limit_at_once(tmp_path
                          log=lambda _: None)  # fmt: skip
     assert batch.run() is None
     assert state["most"] == 2 and state["baseline_during_serena"] >= 1 and len(results(tmp_path / "out")) == 6
+
+
+def test_a_second_invocation_on_one_results_directory_refuses_to_start(tmp_path):
+    import subprocess
+
+    out = tmp_path / "out"
+    out.mkdir()
+    holder = subprocess.Popen(  # another `run` on the same results, in a process of its own
+        [sys.executable, "-c", "import fcntl, sys, time\n"
+         f"f = open({str(out / '.lock')!r}, 'a'); fcntl.flock(f, fcntl.LOCK_EX)\n"
+         "print('held', flush=True); time.sleep(30)"],
+        stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+        with pytest.raises(runner.Busy, match="another"):
+            runner.Batch(runs, tmp_path, out, execute_fn=lambda *a: pytest.fail("ran"), log=lambda _: None)
+    finally:
+        holder.kill()
+        holder.wait()
+    batch = runner.Batch(runs, tmp_path, out, execute_fn=lambda r, *a: fake_record(r, 1), log=lambda _: None)
+    assert batch.run() is None and len(results(out)) == 1
+    again = runner.Batch(runs, tmp_path, out, log=lambda _: None)  # run() let go of it
+    assert again.pending == []
+
+
+@pytest.mark.parametrize("name", ["results.jsonl", "unrecorded.jsonl"])
+def test_a_partly_written_last_line_is_cut_and_its_run_charged_at_the_cap(tmp_path, name):
+    out = tmp_path / "out"
+    out.mkdir()
+    done = fake_record(runner.Run(task(1), "baseline", 1), 1)
+    whole = {"results.jsonl": done, "unrecorded.jsonl": {"task": "t9", "why": "interrupted", "cost_usd": 0.2}}
+    (out / name).write_text(json.dumps(whole[name]) + "\n" + json.dumps(done)[:40])  # the harness killed mid-write
+    logged = []
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    batch = runner.Batch(runs, tmp_path, out, execute_fn=lambda r, *a: fake_record(r, 1), log=logged.append)
+    assert (out / name).read_text().splitlines()[0] == json.dumps(whole[name])
+    assert unrecorded(out)[-1]["why"] == "partial record" and unrecorded(out)[-1]["cost_usd"] == config.MAX_BUDGET_USD
+    earlier = {"results.jsonl": 0.01, "unrecorded.jsonl": 0.2}[name]
+    assert batch.spent == pytest.approx(earlier + config.MAX_BUDGET_USD) and any(name in m for m in logged)
+    assert batch.run() is None
+    assert {r["task"] for r in results(out)} == {"t1", "t2"}  # every line whole again
+    assert runner.Batch(runs, tmp_path, out, log=lambda _: None).spent == pytest.approx(batch.spent)  # charged once
+
+
+def test_every_scheduled_pair_must_be_prepared_for_its_setup(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    for setup in ("baseline", "duckgrep", "serena"):
+        workspace.worktree("o/r", commit, setup, cache, url=str(src))
+    names = ["baseline", "duckgrep", "duckgrep-hint", "serena", "serena-hint"]
+    runs = runner.schedule([task(1, commit), task(2, "f" * 40)], names, 2, seed=1)
+    missing = runner.unprepared(runs, cache)
+    duckgrep = workspace.worktree_path(cache, "duckgrep", "o/r", commit)
+    serena = workspace.worktree_path(cache, "serena", "o/r", commit)
+    assert len(missing) == 2 + 3  # each worktree once, however many setups and repetitions share it
+    assert any(str(duckgrep) in m and "index" in m for m in missing)
+    assert any(str(serena) in m and "Serena" in m for m in missing)
+    assert sum("f" * 12 in m and "no worktree" in m for m in missing) == 3
+    (duckgrep / ".duckgrep").mkdir()
+    (duckgrep / ".duckgrep" / "index.duckdb").write_bytes(b"")
+    workspace.serena_project_file(cache, serena).parent.mkdir(parents=True)
+    workspace.serena_project_file(cache, serena).write_text("")
+    assert len(runner.unprepared(runs, cache)) == 3 and runner.unprepared(runs[:0], cache) == []
+
+
+@pytest.mark.parametrize("ended", ["returned", "raised"])
+def test_a_run_that_overlapped_an_outage_of_the_cache_is_redone_and_never_recorded(tmp_path, ended):
+    volume = Volume()
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls, logged = [], []
+
+    def execute(r, cache, out, attempt, claude):
+        calls.append(attempt)
+        if len(calls) == 1:
+            volume.lost.set()
+            time.sleep(0.05)  # the run's tools fail with EPERM meanwhile
+            volume.lost.clear()
+            if ended == "raised":  # workspace.reset's git, say
+                raise RuntimeError("fatal: Unable to read current working directory: Operation not permitted")
+            return fake_record(r, attempt, cost=0.2)
+        return fake_record(r, attempt)
+
+    batch = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, volume_probe=volume.probe, log=logged.append
+    )
+    assert batch.run() is None
+    assert calls == [1, 1] and len(results(tmp_path / "out")) == 1
+    [charge] = unrecorded(tmp_path / "out")
+    assert charge["why"] == "cache unreadable" and charge["cost_usd"] == (0.2 if ended == "returned" else 0.0)
+    assert any("unreadable" in line for line in logged)
+
+
+def test_no_run_starts_while_the_cache_is_unreadable_and_a_short_outage_is_waited_out(tmp_path, monkeypatch):
+    volume = Volume()
+    volume.lost.set()
+    free_gb = workspace.free_gb
+
+    def unreadable_too(path):
+        if volume.lost.is_set():
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return free_gb(path)
+
+    monkeypatch.setattr(workspace, "free_gb", unreadable_too)
+    restored = []
+    threading.Timer(0.2, lambda: restored.append(time.monotonic()) or volume.lost.clear()).start()
+    started = []
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+
+    def execute(r, *a):
+        started.append(time.monotonic())
+        return fake_record(r, 1)
+
+    batch = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=2, execute_fn=execute, volume_probe=volume.probe, log=lambda _: None
+    )
+    assert batch.run() is None and len(results(tmp_path / "out")) == 2
+    assert min(started) >= restored[0]
+
+
+def test_an_outage_longer_than_the_limit_stops_the_batch(tmp_path):
+    volume = Volume()
+    volume.lost.set()
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", execute_fn=lambda *a: pytest.fail("ran"), volume_probe=volume.probe,
+        log=lambda _: None,
+    ).run()  # fmt: skip
+    assert "unreadable" in stopped
+
+
+def test_a_harness_fault_outside_any_outage_still_stops_the_batch(tmp_path):
+    volume = Volume()
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def broken(*a):
+        calls.append(1)
+        raise RuntimeError("worktree is missing")
+
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=broken, volume_probe=volume.probe, log=lambda _: None
+    ).run()
+    assert "worktree is missing" in stopped and calls == [1]

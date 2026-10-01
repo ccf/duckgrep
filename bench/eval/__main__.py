@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -44,8 +45,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--parallel", type=int, default=config.PREPARE_PARALLEL, help="repo/commit pairs built at once")
     c = sub.add_parser("check", help="verify each setup's configuration, free")
     c.add_argument("--setups", type=setup_list, default=list(SETUPS))
+    c.add_argument("--claude", help="the Claude Code binary (default: where `claude` on PATH points now)")
     r = sub.add_parser("run", help="run the suite; this costs money")
     r.add_argument("--setups", type=setup_list, default=list(SETUPS))
+    r.add_argument("--claude", help="the Claude Code binary (default: where `claude` on PATH points now)")
     r.add_argument("--reps", type=int, default=config.REPETITIONS)
     r.add_argument("--parallel", type=int, default=config.PARALLEL)
     r.add_argument("--tasks", help="comma-separated task ids (default: every task)")
@@ -109,11 +112,29 @@ def harness(root: Path = REPO) -> dict:
     return {"commit": commit, "dirty": dirty}
 
 
-def claude_path() -> str:
-    found = shutil.which("claude")
+CLAUDE_VERSIONS = Path(".local") / "share" / "claude" / "versions"  # under HOME: where the native installer keeps each
+
+
+def claude_path(given: str | None = None) -> str:
+    """The binary itself, not the installer's link: the link moves to each new version as it lands, even mid-batch."""
+    found = shutil.which(given or "claude")
     if not found:
-        sys.exit("claude is not on PATH")
-    return found
+        sys.exit(f"{given} is not an executable" if given else "claude is not on PATH")
+    return os.path.realpath(found)
+
+
+def version_mismatch(claude: str, version: str, results: Path) -> str | None:
+    """Why `claude` (which says `version`) may not resume the batch whose results are `results`: its earliest
+    recorded run ran another Claude Code. None when it may."""
+    began = runner.started_on(results)
+    have = version.split()[0] if version.split() else None
+    if began is None or have == began:
+        return None
+    why = f"{claude} is Claude Code {have}, but the batch began on {began}"
+    kept = Path.home() / CLAUDE_VERSIONS / began
+    if kept.exists():
+        return f"{why}; pass --claude {kept}"
+    return f"{why}, which is no longer installed under {Path.home() / CLAUDE_VERSIONS}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -165,16 +186,30 @@ def main(argv: list[str] | None = None) -> int:
     if wanted and len(chosen) != len(set(wanted)):
         print(f"unknown task ids: {sorted(set(wanted) - {t.id for t in chosen})}", file=sys.stderr)
         return 2
-    claude = claude_path()
+    claude = claude_path(a.claude)
     version = subprocess.run([claude, "--version"], capture_output=True, text=True).stdout.strip()
-    print(f"claude {version}")
+    print(f"claude {version} ({claude})")
+    out = config.RUNS_DIR / (a.name or a.suite) if a.cmd == "run" else None
+    if out is not None and (why := version_mismatch(claude, version, out / "results.jsonl")):
+        print(f"refusing to resume: {why}", file=sys.stderr)
+        return 1
     if not check(chosen, a.setups, cache, claude):  # before every batch too: a misconfigured setup costs nothing yet
         return 1
-    if a.cmd == "check":
+    if out is None:
         return 0
+    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
+    missing = runner.unprepared(runs, cache)
+    if missing:
+        shown = "\n  ".join(missing[:5]) + ("\n  ..." if len(missing) > 5 else "")
+        print(f"{len(missing)} worktrees are not prepared; run `prepare` first:\n  {shown}", file=sys.stderr)
+        return 1
     workspace.require_space(cache)
-    out = config.RUNS_DIR / (a.name or a.suite)
     out.mkdir(parents=True, exist_ok=True)
+    try:
+        batch = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude)  # holds `out` from here
+    except runner.Busy as e:
+        print(f"refusing to start: {e}", file=sys.stderr)
+        return 1
     meta = {
         "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "harness": harness(),
@@ -184,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         "reps": a.reps,
         "seed": config.SEED,
         "claude": version,
+        "claude_path": claude,
         "model": config.MODEL,
         "effort": config.EFFORT,
         "max_turns": config.MAX_TURNS,
@@ -193,9 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     earlier = json.loads(path.read_text()) if path.exists() else []
     earlier = [earlier] if isinstance(earlier, dict) else earlier
     path.write_text(json.dumps(earlier + [meta], indent=2) + "\n")
-    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
     print(f"{len(runs)} runs, results in {out}")
-    stopped = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude).run()
+    stopped = batch.run()
     if stopped:
         print(f"stopped early: {stopped}; rerun the same command to resume")
         return 1

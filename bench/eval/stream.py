@@ -155,22 +155,47 @@ def config_problems(tr: Transcript, tools: set[str], servers: set[str], model: s
     return problems
 
 
+# Claude Code's error values (2.1.285), by what a retry can do about them
+PERMANENT_ERRORS = frozenset(
+    {
+        "authentication_failed",
+        "oauth_org_not_allowed",
+        "account_on_hold",
+        "verification_required",
+        "billing_error",
+        "model_not_found",
+        "cloud_credential_error",
+    }
+)
+# the run's own outcome: a prompt too long even after compaction, tool-use concurrency, output cut after the CLI's
+# own recovery gave up. Scored like any failed run.
+RUN_ERRORS = frozenset({"invalid_request", "max_output_tokens"})
+TRANSIENT_ERRORS = frozenset({"rate_limit", "overloaded", "server_error", "unknown"})
+PERMANENT_WORDS = ("auth", "billing", "credential")  # in a value a later CLI may add
+PERMANENT_TEXT = ("/login", "api key", "credit balance", "billing", "authentication", "permission_error")
+
+
 def infrastructure_error(tr: Transcript) -> bool:
     """The run failed for reasons outside the agent (login, rate limit, API outage): rerun it, never score it."""
+    if tr.api_error in RUN_ERRORS:
+        return False
     return tr.api_error is not None or tr.result.get("terminal_reason") == "api_error"
 
 
-PERMANENT = ("auth", "billing", "invalid_request", "permission_error", "/login", "api key", "credit balance")
-
-
 def permanent_error(tr: Transcript) -> bool:
-    """An infrastructure error no retry can fix: login, billing, permission or a malformed request, as the
-    synthetic message's error value names it or, in a run that ended on the error, the result's text. Everything
-    else (rate limit, overload, server errors, unknown, a bare synthetic message) is transient."""
-    said = tr.api_error or ""
-    if tr.result.get("terminal_reason") == "api_error":  # then the result is the error's message, not an answer
-        said += f" {tr.result.get('result') or ''}"
-    return any(word in said.lower() for word in PERMANENT)
+    """An infrastructure error no retry can fix: login, account, billing, model or credentials, as the synthetic
+    message's error value names it. Only without a value (none, or a bare synthetic message) is the result's text
+    read, and only in a run that ended on the error, where the result is the error's message, not an answer.
+    Everything else is transient."""
+    said = tr.api_error
+    if said not in (None, "synthetic"):
+        if said in PERMANENT_ERRORS | RUN_ERRORS | TRANSIENT_ERRORS:
+            return said in PERMANENT_ERRORS
+        return any(word in said.lower() for word in PERMANENT_WORDS)
+    if tr.result.get("terminal_reason") != "api_error":
+        return False
+    text = str(tr.result.get("result") or "").lower()
+    return any(phrase in text for phrase in PERMANENT_TEXT)
 
 
 def metrics(tr: Transcript) -> dict:
