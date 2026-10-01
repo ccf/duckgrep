@@ -13,7 +13,9 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import config, datasets, setups
@@ -144,6 +146,74 @@ def reset(path: Path, commit: str) -> tuple[list[str], bool]:
 def free_gb(path: Path) -> float:
     path.mkdir(parents=True, exist_ok=True)
     return shutil.disk_usage(path).free / 1e9
+
+
+class Watch:
+    """Outages of the cache's volume, as a probe from a thread of its own sees them. macOS's privacy service has
+    stalled for a minute or two at a time, refusing every process the volume (EPERM) until it came back; work done
+    meanwhile fails in ways that look like its own (a git read, a lookup that finds nothing) and must be redone."""
+
+    def __init__(self, probe: Callable[[], object], every_s: float):
+        self.outages: list[tuple[float, float | None]] = []  # (start, end) on the monotonic clock; end None: lasting
+        self._probe, self._every = probe, every_s
+        self._cond = threading.Condition()
+        self._probed = time.monotonic()  # when the latest finished probe began
+        self._closed = False
+
+    def _check(self) -> None:
+        began = time.monotonic()
+        try:
+            self._probe()
+            readable = True
+        except OSError:
+            readable = False
+        with self._cond:
+            if not readable and not self.down():
+                self.outages.append((self._probed, None))  # it was last known readable when the probe before began
+            elif readable and self.down():
+                self.outages[-1] = (self.outages[-1][0], began)
+            self._probed = began
+            self._cond.notify_all()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._closed, self._every)
+                if self._closed:
+                    return
+            self._check()
+
+    def down(self) -> bool:
+        """Whether an outage lasts."""
+        return bool(self.outages) and self.outages[-1][1] is None
+
+    def downtime(self) -> float:
+        """How long the outage that lasts has lasted; 0.0 when the volume is readable."""
+        return time.monotonic() - self.outages[-1][0] if self.down() else 0.0
+
+    def overlaps(self, t0: float, t1: float) -> bool:
+        """Whether an outage touched the span [t0, t1]. It first waits for a probe begun after t1, so an outage
+        that began as the span ended is seen too."""
+        with self._cond:
+            self._cond.wait_for(lambda: self._probed >= t1 or self._closed)
+            return any(start <= t1 and (end is None or end >= t0) for start, end in self.outages)
+
+
+@contextmanager
+def watch(cache: Path, every_s: float | None = None, probe: Callable[[], object] | None = None) -> Iterator[Watch]:
+    """Probe the cache's volume every `every_s` (config.VOLUME_PROBE_S) while the block runs. The first probe is
+    made before the block starts. A cache that cannot be listed, missing included, counts as an outage."""
+    w = Watch(probe or (lambda: os.listdir(cache)), config.VOLUME_PROBE_S if every_s is None else every_s)
+    w._check()
+    thread = threading.Thread(target=w._run, daemon=True)
+    thread.start()
+    try:
+        yield w
+    finally:
+        with w._cond:
+            w._closed = True
+            w._cond.notify_all()
+        thread.join(timeout=5)  # a probe stuck in a stalled syscall is left behind: the thread is a daemon
 
 
 def require_space(path: Path, minimum: float = config.MIN_FREE_GB) -> None:

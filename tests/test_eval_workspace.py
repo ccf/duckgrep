@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from eval_helpers import origin
+from eval_helpers import Volume, origin
 
 from bench.eval import workspace
 from bench.eval.suite import Task
@@ -470,3 +470,46 @@ def test_rust_warmups_across_repos_run_at_most_the_limit_at_once(tmp_path, monke
     monkeypatch.setattr(workspace, "serena_warmup", warmup)
     built = workspace.prepare(tasks, ["serena"], tmp_path / "cache", log=lambda _: None, workers=4)
     assert len(built) == 4 and state["most"] == 2
+
+
+def until(condition, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.005)
+
+
+def test_a_watch_records_each_outage_of_the_cache_volume(tmp_path):
+    volume = Volume()
+    with workspace.watch(tmp_path, every_s=0.005, probe=volume.probe) as w:
+        assert not w.down() and w.outages == [] and w.downtime() == 0.0
+        before = time.monotonic()
+        assert not w.overlaps(before, time.monotonic())
+        volume.lost.set()
+        until(w.down)
+        assert w.overlaps(before, time.monotonic()) and w.downtime() > 0
+        volume.lost.clear()
+        until(lambda: not w.down())
+        after = time.monotonic()
+        assert w.overlaps(before, after) and not w.overlaps(after, time.monotonic())
+    [(start, end)] = w.outages
+    assert before <= start < end <= after
+
+
+def test_a_watch_sees_an_outage_that_began_as_it_opened_and_probes_the_cache_by_default(tmp_path):
+    volume = Volume()
+    volume.lost.set()
+    with workspace.watch(tmp_path, every_s=0.005, probe=volume.probe) as w:
+        assert w.down()  # at once: a batch must not start a run on an unreadable volume
+    with workspace.watch(tmp_path, every_s=0.005) as w:
+        assert not w.down()
+    with workspace.watch(tmp_path / "gone", every_s=0.005) as w:
+        assert w.down()
+
+
+def test_an_outage_that_begins_as_a_span_ends_is_seen(tmp_path):
+    volume = Volume()
+    with workspace.watch(tmp_path, every_s=0.2, probe=volume.probe) as w:
+        began = time.monotonic()
+        volume.lost.set()  # the span's last git call failed, and the next probe is a while off
+        assert w.overlaps(began, time.monotonic())  # waits for a probe made after the span

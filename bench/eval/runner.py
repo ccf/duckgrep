@@ -353,7 +353,8 @@ def execute(run: Run, cache: Path, out_dir: Path, attempt: int, claude: str) -> 
 class Batch:
     """Runs a schedule with `parallel` workers. Runs that share a resource never overlap: a worktree, or the cargo
     target directory that every Serena run on one Rust repo builds in. The spending cap covers what earlier
-    invocations of the same batch spent, so resuming never renews it."""
+    invocations of the same batch spent, so resuming never renews it. No run starts while the cache's volume is
+    unreadable, and none that overlapped such an outage is recorded."""
 
     def __init__(
         self,
@@ -365,6 +366,7 @@ class Batch:
         execute_fn: Callable[..., dict] = execute,
         claude: str = "claude",
         log: Callable[[str], None] = print,
+        volume_probe: Callable[[], object] | None = None,
     ):
         self.results = out_dir / "results.jsonl"
         self.unrecorded = out_dir / "unrecorded.jsonl"  # spend of runs never recorded: interrupted, failed
@@ -381,6 +383,9 @@ class Batch:
         self.pending = [r for r in runs if r.key not in done]
         self.cache, self.out_dir, self.parallel = cache, out_dir, parallel
         self.max_total_usd, self.execute, self.claude, self.log = max_total_usd, execute_fn, claude, log
+        self.volume_probe = volume_probe  # None: list the cache (workspace.watch)
+        self.volume: workspace.Watch | None = None  # while run() runs
+        self.unmeasurable_since: float | None = None  # when free_gb began to fail, while it fails
         self.busy: set[Path] = set()  # the resources of the runs in flight
         self.analyzers = 0  # runs in flight that start a rust-analyzer: Serena on a Rust task
         self.cond = threading.Condition()
@@ -431,15 +436,58 @@ class Batch:
         """Whether a retry may start: a retry spends like a new run, so it stops at the same limits. `uncharged`
         is spend not charged yet: the discarded attempt a record will carry."""
         with self.cond:
-            self.stopped = self.stopped or self._limit(uncharged)
+            try:
+                self.stopped = self.stopped or self._limit(uncharged)
+            except OSError:  # the disk cannot be measured now: the next _take measures it, or waits
+                pass
             return not self.stopped
+
+    def _volume_back(self) -> bool:
+        """Wait, holding `cond`, while the cache's volume is unreadable; False if the batch stopped meanwhile. An
+        outage of VOLUME_OUTAGE_LIMIT_S stops it."""
+        while not self.stopped and self.volume is not None and self.volume.down():
+            lasted = self.volume.downtime()
+            if lasted >= config.VOLUME_OUTAGE_LIMIT_S:
+                self.stopped = f"the cache's volume has been unreadable for {lasted:.0f} s"
+                self.cond.notify_all()
+                break
+            self.cond.wait(config.VOLUME_PROBE_S)
+        return not self.stopped
+
+    def _hit_outage(self, began: float) -> bool:
+        return self.volume is not None and self.volume.overlaps(began, time.monotonic())
+
+    def _spent_by(self, r: Run) -> float:
+        """What an attempt that raised may have spent: what its transcript streamed, nothing if it left none."""
+        for name, opener in ((f"{r.setup}-{r.rep}.jsonl.gz", gzip.open), (f"{r.setup}-{r.rep}.jsonl", open)):
+            path = self.out_dir / r.task.id / name
+            if path.exists():
+                try:
+                    with opener(path, "rt") as f:
+                        tr = stream.read(f)
+                except (OSError, EOFError):
+                    return config.MAX_BUDGET_USD
+                spent = tr.result.get("total_cost_usd")
+                return stream.cost(stream.tokens(tr.result, tr.usage_by_message)) if spent is None else spent
+        return 0.0
 
     def _take(self) -> Run | None:
         with self.cond:
             while True:
                 if self.stopped or not self.pending:
                     return None  # nothing pending is a finished batch, whatever it spent
-                self.stopped = self._limit()
+                if not self._volume_back():
+                    return None
+                try:
+                    self.stopped = self._limit()
+                    self.unmeasurable_since = None
+                except OSError as e:  # the volume, again: wait as for an outage
+                    now = time.monotonic()
+                    self.unmeasurable_since = self.unmeasurable_since or now
+                    if now - self.unmeasurable_since < config.VOLUME_OUTAGE_LIMIT_S:
+                        self.cond.wait(config.VOLUME_PROBE_S)
+                        continue
+                    self.stopped = f"the cache has been unreadable for {now - self.unmeasurable_since:.0f} s: {e!r}"
                 if self.stopped:
                     return None
                 for i, r in enumerate(self.pending):
@@ -524,19 +572,47 @@ class Batch:
         return False
 
     def _attempt(self, r: Run, attempt: int) -> dict:
-        """One execution, redone after each of RETRY_WAITS_S while it fails with a transient API error. Every
-        failed try is charged as unrecorded spend; the last failure, a permanent one, or one after the batch
-        stopped or reached a limit is raised."""
+        """One execution, redone after each of RETRY_WAITS_S while it fails with a transient API error, or while
+        it overlaps an outage of the cache's volume, whatever it returned or raised then: such a run's tools and
+        git calls failed for reasons outside it. Every failed try is charged as unrecorded spend; the last failure,
+        a permanent one, one after the batch stopped or reached a limit, or a harness fault is raised."""
         for wait in (*config.RETRY_WAITS_S, None):
+            began = time.monotonic()
+            rec, failure = None, None
             try:
-                return self.execute(r, self.cache, self.out_dir, attempt, self.claude)
-            except InfrastructureError as e:
-                self._charge_unrecorded(r, e.cost, "infrastructure error", self._set_aside(r))
-                if e.permanent or wait is None:
-                    raise
-                self.log(f"transient API error, retrying {r.key} in {wait:g} s: {e}")
-                if not self._pause(wait) or not self._may_retry():
-                    raise
+                rec = self.execute(r, self.cache, self.out_dir, attempt, self.claude)
+            except Interrupted:
+                raise
+            except Exception as e:
+                failure = e
+            outage = self._hit_outage(began)
+            if not outage and failure is None:
+                return rec
+            if not outage and not isinstance(failure, InfrastructureError):
+                raise failure  # a harness fault
+            if rec is not None:
+                cost = charged(rec)
+            else:
+                cost = failure.cost if isinstance(failure, InfrastructureError) else self._spent_by(r)
+            self._charge_unrecorded(
+                r, cost, "cache unreadable" if outage else "infrastructure error", self._set_aside(r)
+            )
+            if outage:
+                error = InfrastructureError(
+                    f"{r.task.id}/{r.setup}-{r.rep} ran while the cache's volume was unreadable"
+                    + (f": {failure}" if failure else "")
+                )
+            else:
+                error = failure
+            if (not outage and error.permanent) or wait is None:
+                raise error
+            self.log(
+                f"{'cache unreadable' if outage else 'transient API error'}, retrying {r.key} in {wait:g} s: {error}"
+            )
+            with self.cond:
+                back = self._volume_back()
+            if not back or not self._pause(wait) or not self._may_retry():
+                raise error
         raise AssertionError("unreachable")
 
     def _worker(self) -> None:
@@ -622,16 +698,18 @@ class Batch:
         SIGTERM interrupt it cleanly."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
         _stopping.clear()  # an earlier batch's interrupt
-        self.working = self.parallel
-        for _ in range(self.parallel):
-            threading.Thread(target=self._work, daemon=True).start()
         main = threading.current_thread() is threading.main_thread()
         previous = signal.signal(signal.SIGTERM, _raise_interrupt) if main else None
         try:
-            self._wait()
-        except KeyboardInterrupt:
-            self.interrupt()
-            self._wait()
+            with workspace.watch(self.cache, probe=self.volume_probe) as self.volume:
+                self.working = self.parallel
+                for _ in range(self.parallel):
+                    threading.Thread(target=self._work, daemon=True).start()
+                try:
+                    self._wait()
+                except KeyboardInterrupt:
+                    self.interrupt()
+                    self._wait()
         finally:
             if main:
                 signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)

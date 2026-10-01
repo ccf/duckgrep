@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from eval_helpers import origin
+from eval_helpers import Volume, origin
 
 from bench.eval import config, runner, setups, workspace
 from bench.eval.suite import Task
@@ -67,6 +67,8 @@ def test_batch_records_every_run_once_and_resumes(tmp_path):
 @pytest.fixture(autouse=True)
 def tiny_retry_waits(monkeypatch):
     monkeypatch.setattr(config, "RETRY_WAITS_S", (0.01, 0.01, 0.01))
+    monkeypatch.setattr(config, "VOLUME_PROBE_S", 0.005)
+    monkeypatch.setattr(config, "VOLUME_OUTAGE_LIMIT_S", 0.5)
 
 
 def test_a_failed_configuration_check_is_retried_once(tmp_path):
@@ -972,3 +974,83 @@ def test_every_scheduled_pair_must_be_prepared_for_its_setup(tmp_path):
     workspace.serena_project_file(cache, serena).parent.mkdir(parents=True)
     workspace.serena_project_file(cache, serena).write_text("")
     assert len(runner.unprepared(runs, cache)) == 3 and runner.unprepared(runs[:0], cache) == []
+
+
+@pytest.mark.parametrize("ended", ["returned", "raised"])
+def test_a_run_that_overlapped_an_outage_of_the_cache_is_redone_and_never_recorded(tmp_path, ended):
+    volume = Volume()
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    calls, logged = [], []
+
+    def execute(r, cache, out, attempt, claude):
+        calls.append(attempt)
+        if len(calls) == 1:
+            volume.lost.set()
+            time.sleep(0.05)  # the run's tools fail with EPERM meanwhile
+            volume.lost.clear()
+            if ended == "raised":  # workspace.reset's git, say
+                raise RuntimeError("fatal: Unable to read current working directory: Operation not permitted")
+            return fake_record(r, attempt, cost=0.2)
+        return fake_record(r, attempt)
+
+    batch = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, volume_probe=volume.probe, log=logged.append
+    )
+    assert batch.run() is None
+    assert calls == [1, 1] and len(results(tmp_path / "out")) == 1
+    [charge] = unrecorded(tmp_path / "out")
+    assert charge["why"] == "cache unreadable" and charge["cost_usd"] == (0.2 if ended == "returned" else 0.0)
+    assert any("unreadable" in line for line in logged)
+
+
+def test_no_run_starts_while_the_cache_is_unreadable_and_a_short_outage_is_waited_out(tmp_path, monkeypatch):
+    volume = Volume()
+    volume.lost.set()
+    free_gb = workspace.free_gb
+
+    def unreadable_too(path):
+        if volume.lost.is_set():
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return free_gb(path)
+
+    monkeypatch.setattr(workspace, "free_gb", unreadable_too)
+    restored = []
+    threading.Timer(0.2, lambda: restored.append(time.monotonic()) or volume.lost.clear()).start()
+    started = []
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+
+    def execute(r, *a):
+        started.append(time.monotonic())
+        return fake_record(r, 1)
+
+    batch = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=2, execute_fn=execute, volume_probe=volume.probe, log=lambda _: None
+    )
+    assert batch.run() is None and len(results(tmp_path / "out")) == 2
+    assert min(started) >= restored[0]
+
+
+def test_an_outage_longer_than_the_limit_stops_the_batch(tmp_path):
+    volume = Volume()
+    volume.lost.set()
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", execute_fn=lambda *a: pytest.fail("ran"), volume_probe=volume.probe,
+        log=lambda _: None,
+    ).run()  # fmt: skip
+    assert "unreadable" in stopped
+
+
+def test_a_harness_fault_outside_any_outage_still_stops_the_batch(tmp_path):
+    volume = Volume()
+    runs = runner.schedule([task(1), task(2)], ["baseline"], 1, seed=1)
+    calls = []
+
+    def broken(*a):
+        calls.append(1)
+        raise RuntimeError("worktree is missing")
+
+    stopped = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=broken, volume_probe=volume.probe, log=lambda _: None
+    ).run()
+    assert "worktree is missing" in stopped and calls == [1]
