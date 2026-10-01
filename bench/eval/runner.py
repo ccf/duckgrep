@@ -521,6 +521,7 @@ class Batch:
                 # the streak below stopped the batch; a run of it that was still in flight isn't kept either
                 self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key))
                 return
+            rec = {**rec, "record_id": uuid.uuid4().hex}  # tells two records of one run apart
             with open(self.results, "a") as f:
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
                 f.flush()
@@ -553,11 +554,11 @@ class Batch:
         the spend twice rather than not at all, and the next batch on these results finishes the job, finding the
         charges already there."""
         streak = recorded(self.results)[-n:]
-        keys = [(r["task"], r["setup"], r["rep"]) for r in streak]
-        charges = [(u["task"], u["setup"], u["rep"], u["why"]) for u in recorded(self.unrecorded)[-n:]]
-        if charges != [(*key, STREAK) for key in keys]:
-            for key, rec in zip(keys, streak, strict=True):
-                self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key))
+        ids = [r.get("record_id") for r in streak]  # a charge names the record it stands for
+        if not all(ids) or [u.get("record_id") for u in recorded(self.unrecorded)[-n:]] != ids:
+            for rec in streak:
+                key = (rec["task"], rec["setup"], rec["rep"])
+                self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key), rec.get("record_id"))
         self._unwrite(n)
         self.spent -= sum(charged(r) for r in streak)  # their charges count instead
         self.completed = max(0, self.completed - n)
@@ -592,12 +593,20 @@ class Batch:
         return f"{stem}.unrecorded-{n}{transcripts[0]}"
 
     def _charge_unrecorded(
-        self, key: tuple[str, str, int], cost: float, why: str, transcript: str | None = None
+        self,
+        key: tuple[str, str, int],
+        cost: float,
+        why: str,
+        transcript: str | None = None,
+        record_id: str | None = None,
     ) -> None:
-        """Count what a run (its (task, setup, rep)) spent that no results line will show, so a resume counts it."""
+        """Count what a run (its (task, setup, rep)) spent that no results line will show, so a resume counts it.
+        `record_id` names the record it replaces, when one was taken back."""
         row = {"task": key[0], "setup": key[1], "rep": key[2], "why": why, "cost_usd": cost}
         if transcript:
             row["transcript"] = transcript
+        if record_id:
+            row["record_id"] = record_id
         with self.cond:
             with open(self.unrecorded, "a") as f:
                 f.write(json.dumps(row) + "\n")

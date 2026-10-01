@@ -527,10 +527,30 @@ def test_a_stop_in_the_middle_of_taking_a_streak_back_loses_no_spend(tmp_path, m
     assert any("API error" in line for line in said)
 
 
+def test_a_streak_that_comes_back_on_resume_is_charged_again(tmp_path, monkeypatch):
+    # the first streak's charges, at the end of unrecorded.jsonl, name the same runs as the second's
+    monkeypatch.setattr(config, "API_ERROR_STREAK", 3)
+    runs = runner.schedule([task(i) for i in range(3)], ["baseline"], 1, seed=1)
+
+    def execute(r, cache, out, attempt, claude):
+        (out / r.task.id).mkdir(parents=True, exist_ok=True)
+        with gzip.open(out / r.task.id / f"{r.setup}-{r.rep}.jsonl.gz", "wt") as f:
+            f.write("a transcript")
+        return {**fake_record(r, 1, cost=0.1), "api_error": "invalid_request"}
+
+    out = tmp_path / "out"
+    runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None).run()
+    again = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None)
+    assert "runs in a row" in again.run()
+    assert again.spent == pytest.approx(0.6) and len(unrecorded(out)) == 6  # both streaks charged
+    assert not (out / "results.jsonl").exists() or results(out) == []
+    assert len(list(out.glob("*/baseline-1.unrecorded-*.jsonl.gz"))) == 6  # and every transcript kept
+
+
 def test_runs_in_flight_when_a_streak_stops_the_batch_are_not_kept_either(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "API_ERROR_STREAK", 2)
-    runs = runner.schedule([task(i, commit=f"{i}" * 40) for i in range(1, 7)], ["baseline"], 1, seed=1)
-    meet = threading.Barrier(3, timeout=10)  # three runs end together on the same systematic failure
+    runs = runner.schedule([task(i, commit=f"{i}" * 40) for i in range(1, 4)], ["baseline"], 1, seed=1)
+    meet = threading.Barrier(3, timeout=10)  # all three runs end together on the same systematic failure
 
     def execute(r, *a):
         try:
