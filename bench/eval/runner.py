@@ -509,6 +509,11 @@ class Batch:
 
     def _record(self, rec: dict) -> None:
         with self.cond:
+            key = (rec["task"], rec["setup"], rec["rep"])
+            if rec.get("api_error") and self.api_errors >= config.API_ERROR_STREAK:
+                # the streak below stopped the batch; a run of it that was still in flight isn't kept either
+                self._charge_unrecorded(key, charged(rec), "API-error streak", self._set_aside(key))
+                return
             with open(self.results, "a") as f:
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
                 f.flush()
@@ -525,17 +530,38 @@ class Batch:
                 )
                 self.cond.notify_all()
             self.api_errors = self.api_errors + 1 if rec.get("api_error") else 0
-            if self.api_errors >= config.API_ERROR_STREAK:  # never record a systematic failure as thousands of runs
+            if self.api_errors >= config.API_ERROR_STREAK:
+                # one such run is its own outcome (a request too long); a streak is something else failing, a CLI
+                # or API change, so none of it is kept: a resume redoes those runs
+                for dropped in self._unwrite(self.api_errors):
+                    self.spent -= charged(dropped)
+                    self.completed = max(0, self.completed - 1)
+                    k = (dropped["task"], dropped["setup"], dropped["rep"])
+                    self._charge_unrecorded(k, charged(dropped), "API-error streak", self._set_aside(k))
                 self.stopped = self.stopped or (
-                    f"{self.api_errors} runs in a row ended on an API error, the last {rec['api_error']}"
+                    f"{self.api_errors} runs in a row ended on an API error, the last {rec['api_error']}; none of "
+                    "them is kept, so a resume redoes them"
                 )
                 self.cond.notify_all()
 
-    def _set_aside(self, r: Run) -> str | None:
+    def _unwrite(self, n: int) -> list[dict]:
+        """Take the last `n` records back out of the results file, and return them. Called holding `cond`."""
+        lines = self.results.read_text().splitlines(keepends=True)
+        tmp = self.results.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            f.writelines(lines[:-n])
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.results)
+        return [json.loads(line) for line in lines[-n:]]
+
+    def _set_aside(self, key: tuple[str, str, int]) -> str | None:
         """Keep an attempt that won't be recorded out of the next one's way: its transcript (compressed, or raw when
         it failed first) and stderr become <setup>-<rep>.unrecorded-<n>.*, so the run's own name only ever holds
-        the recorded attempt. Returns the transcript's new name, None if the attempt left none."""
-        run_dir, stem = self.out_dir / r.task.id, f"{r.setup}-{r.rep}"
+        the recorded attempt. `key` is the run's (task, setup, rep). Returns the transcript's new name, None if the
+        attempt left none."""
+        task_id, setup, rep = key
+        run_dir, stem = self.out_dir / task_id, f"{setup}-{rep}"
         kinds = (".jsonl.gz", ".jsonl", ".stderr")
         transcripts = [ext for ext in kinds[:2] if (run_dir / f"{stem}{ext}").exists()]
         if not transcripts:
@@ -548,9 +574,11 @@ class Batch:
                 (run_dir / f"{stem}{ext}").rename(run_dir / f"{stem}.unrecorded-{n}{ext}")
         return f"{stem}.unrecorded-{n}{transcripts[0]}"
 
-    def _charge_unrecorded(self, r: Run, cost: float, why: str, transcript: str | None = None) -> None:
-        """Count what a run spent that no results line will show, so a resume counts it too."""
-        row = {"task": r.task.id, "setup": r.setup, "rep": r.rep, "why": why, "cost_usd": cost}
+    def _charge_unrecorded(
+        self, key: tuple[str, str, int], cost: float, why: str, transcript: str | None = None
+    ) -> None:
+        """Count what a run (its (task, setup, rep)) spent that no results line will show, so a resume counts it."""
+        row = {"task": key[0], "setup": key[1], "rep": key[2], "why": why, "cost_usd": cost}
         if transcript:
             row["transcript"] = transcript
         with self.cond:
@@ -595,7 +623,7 @@ class Batch:
             else:
                 cost = failure.cost if isinstance(failure, InfrastructureError) else self._spent_by(r)
             self._charge_unrecorded(
-                r, cost, "cache unreadable" if outage else "infrastructure error", self._set_aside(r)
+                r.key, cost, "cache unreadable" if outage else "infrastructure error", self._set_aside(r.key)
             )
             if outage:
                 error = InfrastructureError(
@@ -630,18 +658,18 @@ class Batch:
                 rec = self._attempt(r, 1)
                 if not rec["config_ok"] and not self.interrupted:  # discard, and retry once
                     self.log(f"config check failed, retrying: {r.key} {rec['config_problems']}")
-                    first, kept = rec, self._set_aside(r)
+                    first, kept = rec, self._set_aside(r.key)
                     if not self._may_retry(charged(first)):
-                        self._charge_unrecorded(r, charged(first), "discarded attempt", kept)
+                        self._charge_unrecorded(r.key, charged(first), "discarded attempt", kept)
                         continue
                     try:
                         rec = self._attempt(r, 2)
                     except BaseException:
-                        self._charge_unrecorded(r, charged(first), "discarded attempt", kept)
+                        self._charge_unrecorded(r.key, charged(first), "discarded attempt", kept)
                         raise
                     rec["discarded_cost_usd"] = charged(first)
                 if self.interrupted:  # a run the interrupt cut short is redone on resume, never scored
-                    self._charge_unrecorded(r, charged(rec), "interrupted", self._set_aside(r))
+                    self._charge_unrecorded(r.key, charged(rec), "interrupted", self._set_aside(r.key))
                     continue
                 self._record(rec)
                 self.log(

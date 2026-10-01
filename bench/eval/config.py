@@ -15,6 +15,7 @@ WALL_LIMIT_S = 15 * 60
 RETRY_WAITS_S = (60, 300, 900)  # a transient API error is retried after each wait in turn, then stops the batch
 VOLUME_PROBE_S = 1.0  # how often a batch checks that the cache's volume is readable (macOS's privacy service stalls)
 VOLUME_OUTAGE_LIMIT_S = 900  # an outage this long stops the batch; a shorter one is waited out
+VOLUME_STALL_S = 10.0  # a probe of the volume that hasn't returned in this long is an outage too
 API_ERROR_STREAK = 10  # recorded runs in a row that ended on an API error stop the batch: a systematic failure
 PARALLEL = 3
 PREPARE_PARALLEL = 6  # repo/commit pairs `prepare` builds at once

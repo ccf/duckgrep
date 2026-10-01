@@ -521,6 +521,22 @@ def test_a_watch_sees_an_outage_that_began_as_it_opened_and_probes_the_cache_by_
         assert w.down()
 
 
+def test_a_probe_that_hangs_is_an_outage_and_never_hangs_its_callers(tmp_path):
+    # a stalled volume can block a syscall instead of refusing it; nothing that asks the watch may wait on it
+    volume = Volume()
+    with workspace.watch(tmp_path, every_s=0.005, probe=volume.probe, stall_s=0.05) as w:
+        before = time.monotonic()
+        volume.stuck.set()
+        until(w.down)
+        t0 = time.monotonic()
+        assert w.overlaps(before, time.monotonic()) and time.monotonic() - t0 < 1.0
+        assert w.downtime() > 0
+        volume.stuck.clear()
+        until(lambda: not w.down())
+        assert w.outages and w.outages[-1][1] is not None  # the stall is on record as an outage
+    assert not w.overlaps(time.monotonic(), time.monotonic())  # closed: no waiting
+
+
 def test_an_outage_that_begins_as_a_span_ends_is_seen(tmp_path):
     volume = Volume()
     with workspace.watch(tmp_path, every_s=0.2, probe=volume.probe) as w:

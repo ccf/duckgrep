@@ -2,6 +2,7 @@
 
 import subprocess
 import threading
+import time
 
 from bench.eval import workspace
 
@@ -24,7 +25,10 @@ class Volume:
 
     def __init__(self):
         self.lost = threading.Event()
+        self.stuck = threading.Event()  # a probe hangs in its syscall until this is cleared
 
     def probe(self):
+        while self.stuck.is_set():
+            time.sleep(0.002)
         if self.lost.is_set():
             raise PermissionError(1, "Operation not permitted")

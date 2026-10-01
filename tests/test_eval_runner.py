@@ -69,6 +69,7 @@ def tiny_retry_waits(monkeypatch):
     monkeypatch.setattr(config, "RETRY_WAITS_S", (0.01, 0.01, 0.01))
     monkeypatch.setattr(config, "VOLUME_PROBE_S", 0.005)
     monkeypatch.setattr(config, "VOLUME_OUTAGE_LIMIT_S", 0.5)
+    monkeypatch.setattr(config, "VOLUME_STALL_S", 0.05)
 
 
 def test_a_failed_configuration_check_is_retried_once(tmp_path):
@@ -482,7 +483,8 @@ def test_execute_records_a_run_that_ended_on_its_own_api_error(tmp_path):
     assert rec["api_error"] == "invalid_request" and rec["is_error"] and not rec["score"]["success"]
 
 
-def test_a_streak_of_runs_ending_on_an_api_error_stops_the_batch(tmp_path, monkeypatch):
+def test_a_streak_of_runs_ending_on_an_api_error_stops_the_batch_and_none_of_it_is_kept(tmp_path, monkeypatch):
+    # an invalid request is a run's own outcome only one at a time: a streak of them is something else failing
     monkeypatch.setattr(config, "API_ERROR_STREAK", 3)
     runs = runner.schedule([task(i) for i in range(6)], ["baseline"], 1, seed=1)
     errors = iter(["max_output_tokens", "invalid_request", None, "invalid_request", "invalid_request"])
@@ -490,15 +492,34 @@ def test_a_streak_of_runs_ending_on_an_api_error_stops_the_batch(tmp_path, monke
     def execute(r, *a):
         return {**fake_record(r, 1), "api_error": next(errors, "invalid_request")}
 
-    stopped = runner.Batch(runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None).run()
+    out = tmp_path / "out"
+    batch = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None)
+    stopped = batch.run()
     assert "3 runs in a row" in stopped and "invalid_request" in stopped
-    assert len(results(tmp_path / "out")) == 6  # a success broke the first streak
+    assert [r["api_error"] for r in results(out)] == ["max_output_tokens", "invalid_request", None]  # a success
+    assert [u["why"] for u in unrecorded(out)] == ["API-error streak"] * 3  # broke the first streak
+    assert batch.spent == pytest.approx(0.06)  # every run is still charged, once
+    again = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=lambda r, *a: fake_record(r, 1), log=print)
+    assert again.run() is None and len(results(out)) == 6  # a resume redoes the streak's runs
 
-    runs = runner.schedule([task(i) for i in range(6, 9)], ["baseline"], 1, seed=1)
-    stopped = runner.Batch(
-        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None
-    ).run()  # a resume continues the streak it stopped on
-    assert "4 runs in a row" in stopped and len(results(tmp_path / "out")) == 7
+
+def test_runs_in_flight_when_a_streak_stops_the_batch_are_not_kept_either(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "API_ERROR_STREAK", 2)
+    runs = runner.schedule([task(i, commit=f"{i}" * 40) for i in range(1, 7)], ["baseline"], 1, seed=1)
+    meet = threading.Barrier(3, timeout=10)  # three runs end together on the same systematic failure
+
+    def execute(r, *a):
+        try:
+            meet.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return {**fake_record(r, 1), "api_error": "invalid_request"}
+
+    out = tmp_path / "out"
+    stopped = runner.Batch(runs, tmp_path, out, parallel=3, execute_fn=execute, log=lambda _: None).run()
+    assert "runs in a row" in stopped
+    assert not (out / "results.jsonl").exists() or results(out) == []
+    assert len(unrecorded(out)) == 3
 
 
 @pytest.mark.parametrize("name, server", [("duckgrep-hint", "duckgrep"), ("serena-hint", "serena")])
@@ -1058,6 +1079,26 @@ def test_an_outage_longer_than_the_limit_stops_the_batch(tmp_path):
         log=lambda _: None,
     ).run()  # fmt: skip
     assert "unreadable" in stopped
+
+
+def test_a_probe_that_hangs_stops_the_batch_at_the_outage_limit_instead_of_hanging_it(tmp_path):
+    volume = Volume()
+    runs = runner.schedule([task(1)], ["baseline"], 1, seed=1)
+
+    def execute(r, *a):
+        volume.stuck.set()  # the volume stalls while the run is in flight, and stays stalled
+        return fake_record(r, a[2])
+
+    batch = runner.Batch(
+        runs, tmp_path, tmp_path / "out", parallel=1, execute_fn=execute, log=lambda _: None, volume_probe=volume.probe
+    )
+    done = []
+    worker = threading.Thread(target=lambda: done.append(batch.run()), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    volume.stuck.clear()
+    assert done and "unreadable" in done[0]  # stopped, not hung
+    assert not (tmp_path / "out/results.jsonl").exists()  # the run it overlapped is never recorded
 
 
 def test_a_harness_fault_outside_any_outage_still_stops_the_batch(tmp_path):
