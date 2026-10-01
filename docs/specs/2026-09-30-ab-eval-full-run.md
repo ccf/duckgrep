@@ -103,7 +103,7 @@ There are five. The three from the pilot are unchanged. Two new ones append a hi
     - Login, account, billing, model and credential errors stop the batch at once.
     - Rate limits, overload, server errors and unknown errors are retried up to 3 times, after waits of 1, 5 and 15 minutes. They stop the batch only if they persist.
     - A request too long even after compaction, or output cut off after the CLI's own recovery, is the run's own outcome: it's scored like any failed run.
-    - Ten recorded runs in a row that end on an API error stop the batch, so a systematic failure is never recorded as thousands of runs.
+    - Ten recorded runs in a row that end on an API error stop the batch. None of the streak is kept, because it is something else failing, such as a CLI or API change. Its runs, and those of it still in flight, are charged as unrecorded and redone on resume.
     - Without an error value, the result's text is read for login, API-key, credit and permission failures.
   - **Spend:**
     - A retry stops at the spending cap like any new run.
@@ -120,7 +120,7 @@ There are five. The three from the pilot are unchanged. Two new ones append a hi
     - A last results line cut off mid-write is removed and charged at the per-run cap.
   - **The cache's volume:**
     - macOS's privacy service stalled three times during this work. Each time, the external volume refused every access for a minute or two.
-    - A watchdog probes the volume. The batch waits an outage out, and a run that overlapped one is charged, set aside and redone, never recorded.
+    - A watchdog probes the volume every second. A probe that fails, or that hangs for 10 s, is an outage. The batch waits an outage out, and a run that overlapped one is charged, set aside and redone, never recorded. An outage of 15 minutes stops the batch.
     - The suite build is redone if an outage overlapped it: one had silently cost 73 structural questions.
   - **Resources:**
     - Serena runs on the same Rust repo never overlap, because they share a `CARGO_TARGET_DIR`.
