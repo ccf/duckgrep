@@ -34,27 +34,42 @@ Built with `python -m bench.eval --suite full build`. Each choice below is a sui
 
 These rules close the pilot audit's findings:
 - **Visibility-only edits are not the fix.** A hunk whose only change is a Rust visibility modifier (`fn` ↔ `pub fn` ↔ `pub(crate) fn`) no longer makes its function a key. In pixi-6335, two of five key entries were such hunks.
+  - Only the parser's modifiers count. `pub` inside a string or a macro's tokens (`quote!`) is text the function produces.
+  - Once the modifiers are removed, the paired lines must match exactly. A spacing change inside a string still marks its function.
+  - The rest of the block still counts: after `fn` → `pub fn`, a new body line marks the function.
 - **At most 3 functions.** This matches Python's bound. Bigger fixes more often bundle work the issue doesn't ask for.
 - **Curation of localization keys.** Before the run, every localization key is audited against its issue and patch. That's both languages: the Rust findings were mostly generic incidental edits.
   - A task is dropped when its fix bundles work the issue gives no reason for: an unrelated feature, a refactor, or a docs or style cleanup in the same pull request. pixi-6335 was the pilot's example.
   - A task is kept when the extra entries are part of the fix itself, such as plumbing for the chosen implementation or a parallel code path. In doubt, it's kept.
   - An auditor proposes each drop and an independent verifier confirms it.
   - Dropped ids and their reasons go in `bench/eval/suites/full-curation.jsonl`, which the builder applies.
-  - Result: 8 of 78 Rust tasks and 1 of 164 Python tasks were dropped. All nine proposed drops were confirmed.
+  - Near-duplicates count once. Tasks of one repo whose fixes add an entry to the same registry, for the same kind of request, keep the first: harper's three phrase corrections share one `lint_group`, and two share a base commit.
+  - The build refuses a curation file that names a task it didn't draw, such as a typo or a task a filter already rejects.
+  - Result: 12 tasks are dropped.
+    - The audit dropped 8 of 78 Rust tasks and 1 of 164 Python tasks, and all nine proposed drops were confirmed.
+    - The independent review of this suite found one more incidental edit, in scikit-learn-15512: `predict` only gains an input check.
+    - It also found the harper near-duplicates.
 - **Recursion is stated.** Structural questions say that a function calling itself counts as its own caller ("including test functions and, if it calls itself, the function itself"). Keys already include self-recursion. In the pilot, one run left it out on purpose.
-- **No duplicate questions.** A repo's question whose key equals an earlier question's key is dropped. The pilot's two requests two-hop questions had the same answer.
+- **No duplicate questions.** A repo's question whose key equals an earlier question's key is dropped. The pilot's two requests two-hop questions had the same answer. A target also gets one question only, a callers or a two-hop one; 21 targets had both.
+- **No question dispatch can answer differently.** Keys follow static resolution, so a target that dispatch can reach from a call resolved elsewhere isn't asked about.
+  - Python:
+    - a call that resolves to a base class's method of that name, such as `self.run()` in the base or `m.keys()` on a `typing.Mapping`;
+    - a call whose receiver is somewhere assigned an instance of the target's class, or of a subclass that inherits the method. jedi types pytest's `rewrite_hook` by its first assignment, so two callers of `AssertionRewritingHook.mark_rewrite` were missing.
+  - Rust: a call through a generic or `dyn`, which resolves to the trait's method, when the target implements that method.
+  - A blunter rule would drop any target whose name some other class's call resolves to. It would have cut 60 of 189 Python callers and two-hop questions, most of them common-name ones. These rules keep a correctly typed call to a same-named method.
 - **Python keys get a reference check.** Rust keys already require every reference of the target to be a counted call site. Python keys now do too, through jedi's references. A target that's also used as a value (a callback, `map(f, …)`) makes a "who calls it" question ambiguous, so the question is dropped.
 
 ### Suite as built
 
-- **Localization: 233 tasks.**
-  - Python: 163.
-  - Rust: 70, in three strata: `multilingual` 15, `live-earlier` 34 and `live` 21.
+- **Localization: 230 tasks.**
+  - Python: 162.
+  - Rust: 68, in three strata: `multilingual` 15, `live-earlier` 32 and `live` 21.
 - **Structural questions: 494.**
   - Python: 237, from 12 repos.
   - Rust: 257, from 13 repos.
   - Most repos yielded the maximum of 20 questions.
-- **Total: 727 tasks.**
+  - One question per target and the dispatch rules replaced 54 questions with other targets'. The counts are unchanged.
+- **Total: 724 tasks.**
 
 ### Structural questions
 
@@ -79,15 +94,41 @@ There are five. The three from the pilot are unchanged. Two new ones append a hi
 
 ## Runs
 
-- **Volume:** 2 repetitions of every task in every setup. That's about 640 tasks, 5 setups and roughly 6,400 runs.
+- **Volume:** 2 repetitions of every task in every setup: 724 tasks, 5 setups and 7,240 runs.
 - **Parallelism:** 8 runs at once. The machine has 64 GB of RAM and 16 cores; the pilot ran 3.
-- **Spending cap:** the batch stops starting runs at $400. The pilot's rate of $0.03 per run projects $250–350.
-- **Cache:** `DUCKGREP_EVAL_CACHE=/Volumes/research/code-tasks`. The full suite's worktrees need over 100 GB, and the main disk has 18 GB free. Paths the agent sees contain "research" in every setup alike.
+- **Spending cap:** the batch stops starting runs at $400. The pilot's rate of $0.031 per run projects about $225. The cap leaves room for longer runs on the Live tasks and in the hinted setups.
+- **Cache:** `DUCKGREP_EVAL_CACHE=/Volumes/research/code-tasks`, an external SSD. The prepared full suite takes 78 GB, and the main disk has 18 GB free. Paths the agent sees contain "research" in every setup alike.
 - **Robustness for a multi-hour batch:**
-  - Transient API errors (rate limit, overload, server errors) are retried up to 3 times with waits of 1, 5 and 15 minutes, and stop the batch only if they persist. Authentication, billing and invalid-request errors stop it at once. A retried attempt's spend is charged.
-  - Every run's environment sets `DISABLE_AUTOUPDATER=1`. A run whose recorded CLI version differs from the batch's first stops the batch.
-  - Serena runs on the same Rust repo never overlap, because they share a `CARGO_TARGET_DIR`.
-  - `prepare` works on several repo/commit pairs at once. Clones and fetches are serialised per repo, and a failure in one pair doesn't lose the others' rows.
+  - **API errors** are sorted by Claude Code's error categories:
+    - Login, account, billing, model and credential errors stop the batch at once.
+    - Rate limits, overload, server errors and unknown errors are retried up to 3 times, after waits of 1, 5 and 15 minutes. They stop the batch only if they persist.
+    - A request too long even after compaction, or output cut off after the CLI's own recovery, is the run's own outcome: it's scored like any failed run.
+    - Ten recorded runs in a row that end on an API error stop the batch, so a systematic failure is never recorded as thousands of runs.
+    - Without an error value, the result's text is read for login, API-key, credit and permission failures.
+  - **Spend:**
+    - A retry stops at the spending cap like any new run.
+    - Every attempt that isn't recorded is charged: an API error, a discarded attempt, an interrupted run, or a crashed `claude`, which is retried rather than scored.
+    - Its transcript is kept as `<setup>-<rep>.unrecorded-<n>.jsonl.gz`.
+  - **Claude Code version:**
+    - Every run sets `DISABLE_AUTOUPDATER=1`.
+    - The batch runs the binary the `claude` link resolves to, because the installer moved the link to 2.1.286 during this work.
+    - A resume on another version is refused before any paid run, naming the `--claude` path that pins the batch's version.
+    - A run whose recorded version differs from the batch's first stops the batch.
+  - **Starting:**
+    - A preflight refuses a batch whose scheduled worktrees, duckgrep indexes or Serena projects are missing.
+    - A lock refuses a second `run` on the same results.
+    - A last results line cut off mid-write is removed and charged at the per-run cap.
+  - **The cache's volume:**
+    - macOS's privacy service stalled three times during this work. Each time, the external volume refused every access for a minute or two.
+    - A watchdog probes the volume. The batch waits an outage out, and a run that overlapped one is charged, set aside and redone, never recorded.
+    - The suite build is redone if an outage overlapped it: one had silently cost 73 structural questions.
+  - **Resources:**
+    - Serena runs on the same Rust repo never overlap, because they share a `CARGO_TARGET_DIR`.
+    - At most three rust-analyzers run at once, across runs and `prepare`'s warm-ups.
+  - **`prepare`:**
+    - It works on several repo/commit pairs at once. Clones, fetches and Rust warm-ups are serialised per repo.
+    - A failure in one pair doesn't lose the others' rows, and Ctrl-C waits for the pairs in flight.
+    - A worktree whose attributes renormalise a file (dioxus) is checked out byte for byte.
 
 ## Analysis
 
