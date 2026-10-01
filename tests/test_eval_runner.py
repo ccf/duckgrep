@@ -527,6 +527,30 @@ def test_a_stop_in_the_middle_of_taking_a_streak_back_loses_no_spend(tmp_path, m
     assert any("API error" in line for line in said)
 
 
+def test_a_stop_partway_through_a_streaks_charges_charges_each_run_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "API_ERROR_STREAK", 3)
+    runs = runner.schedule([task(i) for i in range(3)], ["baseline"], 1, seed=1)
+
+    def execute(r, *a):
+        return {**fake_record(r, 1, cost=0.1), "api_error": "invalid_request"}
+
+    real, charges = runner.Batch._charge_unrecorded, []
+
+    def dies_on_the_second(self, *a, **k):
+        charges.append(1)
+        if len(charges) == 2:
+            raise RuntimeError("the harness died here")
+        return real(self, *a, **k)
+
+    out = tmp_path / "out"
+    monkeypatch.setattr(runner.Batch, "_charge_unrecorded", dies_on_the_second)
+    runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None).run()
+    assert len(results(out)) == 3 and len(unrecorded(out)) == 1  # one charge was written before it died
+    monkeypatch.setattr(runner.Batch, "_charge_unrecorded", real)
+    again = runner.Batch(runs, tmp_path, out, parallel=1, execute_fn=execute, log=lambda _: None)
+    assert results(out) == [] and len(unrecorded(out)) == 3 and again.spent == pytest.approx(0.3)
+
+
 def test_a_streak_that_comes_back_on_resume_is_charged_again(tmp_path, monkeypatch):
     # the first streak's charges, at the end of unrecorded.jsonl, name the same runs as the second's
     monkeypatch.setattr(config, "API_ERROR_STREAK", 3)

@@ -550,13 +550,12 @@ class Batch:
 
     def _take_back(self, n: int) -> None:
         """Take the last `n` records, a streak of runs that ended on an API error, back out of the results, and
-        charge them as unrecorded spend. The charges are written first: a stop between the two steps then counts
-        the spend twice rather than not at all, and the next batch on these results finishes the job, finding the
-        charges already there."""
+        charge them as unrecorded spend. The charges are written first, each naming its record: a stop at any point
+        then loses no spend, and the next batch on these results finishes the job, charging only what isn't yet."""
         streak = recorded(self.results)[-n:]
-        ids = [r.get("record_id") for r in streak]  # a charge names the record it stands for
-        if not all(ids) or [u.get("record_id") for u in recorded(self.unrecorded)[-n:]] != ids:
-            for rec in streak:
+        done = {u.get("record_id") for u in recorded(self.unrecorded) if u.get("why") == STREAK}
+        for rec in streak:  # a charge names the record it stands for, so each is charged once, however a stop fell
+            if rec.get("record_id") is None or rec["record_id"] not in done:
                 key = (rec["task"], rec["setup"], rec["rep"])
                 self._charge_unrecorded(key, charged(rec), STREAK, self._set_aside(key), rec.get("record_id"))
         self._unwrite(n)
