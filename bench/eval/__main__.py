@@ -189,9 +189,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if out is None:
         return 0
+    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
+    missing = runner.unprepared(runs, cache)
+    if missing:
+        shown = "\n  ".join(missing[:5]) + ("\n  ..." if len(missing) > 5 else "")
+        print(f"{len(missing)} worktrees are not prepared; run `prepare` first:\n  {shown}", file=sys.stderr)
+        return 1
     workspace.require_space(cache)
     out.mkdir(parents=True, exist_ok=True)
-    runs = runner.schedule(chosen, a.setups, a.reps, config.SEED)
     try:
         batch = runner.Batch(runs, cache, out, a.parallel, a.max_total_usd, claude=claude)  # holds `out` from here
     except runner.Busy as e:

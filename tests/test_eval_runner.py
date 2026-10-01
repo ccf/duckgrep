@@ -951,3 +951,24 @@ def test_a_partly_written_last_line_is_cut_and_its_run_charged_at_the_cap(tmp_pa
     assert batch.run() is None
     assert {r["task"] for r in results(out)} == {"t1", "t2"}  # every line whole again
     assert runner.Batch(runs, tmp_path, out, log=lambda _: None).spent == pytest.approx(batch.spent)  # charged once
+
+
+def test_every_scheduled_pair_must_be_prepared_for_its_setup(tmp_path):
+    src, commit = origin(tmp_path, {"src/a.py": NEEDLE_SRC})
+    cache = tmp_path / "cache"
+    for setup in ("baseline", "duckgrep", "serena"):
+        workspace.worktree("o/r", commit, setup, cache, url=str(src))
+    names = ["baseline", "duckgrep", "duckgrep-hint", "serena", "serena-hint"]
+    runs = runner.schedule([task(1, commit), task(2, "f" * 40)], names, 2, seed=1)
+    missing = runner.unprepared(runs, cache)
+    duckgrep = workspace.worktree_path(cache, "duckgrep", "o/r", commit)
+    serena = workspace.worktree_path(cache, "serena", "o/r", commit)
+    assert len(missing) == 2 + 3  # each worktree once, however many setups and repetitions share it
+    assert any(str(duckgrep) in m and "index" in m for m in missing)
+    assert any(str(serena) in m and "Serena" in m for m in missing)
+    assert sum("f" * 12 in m and "no worktree" in m for m in missing) == 3
+    (duckgrep / ".duckgrep").mkdir()
+    (duckgrep / ".duckgrep" / "index.duckdb").write_bytes(b"")
+    workspace.serena_project_file(cache, serena).parent.mkdir(parents=True)
+    workspace.serena_project_file(cache, serena).write_text("")
+    assert len(runner.unprepared(runs, cache)) == 3 and runner.unprepared(runs[:0], cache) == []

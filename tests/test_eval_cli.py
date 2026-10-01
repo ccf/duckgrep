@@ -149,6 +149,7 @@ def test_each_run_invocation_is_kept_in_meta_with_the_harness_commit(tmp_path, m
     monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
     monkeypatch.setattr(cli, "claude_path", lambda given=None: "true")
     monkeypatch.setattr(cli.runner, "probe", lambda task, setup, cache, claude: [])
+    monkeypatch.setattr(cli.runner, "unprepared", lambda runs, cache: [])
 
     class Batch:
         def __init__(self, *a, **k):
@@ -222,7 +223,7 @@ def resumable(tmp_path, monkeypatch, version):
     (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     seen = {"probes": [], "batches": 0}
     monkeypatch.setattr(cli.runner, "probe", lambda task, setup, cache, claude: seen["probes"].append(claude) or [])
-    monkeypatch.setattr(cli.runner, "unprepared", lambda runs, cache: [], raising=False)
+    monkeypatch.setattr(cli.runner, "unprepared", lambda runs, cache: [])
 
     class Batch:
         def __init__(self, *a, **k):
@@ -269,3 +270,14 @@ def test_run_refuses_a_results_directory_another_run_holds_and_leaves_no_trace(t
     assert cli.main(["run", "--name", "x"]) == 1
     assert "another run is using" in capsys.readouterr().err
     assert not (tmp_path / "runs" / "x" / "meta.json").exists()  # its meta would name an invocation that never ran
+
+
+def test_run_refuses_to_start_until_every_scheduled_pair_is_prepared(tmp_path, monkeypatch, capsys):
+    preflight = cli.runner.unprepared
+    seen = resumable(tmp_path, monkeypatch, "2.1.285")
+    monkeypatch.setattr(cli.runner, "unprepared", preflight)  # the real one, not the fixture's
+    monkeypatch.setattr(cli, "claude_path", lambda given=None: str(fake_cli(tmp_path / "bin" / "claude", "2.1.285")))
+    assert cli.main(["run", "--name", "x"]) == 1
+    err = capsys.readouterr().err
+    assert "3 worktrees are not prepared" in err and "no worktree" in err and "prepare" in err
+    assert seen["batches"] == 0 and len(seen["probes"]) == 5  # after the free check, before any paid run

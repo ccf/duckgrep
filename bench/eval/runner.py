@@ -184,6 +184,26 @@ def probe(task: Task, setup_name: str, cache: Path, claude: str) -> list[str]:
     return problems
 
 
+def unprepared(runs: list[Run], cache: Path) -> list[str]:
+    """What `prepare` has not built for the scheduled runs, one line per worktree. A missing worktree would stop
+    the batch whenever its turn came; a missing index or Serena project would let that run build it on the clock."""
+    missing = {}
+    for r in runs:
+        base = setups.SETUPS[r.setup].base
+        wt = workspace.worktree_path(cache, r.setup, r.task.repo, r.task.commit)
+        if wt in missing:
+            continue
+        if not (wt / ".git").exists():
+            missing[wt] = f"{wt}: no worktree"
+        elif base == "duckgrep" and not (wt / ".duckgrep" / "index.duckdb").exists():
+            missing[wt] = f"{wt}: no duckgrep index"
+        elif base == "serena" and not workspace.serena_project_file(cache, wt).exists():
+            missing[wt] = f"{wt}: Serena is not warmed up"
+        else:
+            missing[wt] = None
+    return [m for m in missing.values() if m]
+
+
 def visible(cache: Path, task: Task, left: list[str]) -> set[str] | None:
     """The files a run could see: those at the task's commit and those it created (`left`, its worktree changes
     in porcelain form). None when the commit cannot be listed."""
