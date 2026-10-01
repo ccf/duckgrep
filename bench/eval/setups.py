@@ -29,14 +29,15 @@ class Setup:
 
 
 DUCKGREP_HINT = (
-    "The repository in the current directory is indexed by duckgrep. Its query tool answers questions about the code "
-    "in one SQL query: where a symbol is defined, who calls it, what it calls, what imports a module, and text "
-    "search that names the enclosing function. Use it first to find code, and read files once you know where to look."
+    "The repository in the current directory is indexed by duckgrep. To find code, call its query tool before Grep, "
+    "Glob or Read: SELECT * FROM defs('name') finds where a symbol is defined, callers('name') who calls it, and "
+    "grep('regex') searches the text and names each match's enclosing function. Read a file once you know where to "
+    "look."
 )
 SERENA_HINT = (
-    "Serena's tools navigate the repository in the current directory by symbol: find_symbol finds where a symbol is "
-    "defined, find_referencing_symbols finds who uses it, get_symbols_overview lists what a file defines, and "
-    "search_for_pattern searches text. Use them first to find code, and read files once you know where to look."
+    "Serena's tools navigate the repository in the current directory by symbol. To find code, call them before Grep, "
+    "Glob or Read: find_symbol finds where a symbol is defined, find_referencing_symbols who calls it, and "
+    "search_for_pattern searches the text. Read a file once you know where to look."
 )
 
 _BASE = {
