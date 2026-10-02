@@ -380,7 +380,8 @@ code, pre, .dg-term, .dg-term * { font-variant-ligatures: none; }
 
 /* phones: the results table drops its scroll, each change sits under its value; commands wrap */
 @media (max-width: 560px) {
-  .results__table { min-width: 0; table-layout: fixed; }
+  /* fits from 340px; narrower screens scroll the table rather than crowd its values */
+  .results__table { min-width: 340px; table-layout: fixed; }
   .results__table th, .results__table td { padding: 9px 6px; }
   .results__table th:first-child { padding-left: 0; width: 34%; }
   .results__table thead th { font-size: 13px; line-height: 17px; }

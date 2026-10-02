@@ -15,6 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "site/index.html"
 RESULTS = ROOT / "bench/eval/runs/full/results.jsonl"
+SNAPSHOT = ROOT / "site/tools/replayed.json"
 
 
 class Collect(HTMLParser):
@@ -100,23 +101,34 @@ def test_results_table_matches_readme():
     assert got == want
 
 
-@pytest.mark.skipif(not RESULTS.exists(), reason="the A/B run's records are not in this checkout")
-def test_replay_matches_recorded_runs():
-    records = {}
-    for line in RESULTS.open():
-        r = json.loads(line)
-        if r["rep"] == 1:
-            records[(r["task"], r["setup"])] = r
+def test_replay_matches_snapshot():
+    """The terminals' final totals are the replayed runs' recorded ones (site/tools/replayed.json)."""
+    runs = json.loads(SNAPSHOT.read_text())["runs"]
     answers = [s for s in parse().steps if "step--answer" in s["class"]]
     assert len(answers) == 4
     setups = ["baseline", "duckgrep-hint"] * 2
     for step, setup in zip(answers, setups, strict=True):
-        r = records[(step["task"], setup)]
+        r = runs[step["task"]][setup]
         assert int(step["data-calls"]) == r["tool_calls"]
         assert int(step["data-tokens"]) == r["tokens_total"]
         assert float(step["data-cost"]) == round(r["cost_usd"], 4)
         assert int(step["data-ms"]) == r["duration_ms"]
-        assert r["score"]["success"]
+        assert r["success"]
+
+
+@pytest.mark.skipif(not RESULTS.exists(), reason="the A/B run's records are not in this checkout")
+def test_snapshot_matches_records():
+    """The committed snapshot is what the extractor would write from the run records today."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("extract_replay", ROOT / "site/tools/extract_replay.py")
+    extract = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(extract)
+    records = {}
+    for line in RESULTS.open():
+        r = json.loads(line)
+        records[(r["task"], r["setup"], r["rep"])] = r
+    assert extract.snapshot(records) == json.loads(SNAPSHOT.read_text())
 
 
 def test_no_absolute_paths_leak():
@@ -154,30 +166,15 @@ def test_prose_numbers_match_readme():
         assert figure in readme and figure in page, figure
 
 
-@pytest.mark.skipif(not RESULTS.exists(), reason="the A/B run's records are not in this checkout")
-def test_race_claims_match_records():
-    import statistics
-
-    records = {}
-    for line in RESULTS.open():
-        r = json.loads(line)
-        if r["rep"] == 1:
-            records[(r["task"], r["setup"])] = r
-    ratios = sorted(
-        records[(t, "duckgrep-hint")]["cost_usd"] / records[(t, "baseline")]["cost_usd"]
-        for (t, s), r in records.items()
-        if s == "baseline"
-        and r["kind"] == "structural"
-        and r["score"]["success"]
-        and records[(t, "duckgrep-hint")]["score"]["success"]
-    )
+def test_race_claims_match_snapshot():
+    """The race's result lines, meter deltas and median claim, against the replayed runs' records."""
+    snap = json.loads(SNAPSHOT.read_text())
     page = PAGE.read_text()
-    assert f"the {len(ratios)} structural questions both setups answered correctly" in page
-    median = statistics.median(ratios)
+    assert f"the {snap['both_correct']} structural questions both setups answered correctly" in page
     blocks = re.findall(r'data-task="([^"]+)">(.*?)<p class="race__result" data-result>(.*?)</p>', page, re.S)
     assert len(blocks) == 2
     for task, lanes, result in blocks:
-        base, dg = records[(task, "baseline")], records[(task, "duckgrep-hint")]
+        base, dg = snap["runs"][task]["baseline"], snap["runs"][task]["duckgrep-hint"]
         calls = base["tool_calls"] - dg["tool_calls"]
         tokens = round((1 - dg["tokens_total"] / base["tokens_total"]) * 100)
         cost = round((1 - dg["cost_usd"] / base["cost_usd"]) * 100)
@@ -187,4 +184,5 @@ def test_race_claims_match_records():
             and f"{cost}% less cost" in result
         )
         assert re.findall(r'class="meter__d">([^<]+)<', lanes) == [f"−{calls}", f"−{tokens}%", f"−{cost}%"]
-        assert abs(dg["cost_usd"] / base["cost_usd"] - median) < 0.03, "the replayed run is no longer typical"
+        ratio = dg["cost_usd"] / base["cost_usd"]
+        assert abs(ratio - snap["median_cost_ratio"]) < 0.03, "the replayed run is no longer typical"

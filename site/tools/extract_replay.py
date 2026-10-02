@@ -22,6 +22,7 @@ import gzip
 import html
 import json
 import re
+import statistics
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,7 @@ from bench.eval import stream  # noqa: E402
 RUNS = ROOT / "bench/eval/runs/full"
 SUITE = ROOT / "bench/eval/suites/full-structural.jsonl"
 PAGE = ROOT / "site/index.html"
+SNAPSHOT = ROOT / "site/tools/replayed.json"  # the records the page shows, so tests run without the gitignored runs
 
 # (marker id, task); each is replayed for these two setups
 QUESTIONS = (
@@ -269,6 +271,34 @@ def main() -> None:
         )
         assert n == 1, f"no race:{marker} markers in {PAGE}"
     PAGE.write_text(page)
+    SNAPSHOT.write_text(json.dumps(snapshot(records), indent=2) + "\n")
+
+
+def snapshot(records: dict) -> dict:
+    """The replayed runs' totals, and where their cost ratio sits among the structural questions both setups
+    answered correctly."""
+    keep = ("tool_calls", "tokens_total", "cost_usd", "duration_ms")
+    ratios = sorted(
+        records[(t, "duckgrep-hint", 1)]["cost_usd"] / r["cost_usd"]
+        for (t, s, rep), r in records.items()
+        if s == "baseline"
+        and rep == 1
+        and r["kind"] == "structural"
+        and r["score"]["success"]
+        and records[(t, "duckgrep-hint", 1)]["score"]["success"]
+    )
+    return {
+        "both_correct": len(ratios),
+        "median_cost_ratio": round(statistics.median(ratios), 4),
+        "runs": {
+            task: {
+                setup: {k: records[(task, setup, 1)][k] for k in keep}
+                | {"success": records[(task, setup, 1)]["score"]["success"]}
+                for _, setup, _ in SIDES
+            }
+            for _, task in QUESTIONS
+        },
+    }
 
 
 if __name__ == "__main__":

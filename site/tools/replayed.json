@@ -1,0 +1,38 @@
+{
+  "both_correct": 453,
+  "median_cost_ratio": 0.7619,
+  "runs": {
+    "flask-callers-show_server_banner": {
+      "baseline": {
+        "tool_calls": 3,
+        "tokens_total": 26661,
+        "cost_usd": 0.018226,
+        "duration_ms": 7905,
+        "success": true
+      },
+      "duckgrep-hint": {
+        "tool_calls": 2,
+        "tokens_total": 22740,
+        "cost_usd": 0.014086,
+        "duration_ms": 6415,
+        "success": true
+      }
+    },
+    "ripgrep-two-hop-eprint_nothing_searched": {
+      "baseline": {
+        "tool_calls": 3,
+        "tokens_total": 27623,
+        "cost_usd": 0.020412,
+        "duration_ms": 7589,
+        "success": true
+      },
+      "duckgrep-hint": {
+        "tool_calls": 2,
+        "tokens_total": 23049,
+        "cost_usd": 0.015941,
+        "duration_ms": 6085,
+        "success": true
+      }
+    }
+  }
+}
