@@ -101,11 +101,11 @@ def build(a) -> int:
     dropped = {r["id"] for r in rows}
     from .tasks import localization, structural
 
-    if Path.home() in cache.absolute().parents:  # a fresh account may lack ~/.cache: making it is harmless
-        cache.mkdir(parents=True, exist_ok=True)
-    elif not cache.parent.is_dir():  # elsewhere, creating it would put the cache on the wrong disk if a volume
-        print(f"{cache.parent} does not exist: is the cache's volume mounted?", file=sys.stderr)  # is unmounted
-        return 2
+    if not os.environ.get("DUCKGREP_EVAL_CACHE"):  # the default, ~/.cache/code-tasks: a fresh account may lack
+        cache.mkdir(parents=True, exist_ok=True)  # ~/.cache, and making it is harmless
+    elif not cache.parent.is_dir():  # a chosen cache's missing parent is likely an unmounted volume: creating it
+        print(f"{cache.parent} does not exist: is the cache's volume mounted?", file=sys.stderr)  # would put the
+        return 2  # cache on the wrong disk
     drawn = {}
     for kind, builder in (("localization", localization), ("structural", structural)):
         if a.kind in (kind, "all"):
