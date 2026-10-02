@@ -102,8 +102,8 @@ A bare name (`helper()`) resolves only through its file's scope and imports. It 
 
 Full numbers are in [bench/RESULTS.md](bench/RESULTS.md). Headlines:
 
-- **Agents on real tasks (Claude Code with Sonnet 5.5; 3,620 runs on 724 tasks from 25 open-source repos):**
-  - **Structural questions** (494 questions on callers, two-hop callers and importers, in Python and Rust): with duckgrep, agents used 12–19% fewer tool calls, 8–19% fewer round trips and 14–25% less cost than with Claude Code's own tools alone. Accuracy was the same, 93–97%.
+- **Agents on real tasks (Claude Code with Sonnet 5.5; 3,620 runs on 724 tasks):**
+  - **Structural questions** (494 questions on callers, two-hop callers and importers, from 25 open-source Python and Rust repos): with duckgrep, agents used 12–19% fewer tool calls, 8–19% fewer round trips and 14–25% less cost than with Claude Code's own tools alone. Accuracy held: 96% success with duckgrep, against 94% (Python) and 96% (Rust) without.
   - **Finding where to fix an issue** (230 SWE-bench tasks): it saved nothing, since the spot is usually one grep away, and on Python, carrying the tool added 11–13% tokens. Those are cached, so cost was flat.
   - **Serena, measured alongside:** it added 47–58% tokens on structural questions.
 - **Latency (django, 7k files):** a no-op refresh takes ~140 ms, one edited file ~330 ms (+~0.8 s call-graph sync when the query needs it), and typical queries 30–90 ms. On vscode (19.5k files, 6.5M refs) typical queries take 80–370 ms. The full initial index of vscode takes ~2.5 min on 2 cores.
