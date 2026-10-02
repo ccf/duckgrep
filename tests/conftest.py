@@ -13,6 +13,13 @@ def _no_inherited_git_env(monkeypatch):
         monkeypatch.delenv(k)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_eval_cache(monkeypatch, tmp_path):
+    """No test reads or waits on the operator's eval cache: one that doesn't exist yet counts as an outage of its
+    volume, which hung the suite for 45 minutes once the default cache was deleted. A test may set its own."""
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "eval-cache"))
+
+
 @pytest.fixture()
 def repo(tmp_path):
     root = tmp_path / "repo"

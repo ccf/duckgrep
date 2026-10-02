@@ -70,6 +70,7 @@ def draw(builder, volume: Path, **kw) -> list | None:
     """The builder's tasks, drawn while the cache at `volume` stayed readable throughout; None if every try met an
     outage. An outage fails git reads and jedi lookups in ways that look like answers (a file absent at its commit,
     a call nothing resolves), so a draw it overlapped is drawn again, whether it returned or raised."""
+    volume.mkdir(exist_ok=True)  # the first build makes the cache; a missing one is not an outage
     for _ in range(BUILD_TRIES):
         with workspace.watch(volume) as w:
             while w.down() and w.downtime() < config.VOLUME_OUTAGE_LIMIT_S:
@@ -100,6 +101,11 @@ def build(a) -> int:
     dropped = {r["id"] for r in rows}
     from .tasks import localization, structural
 
+    if not os.environ.get("DUCKGREP_EVAL_CACHE"):  # the default, ~/.cache/code-tasks: a fresh account may lack
+        cache.mkdir(parents=True, exist_ok=True)  # ~/.cache, and making it is harmless
+    elif not cache.parent.is_dir():  # a chosen cache's missing parent is likely an unmounted volume: creating it
+        print(f"{cache.parent} does not exist: is the cache's volume mounted?", file=sys.stderr)  # would put the
+        return 2  # cache on the wrong disk
     drawn = {}
     for kind, builder in (("localization", localization), ("structural", structural)):
         if a.kind in (kind, "all"):
