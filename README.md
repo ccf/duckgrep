@@ -214,4 +214,4 @@ The harness, the suites and every number are in the repo: [bench/eval](https://g
 
 ## License
 
-Apache License 2.0. See [LICENSE](https://github.com/ccf/duckgrep/tree/main/LICENSE).
+Apache License 2.0. See [LICENSE](https://github.com/ccf/duckgrep/blob/main/LICENSE).

@@ -64,7 +64,7 @@ default-groups = ["dev", "eval"]  # the eval harness's tests run in the normal s
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["tests/fixture", "bench/eval/scip_pb2.py"]  # test data; generated protobuf code
+extend-exclude = ["tests/fixture", "bench/eval/scip_pb2.py", "*.md"]  # test data; generated protobuf code; docs (the hooks format .py only)
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
