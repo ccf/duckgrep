@@ -23,6 +23,7 @@ The agent A/B harness lives in `bench/eval/`. Its design is in `docs/specs/2026-
 ## Changes
 
 - **Every change lands through a pull request.** Branch from an up-to-date `main`, commit through the pre-commit hook (never `--no-verify`), push, and open the PR. A hook refuses commits on `main`.
+- **CI** (`.github/workflows/ci.yml`) runs on every PR: `lint` (`uv lock --check`, `ruff check`), `format` (`ruff format --check`) and `test (3.10)` / `test (3.13)` (pytest), all through uv with the versions in `uv.lock`. `main` is protected: it takes changes only through a PR whose checks pass.
 - **Every PR is reviewed by Bugbot and Greptile.** Fix what they find that's valid, and answer the rest with evidence.
 - **Correctness of the index:** an incremental index must equal a full rebuild. A change to reference resolution or to what an edit marks dirty needs a test asserting `snapshot(root) == fresh_snapshot(root, tmp_path)` (see `tests/helpers.py`).
 - **New tests** build their repos with `helpers.make_repo`; `tests/fixture/` is data whose line numbers tests assert.
@@ -30,3 +31,14 @@ The agent A/B harness lives in `bench/eval/`. Its design is in `docs/specs/2026-
 - **Copy:** the brand's rules for copy (name, messaging, voice, colour, type) are in [brand/README.md](brand/README.md).
 
 The architecture, the resolution tiers and the gotchas are in [CLAUDE.md](CLAUDE.md).
+
+## Releasing
+
+Releases go to PyPI from `.github/workflows/release.yml`, through PyPI's trusted publishing; there is no token to keep.
+
+1. **Before the first release,** the repo must be public and duckgrep.dev live: PyPI shows the README's links and the project URLs, and a release's description can't be changed without a new version.
+2. In a PR, bump `version` in `pyproject.toml` (and run `uv lock`), then merge it.
+3. Dry run: Actions → release → Run workflow on `main` (`gh workflow run release.yml --ref main`). It runs the tests, builds, and smoke-tests the wheel and its MCP server, without publishing.
+4. Publish a GitHub release from `main`, tagged `v<version>` (for example `v0.1.0`). The workflow checks that the tag matches the version and that the commit is on `main`, repeats the checks, then uploads. A GitHub prerelease needs a prerelease version (`0.2.0rc1`), or the workflow refuses it.
+
+If a release fails before the upload (nothing reaches PyPI until every check passes), delete the GitHub release and its tag, fix `main`, and release the same version again. If only part of an upload landed, rerunning fails with "File already exists"; set `skip-existing: true` on the publish step for that one rerun.
