@@ -179,7 +179,10 @@ def main(argv: list[str] | None = None) -> int:
         if not records:
             print(f"no results in {config.RUNS_DIR / name}")
             return 1
-        text = report.build(records, report.load(config.RUNS_DIR / a.suite / "prepare.jsonl"), name)
+        prepared = report.load(config.RUNS_DIR / a.suite / "prepare.jsonl")
+        text = report.build(
+            records, prepared, name, unrecorded=report.load(config.RUNS_DIR / name / "unrecorded.jsonl")
+        )
         (config.RUNS_DIR / name / "report.md").write_text(text)
         if a.write:
             report.write_section(config.RESULTS_MD, name, text)
