@@ -378,3 +378,16 @@ def test_build_refuses_a_cache_whose_parent_is_missing_rather_than_create_it(tmp
     monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "unmounted" / "cache"))
     assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 2
     assert "unmounted" in capsys.readouterr().err and not (tmp_path / "unmounted").exists()
+
+
+def test_build_creates_a_default_cache_under_home_even_without_its_parent(tmp_path, monkeypatch):
+    # a fresh account may have no ~/.cache yet; only a cache elsewhere (a volume) must already have its parent
+    from bench.eval.tasks import localization
+
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "home" / ".cache" / "code-tasks"))
+    monkeypatch.setattr(localization, "build", lambda **kw: [])
+    assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 0
+    assert (tmp_path / "home" / ".cache" / "code-tasks").is_dir()

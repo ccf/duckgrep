@@ -101,8 +101,10 @@ def build(a) -> int:
     dropped = {r["id"] for r in rows}
     from .tasks import localization, structural
 
-    if not cache.parent.is_dir():  # creating it would put the cache on the wrong disk if a volume is unmounted
-        print(f"{cache.parent} does not exist: is the cache's volume mounted?", file=sys.stderr)
+    if Path.home() in cache.absolute().parents:  # a fresh account may lack ~/.cache: making it is harmless
+        cache.mkdir(parents=True, exist_ok=True)
+    elif not cache.parent.is_dir():  # elsewhere, creating it would put the cache on the wrong disk if a volume
+        print(f"{cache.parent} does not exist: is the cache's volume mounted?", file=sys.stderr)  # is unmounted
         return 2
     drawn = {}
     for kind, builder in (("localization", localization), ("structural", structural)):
