@@ -103,7 +103,7 @@ def card(w, h, t, pad):
     </svg>
     <div class="left"><div class="lock">{lock}</div>
       <div class="lede">Grep finds strings.<br>duckgrep <span class="hl">answers questions.</span></div>
-      <div class="sub">Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so questions that take dozens of greps take one query.</div></div>
+      <div class="sub">Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop.</div></div>
     <div class="term"><span class="p">-- who calls get_or_create, and from which function?</span>
 <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">callers</span>(<span class="str">'</span><span class="m">get_or_create</span><span class="str">'</span>);
 <span class="p">-- django: 1 query, 9 KB (grep: 22 calls, 58 KB)</span></div>

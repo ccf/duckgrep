@@ -2,7 +2,7 @@
 
 **Grep finds strings. duckgrep answers questions.**
 
-Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so questions that take dozens of greps take one query.
+Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop.
 
 ## Why it matters
 

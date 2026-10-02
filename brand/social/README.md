@@ -5,7 +5,7 @@ Link-preview cards. Each shows the lockup, the tagline ("Grep finds strings. duc
 
 ```html
 <meta property="og:title" content="duckgrep">
-<meta property="og:description" content="Grep finds strings. duckgrep answers questions. Give your coding agent a live, queryable model of your codebase, so questions that take dozens of greps take one query.">
+<meta property="og:description" content="Grep finds strings. duckgrep answers questions. Give your coding agent a live, queryable model of your codebase, so structural questions take one query instead of a search loop.">
 <meta property="og:image" content="https://YOUR-DOMAIN/og-image-dark.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
