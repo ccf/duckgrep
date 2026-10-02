@@ -132,6 +132,24 @@ def test_duckgrep_rows_of_a_query_pinned_to_one_file_belong_to_it():
         assert locate.turns_to_locate(query(loose), [visit]) is None, loose
 
 
+def test_pinned_rows_from_outline_joins_and_computed_columns():
+    visit = Target("src/_pytest/assertion/rewrite.py", "AssertionRewriter.visit_Call_35", ((880, 880),))
+    f = "src/_pytest/assertion/rewrite.py"
+
+    def located(sql, tsv):
+        return locate.turns_to_locate(run(("mcp__duckgrep__query", {"sql": sql}, json.dumps({"result": tsv}))), [visit])
+
+    # outline's file column is empty when its argument names one file: those rows are that file's
+    outline = "file\tkind\tqualname\tstart_line\tend_line\n\tmethod\tAssertionRewriter.visit_Call_35\t880\t930"
+    assert located(f"SELECT * FROM outline('{f}')", outline) == 1
+    # a join can pin one table's path and return another table's names
+    joined = f"SELECT b.qualname, b.start_line FROM symbols a JOIN symbols b ON a.name = b.name WHERE a.path = '{f}'"
+    assert located(joined, "qualname\tstart_line\nAssertionRewriter.visit_Call_35\t880") is None
+    # a computed number is not a line number, whatever its name
+    counted = f"SELECT count(*) AS n_lines FROM lines WHERE path = '{f}'"
+    assert located(counted, "n_lines\n880") is None
+
+
 def test_serena_name_paths_locate_impl_and_trait_methods():
     names = Target("compiler-core/src/erlang.rs", "FunctionGenerator.function_arguments_names", ((710, 710),))
     fmt = Target("crates/ignore/src/walk.rs", "WalkBuilder.fmt", ((506, 506),))

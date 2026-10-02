@@ -178,6 +178,8 @@ def pinned_file(sql: str) -> str | None:
     node = statements[0]["node"]
     found = set()
     table = node.get("from_table") or {}
+    if table.get("type") not in ("BASE_TABLE", "TABLE_FUNCTION"):
+        return None  # a join can pin one table's path and return another's columns
     if table.get("type") == "TABLE_FUNCTION" and (table.get("function") or {}).get("function_name") == "outline":
         found |= {f for a in (table["function"].get("children") or []) if (f := _file_constant(a))}
     if file := _pin(node.get("where_clause") or {}):
@@ -187,7 +189,8 @@ def pinned_file(sql: str) -> str | None:
 
 def _duckgrep(result: str, ev: Evidence, sql: str = "") -> None:
     """duckgrep's rows: a path column goes with the line and name columns of its side (dst_* or the rest). Rows
-    with no path column belong to the one file the query pinned, if it pinned one (`pinned_file`).
+    with no path column, or an empty one, belong to the one file the query pinned, if it pinned one
+    (`pinned_file`).
     Its tabs and newlines arrive JSON-escaped, so the text is taken from the decoded rows."""
     try:
         tsv = json.loads(result).get("result", "")
@@ -199,9 +202,9 @@ def _duckgrep(result: str, ev: Evidence, sql: str = "") -> None:
     if not rows:
         return
     head = [h.strip().lower() for h in rows[0]]
-    pinned = None if {"path", "src_path", "dst_path", "file"} & set(head) else pinned_file(sql)
-    if pinned:
-        lines = [i for i, h in enumerate(head) if "line" in h]
+    pinned = pinned_file(sql)
+    if pinned and not {"path", "src_path", "dst_path", "file"} & set(head):
+        lines = [i for i, h in enumerate(head) if h in ("line", "start_line", "end_line")]  # not a computed count
         quals = [i for i, h in enumerate(head) if h in ("qualname", "caller", "scope", "symbol")]
         for row in rows[1:]:
             ev.pairs += [(pinned, int(row[i])) for i in lines if i < len(row) and row[i].strip().isdigit()]
@@ -219,6 +222,7 @@ def _duckgrep(result: str, ev: Evidence, sql: str = "") -> None:
         ]
         for row in rows[1:]:
             path = row[pi].strip() if pi < len(row) else ""
+            path = path or (pinned if not side else "")  # outline leaves its file column empty for one file
             if not path:
                 continue
             ev.pairs += [(path, int(row[i])) for i in lines if i < len(row) and row[i].strip().isdigit()]

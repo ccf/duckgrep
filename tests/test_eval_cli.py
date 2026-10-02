@@ -365,8 +365,16 @@ def test_build_on_a_fresh_machine_creates_the_cache_instead_of_waiting_for_it(tm
     monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
     monkeypatch.setattr(config, "VOLUME_PROBE_S", 0.005)
     monkeypatch.setattr(config, "VOLUME_OUTAGE_LIMIT_S", 0.5)
-    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "fresh" / "cache"))
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "cache"))
     draws = []
     monkeypatch.setattr(localization, "build", lambda **kw: draws.append(1) or [])
     assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 0
-    assert draws == [1] and (tmp_path / "fresh" / "cache").is_dir()
+    assert draws == [1] and (tmp_path / "cache").is_dir()
+
+
+def test_build_refuses_a_cache_whose_parent_is_missing_rather_than_create_it(tmp_path, monkeypatch, capsys):
+    # an unmounted volume: creating /Volumes/research/... on the boot disk would hide the real one when it mounts
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "unmounted" / "cache"))
+    assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 2
+    assert "unmounted" in capsys.readouterr().err and not (tmp_path / "unmounted").exists()
