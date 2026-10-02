@@ -29,7 +29,7 @@ We measured duckgrep with Claude Code (Sonnet 5.5) on 494 structural questions f
 
 **Where it doesn't help:** finding where to fix a bug from an issue report (230 SWE-bench tasks). The issue usually names something one grep finds, so there's nothing to save. Carrying the tool's description added 11–13% tokens on Python; they're cached, so cost stayed flat.
 
-<sub>3,620 runs in all, made on 2026-10-02 with Claude Code 2.1.287. Changes compare each setup with Claude Code alone, task by task, with tool calls and round trips compared as 1 + n. † marks a difference that doesn't hold after correcting for all 160 comparisons. Every duckgrep change in calls, round trips, tokens and cost holds; the correct-answer rates differ by no more than chance in any setup. Full tables, the method and the harness are in [bench/RESULTS.md](bench/RESULTS.md) and [bench/eval](bench/eval).</sub>
+<sub>3,620 runs in all, made on 2026-10-02 with Claude Code 2.1.287. Changes compare each setup with Claude Code alone, task by task, with tool calls and round trips compared as 1 + n. † marks a difference that doesn't hold after correcting for all 160 comparisons. Every duckgrep change in calls, round trips, tokens and cost holds; the correct-answer rates differ by no more than chance in any setup. Full tables, the method and the harness are in [bench/RESULTS.md](https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md) and [bench/eval](https://github.com/ccf/duckgrep/tree/main/bench/eval).</sub>
 
 ## Why it matters
 
@@ -64,7 +64,7 @@ Languages: Python, TypeScript/TSX, JavaScript, Go, Rust. Every other text file i
 ## Install
 
 ```bash
-uv tool install git+ssh://git@github.com/ccf/duckgrep
+uv tool install duckgrep
 ```
 
 ### Claude Code
@@ -136,7 +136,7 @@ A bare name (`helper()`) resolves only through its file's scope and imports. It 
 <details>
 <summary><b>How accurate is the call graph?</b></summary>
 
-Measured against jedi's goto-definition on sampled calls in Python repos ([bench/RESULTS.md](bench/RESULTS.md)):
+Measured against jedi's goto-definition on sampled calls in Python repos ([bench/RESULTS.md](https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md)):
 
 | repo | calls with an in-repo target | resolved confidently | precision |
 |---|---:|---:|---:|
@@ -144,7 +144,7 @@ Measured against jedi's goto-definition on sampled calls in Python repos ([bench
 | freqtrade | 1,646 | 71.9% | 100% |
 | requests | 55 | 85.5% | 100% |
 
-The rest fall to `name`, `ambiguous` or `unresolved`, which say so rather than guess. Calls on local variables are the main gap; see the [roadmap](docs/roadmap.md).
+The rest fall to `name`, `ambiguous` or `unresolved`, which say so rather than guess. Calls on local variables are the main gap; see the [roadmap](https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md).
 </details>
 
 <details>
@@ -204,14 +204,14 @@ duckgrep pays off when the question is about how code connects.
   - Issue localization from SWE-bench Lite, Multilingual and Live, with keys from the fix patches.
 - **The statistics:** each setup is paired with plain Claude Code task by task, with bootstrap intervals and a Holm correction across all comparisons.
 
-The harness, the suites and every number are in the repo: [bench/eval](bench/eval) and [bench/RESULTS.md](bench/RESULTS.md).
+The harness, the suites and every number are in the repo: [bench/eval](https://github.com/ccf/duckgrep/tree/main/bench/eval) and [bench/RESULTS.md](https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md).
 </details>
 
 ## Roadmap and contributing
 
-- **[docs/roadmap.md](docs/roadmap.md):** what's next and the known gaps.
-- **[CONTRIBUTING.md](CONTRIBUTING.md):** how to set up, test and benchmark.
+- **[docs/roadmap.md](https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md):** what's next and the known gaps.
+- **[CONTRIBUTING.md](https://github.com/ccf/duckgrep/blob/main/CONTRIBUTING.md):** how to set up, test and benchmark.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](https://github.com/ccf/duckgrep/tree/main/LICENSE).

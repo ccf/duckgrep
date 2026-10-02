@@ -1,0 +1,75 @@
+# Publish to PyPI when a GitHub release is published. PyPI trusts this workflow
+# (trusted publishing: project duckgrep, owner ccf, repo duckgrep, workflow
+# release.yml, environment pypi), so there is no token to store.
+# Run it by hand (workflow_dispatch) to build and smoke-test without publishing.
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+
+      - name: The release tag names the package version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="$(uv version --short)"
+          if [ "$TAG" != "v$version" ]; then
+            echo "release tag $TAG does not match pyproject version $version (expected v$version)" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: uv build
+
+      - name: Smoke-test the wheel in a clean environment
+        run: |
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke" dist/*.whl
+          bin="$RUNNER_TEMP/smoke/bin"
+          "$bin/duckgrep" schema > /dev/null
+          repo="$RUNNER_TEMP/repo"
+          cp -R tests/fixture "$repo"
+          git -C "$repo" init -q
+          git -C "$repo" add -A
+          git -C "$repo" -c user.name=ci -c user.email=ci@example.invalid commit -qm fixture
+          "$bin/duckgrep" -C "$repo" index
+          n="$("$bin/duckgrep" -C "$repo" q "SELECT count(*) FROM symbols" | tail -1)"
+          echo "symbols: $n"
+          [ "$n" -gt 0 ]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/duckgrep/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

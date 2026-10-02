@@ -30,3 +30,11 @@ The agent A/B harness lives in `bench/eval/`. Its design is in `docs/specs/2026-
 - **Copy:** the brand's rules for copy (name, messaging, voice, colour, type) are in [brand/README.md](brand/README.md).
 
 The architecture, the resolution tiers and the gotchas are in [CLAUDE.md](CLAUDE.md).
+
+## Releasing
+
+Releases go to PyPI from `.github/workflows/release.yml`, through PyPI's trusted publishing; there is no token to keep.
+1. In a PR, bump `version` in `pyproject.toml` (and run `uv lock`), then merge it.
+2. Publish a GitHub release from `main`, tagged `v<version>` (for example `v0.1.0`). The workflow checks that the tag matches the version, builds, installs the wheel in a clean environment and runs a smoke test, then uploads.
+
+Running the workflow by hand (Actions → release → Run workflow) builds and smoke-tests without publishing.

@@ -22,6 +22,21 @@ dependencies = [
     "mcp>=1.2,<2",  # mcp 2 renamed FastMCP to MCPServer; migrate on purpose
 ]
 
+keywords = ["code search", "coding agents", "mcp", "duckdb", "tree-sitter", "call graph"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://duckgrep.dev"
+Repository = "https://github.com/ccf/duckgrep"
+Results = "https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md"
+Roadmap = "https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md"
+
 [project.scripts]
 duckgrep = "duckgrep.cli:main"
 duckgrep-mcp = "duckgrep.mcp_server:main"
