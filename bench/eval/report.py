@@ -324,7 +324,7 @@ def _changed(path: str) -> str:
     return "Python bytecode" if "__pycache__/" in path or path.endswith(".pyc") else path
 
 
-def summary(records: list[dict]) -> list[str]:
+def summary(records: list[dict], unrecorded: list[dict] = ()) -> list[str]:
     n = len(records)
     happened = [
         (sum(not r["config_ok"] for r in records), "failed the configuration check twice (excluded)"),
@@ -353,12 +353,20 @@ def summary(records: list[dict]) -> list[str]:
         f" Cost ${cost:,.2f} at list rates (Claude Code billed ${cli:,.2f}). Claude Code {', '.join(versions)}; "
         f"model {', '.join(models)}."
     )
+    if unrecorded:  # interrupted, failed, retried or taken-back attempts: charged, never scored
+        extra = sum(u["cost_usd"] for u in unrecorded)
+        text += (
+            f" {len(unrecorded)} {'attempt that was' if len(unrecorded) == 1 else 'attempts that were'} not recorded"
+            f" spent ${extra:,.2f} more, ${cli + extra:,.2f} in all."
+        )
     return [text, ""]
 
 
-def build(records: list[dict], prepared: list[dict], name: str, seed: int = config.SEED) -> str:
+def build(
+    records: list[dict], prepared: list[dict], name: str, seed: int = config.SEED, unrecorded: list[dict] = ()
+) -> str:
     found = comparisons(records, seed)
-    lines = [f"## A/B evaluation: {name}", ""] + summary(records) + reading(found)
+    lines = [f"## A/B evaluation: {name}", ""] + summary(records, unrecorded) + reading(found)
     for title in [t for *_, t in TABLES] + ["Rust localization, post-cutoff issues"]:
         lines += metric_table(found, title)
     lines += adoption_table(records) + repo_table(records) + variance_table(records) + setup_costs(prepared)

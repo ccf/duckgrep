@@ -237,6 +237,16 @@ def test_the_summary_names_what_happened_and_skips_what_did_not():
     assert "Python bytecode (1 run)" in text and "pkg/" not in text  # every __pycache__ is one item
 
 
+def test_the_cost_counts_what_attempts_that_were_not_recorded_spent():
+    rows = [rec("a", "baseline"), rec("a", "serena")]
+    listed = sum(r["cost_usd"] for r in rows)
+    unrecorded = [{"why": "interrupted", "cost_usd": 0.03}, {"why": "infrastructure error", "cost_usd": 0.0}]
+    text = "\n".join(report.summary(rows, unrecorded))
+    assert f"${listed + 0.03:,.2f} in all" in text and "2 attempts that were not recorded" in text
+    assert "not recorded" not in "\n".join(report.summary(rows))  # nothing to say without them
+    assert "not recorded" in report.build(rows, [], "x", unrecorded=unrecorded)
+
+
 def test_setup_costs_show_a_dash_where_a_size_was_not_recorded():
     rows = [
         {"setup": "duckgrep", "index_seconds": 2.0, "index_mb": 5.0},

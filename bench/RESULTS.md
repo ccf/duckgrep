@@ -75,11 +75,11 @@ The pilot's question, asked at scale: does a Claude Code agent find code with fe
 - **Runs:** one repetition of each task and setup, 3,620 runs in all, made on 2026-10-02.
   - Everything was pinned: harness c8264ef, Claude Code 2.1.287, Sonnet 5.5 at medium effort.
   - All 3,620 were recorded, for $124.70. One ended at the turn or budget cap.
-  - The first invocation was stopped after 1,140 runs and resumed. The run it cut short was charged and redone.
+  - The first invocation was stopped after 1,140 runs and resumed. The run it cut short was charged ($0.03) and redone, so the batch spent $124.73 in all.
 - **Statistics:** each comparison pairs a setup with the baseline task by task. "Significant" below means it survives the Holm correction across all 160 comparisons.
 
 **Findings.**
-- **Structural questions: duckgrep is a clear win.** Every efficiency measure improves significantly, on both languages, with and without the hint. Accuracy is unchanged: 94% to 97% success in every setup.
+- **Structural questions: duckgrep is a clear win.** Every efficiency measure improves significantly, on both languages, with and without the hint, except Rust tokens without the hint (×0.96). Accuracy is unchanged: success is 93% to 97% in every setup, against the baseline's 94% and 96%.
 
   | vs baseline | Python, duckgrep | Python, duckgrep-hint | Rust, duckgrep | Rust, duckgrep-hint |
   |---|---|---|---|---|
@@ -393,7 +393,7 @@ How to read the tables: each row pairs a setup with the baseline task by task, a
 <!-- eval:full -->
 ## A/B evaluation: full
 
-3620 runs: 1 ended in an error (turn or budget cap). 211 left files in their worktree, all restored after the run: Python bytecode (159 runs), Cargo.lock (52 runs). Cost $124.70 at list rates (Claude Code billed $124.70). Claude Code 2.1.287; model claude-sonnet-5-5.
+3620 runs: 1 ended in an error (turn or budget cap). 211 left files in their worktree, all restored after the run: Python bytecode (159 runs), Cargo.lock (52 runs). Cost $124.70 at list rates (Claude Code billed $124.70). Claude Code 2.1.287; model claude-sonnet-5-5. 1 attempt that was not recorded spent $0.03 more, $124.73 in all.
 
 How to read the tables: each row pairs a setup with the baseline task by task, a task's repetitions averaged first. Tokens and cost are compared as ratios of geometric means; tool calls and round trips as ratios on log(1 + n), that is of 1 + n; turns to locate, located, success and F1 as differences, shares in percentage points. Intervals are 95% bootstrap intervals over tasks. p is a Wilcoxon signed-rank test and p (Holm) corrects it across all 160 comparisons in the report.
 
