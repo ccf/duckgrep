@@ -188,12 +188,19 @@ def test_race_claims_match_snapshot():
         assert abs(ratio - snap["median_cost_ratio"]) < 0.03, "the replayed run is no longer typical"
 
 
-def test_wrangler_serves_the_build_output():
-    """Cloudflare deploys what wrangler.jsonc points at; it must be what site/build.sh writes."""
+def test_wrangler_serves_the_build_output(tmp_path):
+    """Cloudflare deploys the directory wrangler.jsonc names; the default build must write the site there,
+    with its _headers. Built in a copy of the repo, so the test doesn't touch the checkout's _site/."""
+    import shutil
+
+    for part in ("site", "brand"):
+        shutil.copytree(ROOT / part, tmp_path / part)
+    subprocess.run(["sh", str(tmp_path / "site/build.sh")], check=True, capture_output=True)
     text = "\n".join(
         ln for ln in (ROOT / "wrangler.jsonc").read_text().splitlines() if not ln.lstrip().startswith("//")
     )
     config = json.loads(text)
-    assert config["assets"]["directory"] == "./_site"
-    assert 'OUT="${1:-_site}"' in (ROOT / "site/build.sh").read_text()
     assert "main" not in config  # static assets only: no Worker script
+    served = tmp_path / config["assets"]["directory"]
+    for name in ("index.html", "site.css", "site.js", "_headers", "favicon.svg", "brand/tokens.css"):
+        assert (served / name).is_file(), f"{name} is not in {config['assets']['directory']}"
