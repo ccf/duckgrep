@@ -247,6 +247,13 @@ def test_the_cost_counts_what_attempts_that_were_not_recorded_spent():
     assert "not recorded" in report.build(rows, [], "x", unrecorded=unrecorded)
 
 
+def test_the_cost_counts_an_attempt_a_configuration_retry_discarded():
+    rows = [rec("a", "baseline"), {**rec("a", "serena"), "discarded_cost_usd": 0.05}]
+    billed = sum(r["cli_cost_usd"] for r in rows)
+    text = "\n".join(report.summary(rows))
+    assert f"${billed + 0.05:,.2f} in all" in text and "1 attempt that was not recorded" in text
+
+
 def test_setup_costs_show_a_dash_where_a_size_was_not_recorded():
     rows = [
         {"setup": "duckgrep", "index_seconds": 2.0, "index_mb": 5.0},

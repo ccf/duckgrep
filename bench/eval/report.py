@@ -353,10 +353,14 @@ def summary(records: list[dict], unrecorded: list[dict] = ()) -> list[str]:
         f" Cost ${cost:,.2f} at list rates (Claude Code billed ${cli:,.2f}). Claude Code {', '.join(versions)}; "
         f"model {', '.join(models)}."
     )
-    if unrecorded:  # interrupted, failed, retried or taken-back attempts: charged, never scored
-        extra = sum(u["cost_usd"] for u in unrecorded)
+    # charged but never scored: attempts in unrecorded.jsonl (interrupted, failed, retried, taken back) and the
+    # first attempt of a run whose configuration check failed, which its record carries
+    discarded = [r["discarded_cost_usd"] for r in records if r.get("discarded_cost_usd")]
+    if unrecorded or discarded:
+        n = len(unrecorded) + len(discarded)
+        extra = sum(u["cost_usd"] for u in unrecorded) + sum(discarded)
         text += (
-            f" {len(unrecorded)} {'attempt that was' if len(unrecorded) == 1 else 'attempts that were'} not recorded"
+            f" {n} {'attempt that was' if n == 1 else 'attempts that were'} not recorded"
             f" spent ${extra:,.2f} more, ${cli + extra:,.2f} in all."
         )
     return [text, ""]
