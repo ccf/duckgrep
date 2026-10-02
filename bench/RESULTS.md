@@ -145,6 +145,15 @@ The pilot's question, asked at scale: does a Claude Code agent find code with fe
 - **The failure audit:** the spec's audit of failed runs on a sample hasn't been done yet.
 - **Tool-definition tokens:** a smaller schema in the description, or one loaded on demand, would cut what every request pays.
 
+### Replayed runs
+
+The website replays two pairs of runs from repetition 1, Claude Code alone (`baseline`) against `duckgrep-hint`. They were chosen as typical, not as the best case:
+- Across the 453 structural questions both setups answered correctly, the median cost ratio (duckgrep-hint ÷ baseline) is 0.762.
+- `flask-callers-show_server_banner`: 0.773, rank 232 of 453. 3 calls, 26,661 tokens and $0.0182 alone; 2 calls, 22,740 tokens and $0.0141 with duckgrep.
+- `ripgrep-two-hop-eprint_nothing_searched`: 0.781, rank 238 of 453. 3 calls, 27,623 tokens and $0.0204 alone; 2 calls, 23,049 tokens and $0.0159 with duckgrep.
+
+`site/tools/extract_replay.py` renders them from the saved transcripts.
+
 ## A/B evaluation: pilot findings (2026-09-30)
 
 The question: does a Claude Code agent find code with fewer tool calls, tokens and round trips when it has duckgrep, without losing accuracy? And how does Serena compare? The design is in `docs/specs/2026-09-29-ab-eval-harness-design.md` and the harness in `bench/eval/`.
