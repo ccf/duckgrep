@@ -74,9 +74,12 @@ jobs:
           n="$("$bin/duckgrep" -C "$repo" q "SELECT count(*) FROM symbols" | tail -1)"
           echo "symbols: $n"
           [ "$n" -gt 0 ]
-          # the MCP server is how agents use it: start it over stdio and list its tools
+          # the MCP server is how agents use it: start it over stdio, list its tool, and check that a
+          # call-graph query answers with the fixture's one caller of slugify (the script's second query
+          # is a deliberate error, to show how errors come back)
           PATH="$bin:$PATH" "$bin/python" bench/mcp_smoke.py "$repo" | tee "$RUNNER_TEMP/mcp.txt"
           grep -q '^query |' "$RUNNER_TEMP/mcp.txt"
+          grep -qF "$(printf 'pkg/core.py\t21\tEngine.__init__\tcall\t\timport\tslugify')" "$RUNNER_TEMP/mcp.txt"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
