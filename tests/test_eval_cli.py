@@ -356,3 +356,17 @@ def test_a_draw_that_fails_while_the_cache_is_readable_still_fails(tmp_path, mon
 
     with pytest.raises(FileNotFoundError, match="a real fault"):
         watched_build(tmp_path, monkeypatch, draw)
+
+
+def test_build_on_a_fresh_machine_creates_the_cache_instead_of_waiting_for_it(tmp_path, monkeypatch):
+    # the watch counts a missing cache as an outage; before the first build there is none yet
+    from bench.eval.tasks import localization
+
+    monkeypatch.setattr(config, "SUITES_DIR", tmp_path)
+    monkeypatch.setattr(config, "VOLUME_PROBE_S", 0.005)
+    monkeypatch.setattr(config, "VOLUME_OUTAGE_LIMIT_S", 0.5)
+    monkeypatch.setenv("DUCKGREP_EVAL_CACHE", str(tmp_path / "fresh" / "cache"))
+    draws = []
+    monkeypatch.setattr(localization, "build", lambda **kw: draws.append(1) or [])
+    assert cli.main(["--suite", "x", "build", "--kind", "localization"]) == 0
+    assert draws == [1] and (tmp_path / "fresh" / "cache").is_dir()

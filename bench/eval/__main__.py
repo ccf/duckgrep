@@ -70,6 +70,7 @@ def draw(builder, volume: Path, **kw) -> list | None:
     """The builder's tasks, drawn while the cache at `volume` stayed readable throughout; None if every try met an
     outage. An outage fails git reads and jedi lookups in ways that look like answers (a file absent at its commit,
     a call nothing resolves), so a draw it overlapped is drawn again, whether it returned or raised."""
+    volume.mkdir(parents=True, exist_ok=True)  # the first build makes the cache; a missing one is not an outage
     for _ in range(BUILD_TRIES):
         with workspace.watch(volume) as w:
             while w.down() and w.downtime() < config.VOLUME_OUTAGE_LIMIT_S:
