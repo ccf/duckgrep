@@ -2,8 +2,8 @@
 
 For each question we count tool calls and output bytes (≈ tokens × 4) an agent would
 consume. The grep side is simulated generously: every rg call is exact, and "read the
-file to find the enclosing function" is counted as one call per distinct file (its bytes
-are not counted, which flatters grep).
+file to find the enclosing function" is counted as one call per distinct file, whose bytes
+are only those of the enclosing functions, each once (not the whole file, which flatters grep).
 
 usage: python bench/vs_grep.py <django-checkout>
 """

@@ -23,7 +23,7 @@ We measured duckgrep with Claude Code (Sonnet 5.5) on 494 structural questions f
 | Cost | $0.0299 | $0.0336 (+12%) | **$0.0226 (−25%)** |
 | Correct answers | 96% | 96% | **96%** |
 
-**About a fifth less work and a quarter less cost, with answers just as accurate.**
+**12–19% less work and a quarter less cost, with answers just as accurate.**
 - **Why:** duckgrep answers "who calls this, and from which function" in one call. A grep hit gives a line, and the agent then has to read around it to find the function.
 - **Without the instruction,** agents still chose duckgrep for 75% of these questions. They cut tool calls by 12–19% and cost by 14–18%.
 
@@ -35,7 +35,7 @@ We measured duckgrep with Claude Code (Sonnet 5.5) on 494 structural questions f
 
 Coding agents find their way around a codebase with chains of `grep` → read file → `grep` again. That works for "where is this string." But the questions that matter when changing code are structural: *who calls this, what does it call, what breaks if I change it, what's dead*. Each one turns into a loop of searches, file reads and guesses, paid for in turns and tokens.
 
-- **It answers structural questions, not text matches.** "Who calls this, and from which function?" is one query, not a search loop. On django, finding every call to `get_or_create` and the function it sits in took 22 grep calls and 58 KB of output, most of it docs, comments and whole files. duckgrep answered it in one query and 9 KB.
+- **It answers structural questions, not text matches.** "Who calls this, and from which function?" is one query, not a search loop. On django, finding every call to `get_or_create` and the function it sits in took 22 calls (one grep, then 21 file reads to find the enclosing functions) and 58 KB of output. duckgrep answered it in one query and 9 KB.
 - **It answers questions no tool author anticipated.** Code-navigation tools give agents a fixed menu: find definition, find references. duckgrep gives them a query language. "Public functions in `pricing/` with no callers outside their module" isn't a feature anyone built; the agent just writes the query.
 - **It joins code with its history.** The call graph, git churn and authorship sit in the same place, so an agent can ask "what's risky to change here," which text search can't answer.
 - **It's trustworthy mid-edit.** The index refreshes before every query, so it reflects the agent's latest edits. Every call-graph edge says how it was resolved, so the agent knows when to trust the graph and when to go read the code.

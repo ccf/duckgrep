@@ -1,0 +1,600 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-02T18:26:49+00:00",
+  "title": "Design System: duckgrep.dev",
+  "extensions": {
+    "tokenSource": "brand/tokens.json (generated to brand/tokens.css); components from brand/components.css. Edit values there, not here.",
+    "colorMeta": {
+      "duck-yellow": {
+        "role": "primary",
+        "displayName": "Duck Yellow",
+        "purpose": "The one primary button per view; the mark.",
+        "canonical": "#fff100",
+        "dark": "#fff100",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0d0c00",
+          "#292603",
+          "#484401",
+          "#6a6406",
+          "#8d861a",
+          "#b2a925",
+          "#dace27",
+          "#fef46d"
+        ]
+      },
+      "duck-yellow-hover": {
+        "role": "primary",
+        "displayName": "Duck Yellow, pressed",
+        "purpose": "Primary button hover.",
+        "canonical": "#eddd0c",
+        "dark": "#eddd0c",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0d0c00",
+          "#292602",
+          "#49440a",
+          "#6b6302",
+          "#8f8516",
+          "#b4a921",
+          "#dcce21",
+          "#fef379"
+        ]
+      },
+      "on-yellow": {
+        "role": "primary",
+        "displayName": "Ink on Yellow",
+        "purpose": "Text on any yellow fill.",
+        "canonical": "#0d0d0d",
+        "dark": "#0d0d0d",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "match-bg": {
+        "role": "primary",
+        "displayName": "Highlighter Yellow",
+        "purpose": "Match highlight: the tagline's answer, asked-about symbols, selection.",
+        "canonical": "#fff100",
+        "dark": "#454100",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0d0c00",
+          "#292603",
+          "#484401",
+          "#6a6406",
+          "#8d861a",
+          "#b2a925",
+          "#dace27",
+          "#fef46d"
+        ]
+      },
+      "match-ink": {
+        "role": "primary",
+        "displayName": "Highlighter Ink",
+        "purpose": "Text inside a match highlight.",
+        "canonical": "#0d0d0d",
+        "dark": "#fff866",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "purpose": "Page ground.",
+        "canonical": "#fcfcfc",
+        "dark": "#0d0d0d",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "surface-raised": {
+        "role": "neutral",
+        "displayName": "Raised White",
+        "purpose": "Meter strips, the duckgrep results column, the tab track.",
+        "canonical": "#ffffff",
+        "dark": "#1a1a1a",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "surface-code": {
+        "role": "neutral",
+        "displayName": "Code Paper",
+        "purpose": "Terminals, lanes, commands, inline code.",
+        "canonical": "#f7f7f7",
+        "dark": "#141414",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "purpose": "Text, selected tab fill, emphasis rules.",
+        "canonical": "#0d0d0d",
+        "dark": "#f2f2f2",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "ink-muted": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "purpose": "Secondary text, deltas, table headers.",
+        "canonical": "#666666",
+        "dark": "#b2b2b2",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "purpose": "Every container edge and row rule.",
+        "canonical": "#e6e6e6",
+        "dark": "#333333",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Strong Hairline",
+        "purpose": "The duckgrep lane edge, group rules, step discs, idle status dot.",
+        "canonical": "#808080",
+        "dark": "#808080",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "link": {
+        "role": "neutral",
+        "displayName": "Olive Link",
+        "purpose": "Links, underlined on hover.",
+        "canonical": "#665d00",
+        "dark": "#fff100",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0e0c00",
+          "#2a2600",
+          "#4a4304",
+          "#6c630c",
+          "#8d8537",
+          "#b0a85b",
+          "#d5cc7f",
+          "#faf2a3"
+        ]
+      },
+      "focus": {
+        "role": "neutral",
+        "displayName": "Focus Blue",
+        "purpose": "2px focus ring at 2px offset.",
+        "canonical": "#357197",
+        "dark": "#61c2ff",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#000d18",
+          "#02283d",
+          "#0b4767",
+          "#2b678d",
+          "#4e89b1",
+          "#70add6",
+          "#94d2fc",
+          "#e0f1fe"
+        ]
+      },
+      "code-keyword": {
+        "role": "tertiary",
+        "displayName": "Keyword Blue",
+        "purpose": "SQL keywords and paths in terminals.",
+        "canonical": "#005fff",
+        "dark": "#5fafff",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#000728",
+          "#011e5d",
+          "#043897",
+          "#0c53d6",
+          "#3379fe",
+          "#74a4fc",
+          "#aecafc",
+          "#e6effe"
+        ]
+      },
+      "code-string": {
+        "role": "tertiary",
+        "displayName": "String Amber",
+        "purpose": "SQL strings.",
+        "canonical": "#875f00",
+        "dark": "#ffd700",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#120900",
+          "#332100",
+          "#573d03",
+          "#7e5a0b",
+          "#a47a2c",
+          "#c89d52",
+          "#eec276",
+          "#feeccf"
+        ]
+      },
+      "code-number": {
+        "role": "tertiary",
+        "displayName": "Number Magenta",
+        "purpose": "SQL numbers.",
+        "canonical": "#b8009a",
+        "dark": "#ff00ff",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#1b0015",
+          "#430337",
+          "#700e5e",
+          "#a6038a",
+          "#d230b2",
+          "#fb5bd7",
+          "#fcabe5",
+          "#ffe6f7"
+        ]
+      },
+      "code-function": {
+        "role": "tertiary",
+        "displayName": "Function Green",
+        "purpose": "Functions and line numbers; done status dot and the correct verdict.",
+        "canonical": "#007a00",
+        "dark": "#00af00",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#001000",
+          "#012f01",
+          "#085107",
+          "#147611",
+          "#359a31",
+          "#5cbf56",
+          "#82e57a",
+          "#cdfec8"
+        ]
+      },
+      "code-comment": {
+        "role": "tertiary",
+        "displayName": "Comment Grey",
+        "purpose": "The $ prompt and agent notes.",
+        "canonical": "#626262",
+        "dark": "#888888",
+        "source": "brand/tokens.json",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The tagline only, once per page; larger and tighter than brand type-display."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section titles, sentence case."
+      },
+      "claim": {
+        "displayName": "Claim",
+        "purpose": "The headline number sentence in What it saves."
+      },
+      "question": {
+        "displayName": "Question",
+        "purpose": "The race's question and result lines."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Reason and install step heads."
+      },
+      "body-lg": {
+        "displayName": "Lede",
+        "purpose": "Section ledes and the hero subhead."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Running text."
+      },
+      "small": {
+        "displayName": "Small",
+        "purpose": "Race notes, fine print, footer."
+      },
+      "numeral": {
+        "displayName": "Meter Numeral",
+        "purpose": "Lane totals; tabular mono."
+      },
+      "command": {
+        "displayName": "Command",
+        "purpose": "Copyable commands and results table cells."
+      },
+      "terminal": {
+        "displayName": "Terminal",
+        "purpose": "Race steps and how-it-works terminals."
+      },
+      "output": {
+        "displayName": "Output",
+        "purpose": "Verbatim tool output inside a step."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase terminal bar captions and step tool names."
+      }
+    },
+    "shadows": [
+      {
+        "name": "column-hairline",
+        "value": "inset 1px 0 0 var(--border), inset -1px 0 0 var(--border)",
+        "purpose": "Side hairlines on the duckgrep results column; a border, not elevation. The system has no drop shadows."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Step reveals, result and delta reveals, FAQ plus rotation."
+      },
+      {
+        "name": "step-reveal",
+        "value": "opacity 0.45s, clip-path inset(0 0 100% 0) → 0 over 0.55s",
+        "purpose": "A race step landing at its recorded offset (data-ms)."
+      },
+      {
+        "name": "result-reveal",
+        "value": "opacity and translateY(6px) → 0 over 0.6s, 400ms after both lanes finish",
+        "purpose": "Deltas and the result sentence."
+      },
+      {
+        "name": "counter-tween",
+        "value": "500ms, 1 - 2^(-10t)",
+        "purpose": "Meter values ticking to the recorded totals."
+      },
+      {
+        "name": "status-pulse",
+        "value": "opacity 1 → 0.25, 1.1s ease-in-out, only while a lane runs",
+        "purpose": "The one repeating motion; stops when the lane finishes."
+      },
+      {
+        "name": "faq-toggle",
+        "value": "rotate(45deg) over 0.25s",
+        "purpose": "Plus to cross on open."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "no replay; final state; no smooth scroll",
+        "purpose": "prefers-reduced-motion: reduce."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "column",
+        "value": "1120px",
+        "purpose": "Content column max width."
+      },
+      {
+        "name": "race",
+        "value": "1360px",
+        "purpose": "The race lanes' wider frame."
+      },
+      {
+        "name": "narrow",
+        "value": "760px",
+        "purpose": "Lanes stack, grids go single-column, nav trims."
+      },
+      {
+        "name": "phone",
+        "value": "560px",
+        "purpose": "Results table fixes its layout, deltas drop under values, commands wrap."
+      },
+      {
+        "name": "small-phone",
+        "value": "420px",
+        "purpose": "Hero command takes full width."
+      }
+    ],
+    "darkTheme": "Follows prefers-color-scheme; html[data-theme] forces either. Dark values are in colorMeta.*.dark."
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one yellow action per view (the hero's Copy).",
+      "html": "<button class=\"ds-btn ds-btn-primary\" type=\"button\">Copy</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;height:32px;min-width:72px;padding:0 12px;border-radius:var(--radius-md);border:1px solid transparent;font:600 14px/1 var(--font-sans);cursor:pointer;white-space:nowrap}.ds-btn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}.ds-btn-primary{background:var(--duck-yellow);color:var(--on-yellow)}.ds-btn-primary:hover{background:var(--duck-yellow-hover)}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Replay and every Copy that is not the view's primary.",
+      "html": "<button class=\"ds-btn2\" type=\"button\">Replay</button>",
+      "css": ".ds-btn2{display:inline-flex;align-items:center;height:32px;padding:0 12px;border-radius:var(--radius-md);border:1px solid var(--border-strong);background:transparent;color:var(--ink);font:600 14px/1 var(--font-sans);cursor:pointer}.ds-btn2:hover{background:var(--surface-raised);border-color:var(--ink)}.ds-btn2:focus-visible{outline:2px solid var(--focus);outline-offset:2px}"
+    },
+    {
+      "name": "Command",
+      "kind": "input",
+      "refersTo": "command",
+      "description": "A copyable shell command with its Copy button docked inside.",
+      "html": "<div class=\"ds-cmd\"><code class=\"ds-cmd__text\"><span class=\"ds-cmd__prompt\">$</span> uv tool install duckgrep</code><button class=\"ds-cmd__copy\" type=\"button\">Copy</button></div>",
+      "css": ".ds-cmd{display:flex;align-items:center;gap:16px;max-width:100%;padding:4px 4px 4px 16px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-code)}.ds-cmd__text{flex:1 1 auto;min-width:0;font:400 15px/22px var(--font-mono);color:var(--ink);white-space:nowrap;overflow-x:auto;font-variant-ligatures:none}.ds-cmd__prompt{color:var(--code-comment);margin-right:.5ch;user-select:none}.ds-cmd__copy{min-width:72px;height:32px;padding:0 12px;border:1px solid transparent;border-radius:var(--radius-md);background:var(--duck-yellow);color:var(--on-yellow);font:600 14px/1 var(--font-sans);cursor:pointer}.ds-cmd__copy:hover{background:var(--duck-yellow-hover)}.ds-cmd__copy:focus-visible{outline:2px solid var(--focus);outline-offset:2px}"
+    },
+    {
+      "name": "Question Tabs",
+      "kind": "nav",
+      "refersTo": "tab-selected",
+      "description": "Pill tabs that switch the replayed question.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\">Python · flask</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">Rust · ripgrep</button></div>",
+      "css": ".ds-tabs{display:inline-flex;padding:3px;gap:2px;border:1px solid var(--border);border-radius:var(--radius-pill);background:var(--surface-raised)}.ds-tab{height:32px;padding:0 14px;border:0;border-radius:var(--radius-pill);background:transparent;color:var(--ink-muted);font:600 14px/1 var(--font-sans);cursor:pointer}.ds-tab:hover{color:var(--ink)}.ds-tab[aria-selected=true]{background:var(--ink);color:var(--surface)}.ds-tab:focus-visible{outline:2px solid var(--focus);outline-offset:2px}"
+    },
+    {
+      "name": "Race Lane",
+      "kind": "custom",
+      "refersTo": "lane",
+      "description": "Signature: one recorded agent run as a terminal with status, meter strip and steps.",
+      "html": "<figure class=\"ds-lane\"><figcaption class=\"ds-lane__bar\">Claude Code + duckgrep<span class=\"ds-lane__status\">done in 4.4 s</span></figcaption><dl class=\"ds-meter\"><div><dt>tool calls</dt><dd>2<span class=\"ds-d\">−1</span></dd></div><div><dt>tokens</dt><dd>22.7k<span class=\"ds-d\">−15%</span></dd></div><div><dt>cost</dt><dd>$0.0141<span class=\"ds-d\">−23%</span></dd></div></dl><ol class=\"ds-steps\"><li><p class=\"ds-call\"><span class=\"ds-tool\">Query</span><code>SELECT * FROM callers('<mark class=\"ds-match\">show_server_banner</mark>')</code></p></li><li><p class=\"ds-call ds-answer\">Flask.run, run_command <span class=\"ds-verdict\">correct</span></p></li></ol></figure>",
+      "css": ".ds-lane{margin:0;max-width:560px;border:1px solid var(--border-strong);border-radius:var(--radius-md);background:var(--surface-code);overflow:hidden;color:var(--ink)}.ds-lane__bar{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);font:700 12px/16px var(--font-mono);letter-spacing:.08em;text-transform:uppercase}.ds-lane__status{display:inline-flex;align-items:center;gap:6px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-muted)}.ds-lane__status::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--code-function)}.ds-meter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:0;border-bottom:1px solid var(--border);background:var(--surface-raised)}.ds-meter>div{padding:12px 16px 14px}.ds-meter>div+div{border-left:1px solid var(--border)}.ds-meter dt{font:400 13px/18px var(--font-sans);color:var(--ink-muted)}.ds-meter dd{margin:2px 0 0;font:700 24px/1.15 var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em;white-space:nowrap}.ds-d{margin-left:6px;font:600 13px/1 var(--font-mono);letter-spacing:0;color:var(--ink-muted)}.ds-steps{margin:0;padding:0 16px;list-style:none;font:400 13px/20px var(--font-mono)}.ds-steps li{padding-block:12px;border-top:1px dashed var(--border)}.ds-steps li:first-child{border-top:0}.ds-call{display:flex;gap:10px;align-items:baseline;margin:0}.ds-call code{font:inherit;font-variant-ligatures:none}.ds-tool{min-width:5ch;font:700 11px/20px var(--font-mono);letter-spacing:.08em;text-transform:uppercase}.ds-answer{font-weight:700}.ds-verdict{padding:0 8px;border-radius:var(--radius-pill);border:1px solid currentColor;color:var(--code-function);font:600 12px/18px var(--font-sans)}.ds-match{background:var(--match-bg);color:var(--match-ink);border-radius:var(--radius-sm);padding:0 1px}"
+    },
+    {
+      "name": "Results Table",
+      "kind": "card",
+      "refersTo": "results-cell-duckgrep",
+      "description": "Plain tabular comparison; only the duckgrep column is emphasised.",
+      "html": "<table class=\"ds-table\"><thead><tr><th>Per question</th><th>Claude Code alone</th><th class=\"is-dg\">+ duckgrep</th></tr></thead><tbody><tr class=\"ds-group\"><th colspan=\"3\">Python <span>237 questions</span></th></tr><tr><th>Tool calls</th><td>3.0</td><td class=\"is-dg\">2.3 <span class=\"ds-d\">−18%</span></td></tr><tr><th>Cost</th><td>$0.0267</td><td class=\"is-dg\">$0.0203 <span class=\"ds-d\">−24%</span></td></tr></tbody></table>",
+      "css": ".ds-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;color:var(--ink)}.ds-table th,.ds-table td{padding:11px 16px;text-align:right;border-bottom:1px solid var(--border)}.ds-table th:first-child{text-align:left}.ds-table thead th{font:600 14px/20px var(--font-sans);color:var(--ink-muted);border-bottom-color:var(--ink);vertical-align:bottom}.ds-table thead th.is-dg{color:var(--ink)}.ds-table tbody th{font:400 16px/24px var(--font-sans)}.ds-table td{font:400 15px/22px var(--font-mono);white-space:nowrap}.ds-table td.is-dg{font-weight:700;background:var(--surface-raised);box-shadow:inset 1px 0 0 var(--border),inset -1px 0 0 var(--border)}.ds-table .ds-d{margin-left:6px;font-size:13px;font-weight:400;color:var(--ink-muted)}.ds-table td.is-dg .ds-d{color:var(--ink)}.ds-table tr.ds-group th{padding-top:32px;font:700 18px/24px var(--font-sans);border-bottom-color:var(--border-strong)}.ds-table tr.ds-group th span{margin-left:8px;font-size:14px;font-weight:400;color:var(--ink-muted)}"
+    },
+    {
+      "name": "Install Step",
+      "kind": "custom",
+      "refersTo": "command",
+      "description": "Numbered disc beside a title, note and command.",
+      "html": "<ol class=\"ds-install\"><li><h3>Add it to Claude Code</h3><p>The server answers at once and builds the index in the background.</p></li></ol>",
+      "css": ".ds-install{margin:0;padding:0;list-style:none;counter-reset:s}.ds-install li{display:grid;grid-template-columns:40px minmax(0,1fr);column-gap:16px;row-gap:8px;counter-increment:s}.ds-install li::before{content:counter(s);grid-row:1/span 2;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--border-strong);font:700 14px/1 var(--font-mono);color:var(--ink)}.ds-install h3{margin:0;font:700 20px/32px var(--font-sans);color:var(--ink)}.ds-install p{margin:0;color:var(--ink-muted);font:400 16px/24px var(--font-sans)}"
+    },
+    {
+      "name": "FAQ Disclosure",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "Native details between hairlines with a drawn plus that turns to a cross.",
+      "html": "<details class=\"ds-faq\"><summary>What can the agent query?</summary><p>Files, symbols, refs, imports, edges, lines and git history.</p></details>",
+      "css": ".ds-faq{max-width:880px;border-block:1px solid var(--border);color:var(--ink)}.ds-faq summary{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 0;font:600 18px/26px var(--font-sans);cursor:pointer;list-style:none}.ds-faq summary::-webkit-details-marker{display:none}.ds-faq summary::after{content:'';flex:none;width:14px;height:14px;background:linear-gradient(currentColor,currentColor) center/14px 2px no-repeat,linear-gradient(currentColor,currentColor) center/2px 14px no-repeat;transition:transform .25s cubic-bezier(0.16,1,0.3,1)}.ds-faq[open] summary::after{transform:rotate(45deg)}.ds-faq summary:hover{text-decoration:underline;text-underline-offset:4px}.ds-faq summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--radius-sm)}.ds-faq p{margin:0;padding-bottom:24px;max-width:72ch;font:400 16px/24px var(--font-sans)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Instrument Panel",
+    "overview": "**Creative North Star: \"The Instrument Panel\"**\n\nThe site is a calibrated readout, not a brochure. One real question is replayed from recorded transcripts in two terminal lanes side by side, with counters that tick up to the recorded totals. Everything around the race (the results table, the reasons, the install steps) is set in the same vocabulary: hairlines, mono numerals and plain tables, with the evidence placed next to the claim.\n\nThe world is DuckDB's, taken from the brand: a near-white `surface` ground, near-black `ink`, hairline `border` edges, no shadows and no gradients that read as gradients. Yellow is spent only on the match highlight and on the one primary button in view. Hanken Grotesk carries every word a person reads; JetBrains Mono carries everything a user could type or an agent could read, and every number that is compared.\n\nDensity changes on purpose. Prose sections are calm, on one 1120px column with lines capped between 46ch and 75ch. The race is the one dense, wide moment: its lanes widen to 1360px, the type steps down to 13px/12px mono, and output stays verbatim.",
+    "keyCharacteristics": [
+      "Flat surfaces, separated by 1px hairlines and tonal steps (`surface` → `surface-code` → `surface-raised`).",
+      "Two families with a hard split: sans for reading, mono for typed, read-by-agent and compared values.",
+      "Yellow as a highlighter, not as decoration.",
+      "Numbers are tabular, signed and named; differences are never shown by colour alone.",
+      "Motion only replays something that happened; it settles on the real values and never repeats on its own.",
+      "Light and dark from the same tokens; dark follows the OS."
+    ],
+    "rules": [
+      {
+        "name": "The Highlighter Rule",
+        "body": "Yellow marks what was asked for or the one action to take, never anything else. One primary (yellow) button per view; every other Copy and Replay button is secondary.",
+        "section": "colors"
+      },
+      {
+        "name": "The No Traffic Lights Rule",
+        "body": "Deltas are not red or green. They are signed with a true minus (−), set in mono, muted outside the duckgrep column and ink inside it; a dagger (†) marks a change that is not significant.",
+        "section": "colors"
+      },
+      {
+        "name": "The Typed Things Are Mono Rule",
+        "body": "Commands, paths, SQL, tool names, output and compared numbers are JetBrains Mono with ligatures off (`->` stays two characters). Words a person reads are Hanken Grotesk.",
+        "section": "typography"
+      },
+      {
+        "name": "The Verbatim Output Rule",
+        "body": "Terminal output is never rewrapped or reflowed; a line wider than its lane scrolls sideways, and a \"scroll sideways for the rest →\" note appears under it only while it overflows.",
+        "section": "typography"
+      },
+      {
+        "name": "The Hairline Rule",
+        "body": "Containers are separated by a 1px `border` hairline and a tonal step, never by shadow. Emphasis is a stronger hairline (`border-strong`, or a 2px `ink` rule over a reason), not lift.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** take every colour, space, radius and font from `brand/tokens.css`; change values in `brand/tokens.json`, never in site CSS.",
+      "**Do** keep one primary (yellow) button per view and make every other action secondary.",
+      "**Do** set compared numbers in tabular mono, with the signed change beside or under the value and a dagger on non-significant changes.",
+      "**Do** keep terminal output verbatim; let it scroll sideways and say so only when it overflows.",
+      "**Do** keep text on the 1120px column; only the race lanes take the 1360px frame.",
+      "**Do** separate surfaces with 1px hairlines and tonal steps; emphasise with `border-strong` or a 2px `ink` rule.",
+      "**Do** make every animation a replay of something recorded that settles on the real value, with a complete final state for reduced motion and for no script."
+    ],
+    "donts": [
+      "**Don't** use drop shadows or visible gradients; depth is tonal.",
+      "**Don't** colour deltas red or green, or let colour alone carry a difference.",
+      "**Don't** use yellow for anything but the match highlight and the one primary action.",
+      "**Don't** put a label or eyebrow above a section title; sections open with their sentence-case headline.",
+      "**Don't** use chevrons or blobs; open/close and status are drawn from bars and discs.",
+      "**Don't** animate anything that didn't happen in the recorded run, or loop motion that has no running process behind it."
+    ]
+  }
+}

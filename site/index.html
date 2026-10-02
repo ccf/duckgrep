@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>duckgrep: Grep finds strings. duckgrep answers questions.</title>
+<meta name="description" content="Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop.">
+<link rel="canonical" href="https://duckgrep.dev/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://duckgrep.dev/">
+<meta property="og:title" content="duckgrep">
+<meta property="og:description" content="Grep finds strings. duckgrep answers questions. Give your coding agent a live, queryable model of your codebase, so structural questions take one query instead of a search loop.">
+<meta property="og:image" content="https://duckgrep.dev/og-image-dark.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="duckgrep: Grep finds strings. duckgrep answers questions.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<meta name="theme-color" content="#fcfcfc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="brand/tokens.css">
+<link rel="stylesheet" href="brand/components.css">
+<link rel="stylesheet" href="site.css">
+<script>document.documentElement.classList.add("js")</script>
+<script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <a class="top__home" href="/" aria-label="duckgrep home">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="brand/logos/duckgrep-lockup-dark.svg">
+      <img src="brand/logos/duckgrep-lockup-light.svg" alt="duckgrep" height="32">
+    </picture>
+  </a>
+  <nav class="top__nav" aria-label="Page">
+    <a href="#results">Results</a>
+    <a href="#install">Install</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/ccf/duckgrep">GitHub</a>
+  </nav>
+</header>
+
+<main id="main">
+
+<section class="hero" aria-labelledby="tagline">
+  <h1 id="tagline" class="hero__title">Grep finds strings.<br>duckgrep <mark class="dg-match">answers questions.</mark></h1>
+  <p class="hero__sub">Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop.</p>
+  <div class="hero__act">
+    <div class="cmd">
+      <code class="cmd__text"><span class="cmd__prompt" aria-hidden="true">$</span> uv tool install duckgrep</code>
+      <button class="dg-btn dg-btn--primary dg-btn--sm cmd__copy" type="button" data-copy="uv tool install duckgrep">Copy</button>
+    </div>
+    <a class="hero__more" href="#install">Set it up in Claude Code →</a>
+  </div>
+</section>
+
+<section class="race" aria-labelledby="race-q">
+  <div class="race__head">
+    <div class="race__tabs" role="tablist" aria-label="Replayed question" hidden>
+      <button type="button" role="tab" id="tab-python" aria-controls="q-python" aria-selected="true">Python · flask</button>
+      <button type="button" role="tab" id="tab-rust" aria-controls="q-rust" aria-selected="false" tabindex="-1">Rust · ripgrep</button>
+    </div>
+    <button class="dg-btn dg-btn--secondary dg-btn--sm race__replay" type="button" hidden>Replay</button>
+  </div>
+
+  <div class="race__q" id="q-python" role="tabpanel" aria-labelledby="tab-python" data-q="python">
+    <p class="race__ask" id="race-q"><span class="race__asked">Both agents were asked (abridged):</span> Which functions call <code>show_server_banner</code>, defined in <code>src/flask/cli.py</code>? List every one, including test functions.</p>
+<!-- race:python -->
+<div class="race__lanes" data-task="flask-callers-show_server_banner"><figure class="lane lane--alone"><figcaption class="dg-term__bar lane__bar">Claude Code alone</figcaption><dl class="meter" aria-label="Claude Code alone: totals"><div><dt>tool calls</dt><dd><span data-meter="calls">3</span></dd></div><div><dt>tokens</dt><dd><span data-meter="tokens">26.7k</span></dd></div><div><dt>cost</dt><dd><span data-meter="cost">$0.0182</span></dd></div></dl><ol class="steps dg-term"><li class="step" data-ms="1557" data-calls="1" data-tokens="6261" data-cost="0.0066"><p class="step__call"><span class="step__tool">Grep</span> <code><span class="ctx">pattern:</span> "<mark class="dg-match">show_server_banner</mark>"</code></p><pre class="step__out"><span class="path">src/flask/cli.py</span>:<span class="ln">772</span>:def <mark class="dg-match">show_server_banner</mark>(debug: bool, app_import_path: str | None) -&gt; None:
+<span class="path">src/flask/cli.py</span>:<span class="ln">987</span>:    <mark class="dg-match">show_server_banner</mark>(debug, info.app_import_path)
+<span class="path">src/flask/app.py</span>:<span class="ln">657</span>:        cli.<mark class="dg-match">show_server_banner</mark>(self.debug, self.name)</pre></li><li class="step" data-ms="3455" data-calls="2" data-tokens="12770" data-cost="0.0096"><p class="step__call"><span class="step__tool">Bash</span> <code><span class="prompt">$</span> awk 'NR&gt;=930 &amp;&amp; NR&lt;=990 &amp;&amp; /def /{print NR": "$0}' src/flask/cli.py; awk 'NR&gt;=600 &amp;&amp; NR&lt;=657 &amp;&amp; /def /{print NR": "$0}' src/flask/app.py</code></p><pre class="step__out"><span class="ln">941</span>: def run_command(
+<span class="ln">969</span>:             def app(</pre></li><li class="step" data-ms="5466" data-calls="3" data-tokens="19462" data-cost="0.0122"><p class="step__call"><span class="step__tool">Grep</span> <code><span class="ctx">pattern:</span> "    def run\("  <span class="ctx">path:</span> src/flask/app.py</code></p><pre class="step__out"><span class="ln">546</span>:    def run(</pre></li><li class="step step--answer" data-ms="7905" data-calls="3" data-tokens="26661" data-cost="0.0182"><p class="step__answer"><span class="step__tool">answer</span> Flask.run, run_command <span class="verdict">correct</span></p></li></ol></figure><figure class="lane lane--duckgrep"><figcaption class="dg-term__bar lane__bar">Claude Code + duckgrep</figcaption><dl class="meter" aria-label="Claude Code + duckgrep: totals"><div><dt>tool calls</dt><dd><span data-meter="calls">2</span> <span class="meter__d">−1</span></dd></div><div><dt>tokens</dt><dd><span data-meter="tokens">22.7k</span> <span class="meter__d">−15%</span></dd></div><div><dt>cost</dt><dd><span data-meter="cost">$0.0141</span> <span class="meter__d">−23%</span></dd></div></dl><ol class="steps dg-term"><li class="step" data-ms="2131" data-calls="1" data-tokens="7243" data-cost="0.0060"><p class="step__call"><span class="step__tool">query</span> <code><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">callers</span>(<span class="str">'<mark class="dg-match">show_server_banner</mark>'</span>)</code></p><pre class="step__out"><span class="ctx">src_path          line  caller       ref_kind  receiver  resolution  targets</span>
+<span class="ctx">----------------  ----  -----------  --------  --------  ----------  ------------------</span>
+<span class="path">src/flask/app.py</span>  <span class="ln">657</span>   Flask.run    call      cli       module      <mark class="dg-match">show_server_banner</mark>
+<span class="path">src/flask/cli.py</span>  <span class="ln">987</span>   run_command  call                local       <mark class="dg-match">show_server_banner</mark></pre></li><li class="step" data-ms="3831" data-calls="1" data-tokens="14765" data-cost="0.0092"><p class="step__note">Tests might reference it via mock; check quickly.</p></li><li class="step" data-ms="4087" data-calls="2" data-tokens="14765" data-cost="0.0092"><p class="step__call"><span class="step__tool">query</span> <code><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">grep</span>(<span class="str">'<mark class="dg-match">show_server_banner</mark>'</span>)</code></p><pre class="step__out"><span class="ctx">path              line  symbol              text</span>
+<span class="ctx">----------------  ----  ------------------  -------------------------------------------------------------------------</span>
+<span class="path">src/flask/app.py</span>  <span class="ln">657</span>   Flask.run                   cli.<mark class="dg-match">show_server_banner</mark>(self.debug, self.name)
+<span class="path">src/flask/cli.py</span>  <span class="ln">772</span>   <mark class="dg-match">show_server_banner</mark>  def <mark class="dg-match">show_server_banner</mark>(debug: bool, app_import_path: str | None) -&gt; None:
+<span class="path">src/flask/cli.py</span>  <span class="ln">987</span>   run_command             <mark class="dg-match">show_server_banner</mark>(debug, info.app_import_path)</pre></li><li class="step step--answer" data-ms="6415" data-calls="2" data-tokens="22740" data-cost="0.0141"><p class="step__answer"><span class="step__tool">answer</span> Flask.run, run_command <span class="verdict">correct</span></p></li></ol></figure></div>
+<!-- /race:python -->
+    <p class="race__result" data-result>Same answer, both correct. With duckgrep: <strong>1 fewer tool call, 15% fewer tokens and 23% less cost.</strong></p>
+    <p class="race__note">Two recorded runs from our A/B test (Claude Code 2.1.287, Sonnet 5.5, flask 3.1.0), replayed at the pace they ran. The duckgrep agent had the one-line instruction from the install steps. This question's cost saving sits at the median of the 453 structural questions both setups answered correctly. It is a typical run, not the best one (<a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md#replayed-runs">how it was chosen</a>).</p>
+  </div>
+
+  <div class="race__q" id="q-rust" role="tabpanel" aria-labelledby="tab-rust" data-q="rust">
+    <p class="race__ask"><span class="race__asked">Both agents were asked (abridged):</span> Which functions call <code>eprint_nothing_searched</code>, defined in <code>crates/core/main.rs</code>, directly or through one intermediate function?</p>
+<!-- race:rust -->
+<div class="race__lanes" data-task="ripgrep-two-hop-eprint_nothing_searched"><figure class="lane lane--alone"><figcaption class="dg-term__bar lane__bar">Claude Code alone</figcaption><dl class="meter" aria-label="Claude Code alone: totals"><div><dt>tool calls</dt><dd><span data-meter="calls">3</span></dd></div><div><dt>tokens</dt><dd><span data-meter="tokens">27.6k</span></dd></div><div><dt>cost</dt><dd><span data-meter="cost">$0.0204</span></dd></div></dl><ol class="steps dg-term"><li class="step" data-ms="1761" data-calls="1" data-tokens="6268" data-cost="0.0063"><p class="step__call"><span class="step__tool">Grep</span> <code><span class="ctx">pattern:</span> "<mark class="dg-match">eprint_nothing_searched</mark>"</code></p><pre class="step__out"><span class="path">crates/core/main.rs</span>:<span class="ln">144</span>:        <mark class="dg-match">eprint_nothing_searched</mark>();
+<span class="path">crates/core/main.rs</span>:<span class="ln">220</span>:        <mark class="dg-match">eprint_nothing_searched</mark>();
+<span class="path">crates/core/main.rs</span>:<span class="ln">414</span>:fn <mark class="dg-match">eprint_nothing_searched</mark>() {</pre></li><li class="step" data-ms="3308" data-calls="2" data-tokens="12762" data-cost="0.0090"><p class="step__call"><span class="step__tool">Grep</span> <code><span class="ctx">pattern:</span> "^\s*(pub )?fn |<mark class="dg-match">eprint_nothing_searched</mark>"  <span class="ctx">path:</span> crates/core/main.rs</code></p><pre class="step__out"><span class="ln">43</span>:fn main() -&gt; ExitCode {
+<span class="ln">77</span>:fn run(result: crate::flags::ParseResult&lt;HiArgs&gt;) -&gt; anyhow::Result&lt;ExitCode&gt; {
+<span class="ln">107</span>:fn search(args: &amp;HiArgs, mode: SearchMode) -&gt; anyhow::Result&lt;bool&gt; {
+<span class="ln">144</span>:        <mark class="dg-match">eprint_nothing_searched</mark>();
+<span class="ln">160</span>:fn search_parallel(args: &amp;HiArgs, mode: SearchMode) -&gt; anyhow::Result&lt;bool&gt; {
+<span class="ln">220</span>:        <mark class="dg-match">eprint_nothing_searched</mark>();
+<span class="ln">235</span>:fn files(args: &amp;HiArgs) -&gt; anyhow::Result&lt;bool&gt; {
+<span class="ctx">… 6 more lines</span></pre></li><li class="step" data-ms="4417" data-calls="2" data-tokens="19848" data-cost="0.0136"><p class="step__note">Direct callers: search, search_parallel. Now I need their callers.</p></li><li class="step" data-ms="4984" data-calls="3" data-tokens="19848" data-cost="0.0136"><p class="step__call"><span class="step__tool">Grep</span> <code><span class="ctx">pattern:</span> "\bsearch(_parallel)?\("  <span class="ctx">path:</span> crates  <span class="ctx">glob:</span> **/main.rs</code></p><pre class="step__out"><span class="path">crates/core/main.rs</span>:<span class="ln">87</span>:        Mode::Search(mode) if args.threads() == 1 =&gt; search(&amp;args, mode)?,
+<span class="path">crates/core/main.rs</span>:<span class="ln">88</span>:        Mode::Search(mode) =&gt; search_parallel(&amp;args, mode)?,
+<span class="path">crates/core/main.rs</span>:<span class="ln">107</span>:fn search(args: &amp;HiArgs, mode: SearchMode) -&gt; anyhow::Result&lt;bool&gt; {
+<span class="path">crates/core/main.rs</span>:<span class="ln">126</span>:        let search_result = match searcher.search(&amp;haystack) {
+<span class="path">crates/core/main.rs</span>:<span class="ln">160</span>:fn search_parallel(args: &amp;HiArgs, mode: SearchMode) -&gt; anyhow::Result&lt;bool&gt; {
+<span class="path">crates/core/main.rs</span>:<span class="ln">190</span>:            let search_result = match searcher.search(&amp;haystack) {</pre></li><li class="step step--answer" data-ms="7589" data-calls="3" data-tokens="27623" data-cost="0.0204"><p class="step__answer"><span class="step__tool">answer</span> run, search, search_parallel <span class="verdict">correct</span></p></li></ol></figure><figure class="lane lane--duckgrep"><figcaption class="dg-term__bar lane__bar">Claude Code + duckgrep</figcaption><dl class="meter" aria-label="Claude Code + duckgrep: totals"><div><dt>tool calls</dt><dd><span data-meter="calls">2</span> <span class="meter__d">−1</span></dd></div><div><dt>tokens</dt><dd><span data-meter="tokens">23.0k</span> <span class="meter__d">−17%</span></dd></div><div><dt>cost</dt><dd><span data-meter="cost">$0.0159</span> <span class="meter__d">−22%</span></dd></div></dl><ol class="steps dg-term"><li class="step" data-ms="1700" data-calls="1" data-tokens="7378" data-cost="0.0079"><p class="step__call"><span class="step__tool">query</span> <code><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">callers</span>(<span class="str">'<mark class="dg-match">eprint_nothing_searched</mark>'</span>)</code></p><pre class="step__out"><span class="ctx">src_path             line  caller           ref_kind  receiver  resolution  targets</span>
+<span class="ctx">-------------------  ----  ---------------  --------  --------  ----------  -----------------------</span>
+<span class="path">crates/core/main.rs</span>  <span class="ln">144</span>   search           call                local       <mark class="dg-match">eprint_nothing_searched</mark>
+<span class="path">crates/core/main.rs</span>  <span class="ln">220</span>   search_parallel  call                local       <mark class="dg-match">eprint_nothing_searched</mark></pre></li><li class="step" data-ms="3114" data-calls="2" data-tokens="15027" data-cost="0.0117"><p class="step__call"><span class="step__tool">query</span> <code><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">callers</span>(<span class="str">'search'</span>) <span class="kw">UNION</span> <span class="kw">ALL</span> <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">callers</span>(<span class="str">'search_parallel'</span>)</code></p><pre class="step__out"><span class="ctx">src_path                            line  caller           ref_kind  receiver  resolution  targets</span>
+<span class="ctx">----------------------------------  ----  ---------------  --------  --------  ----------  ---------------</span>
+<span class="path">crates/core/main.rs</span>                 <span class="ln">87</span>    run              call                local       search
+<span class="path">crates/grep/examples/simplegrep.rs</span>  <span class="ln">29</span>    try_main         call                local       search
+<span class="path">crates/core/main.rs</span>                 <span class="ln">126</span>   search           call      searcher  name        4 candidates
+<span class="path">crates/core/main.rs</span>                 <span class="ln">190</span>   search_parallel  call      searcher  name        4 candidates
+<span class="path">crates/core/main.rs</span>                 <span class="ln">88</span>    run              call                local       search_parallel</pre></li><li class="step step--answer" data-ms="6085" data-calls="2" data-tokens="23049" data-cost="0.0159"><p class="step__answer"><span class="step__tool">answer</span> run, search, search_parallel <span class="verdict">correct</span></p></li></ol></figure></div>
+<!-- /race:rust -->
+    <p class="race__result" data-result>Same answer, both correct. With duckgrep: <strong>1 fewer tool call, 17% fewer tokens and 22% less cost.</strong></p>
+    <p class="race__note">Two recorded runs from our A/B test (Claude Code 2.1.287, Sonnet 5.5, ripgrep 14.1.1), replayed at the pace they ran. The duckgrep agent had the one-line instruction from the install steps. This question's cost saving is close to the median of the 453 structural questions both setups answered correctly (<a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md#replayed-runs">how it was chosen</a>).</p>
+  </div>
+</section>
+
+<section class="results" id="results" aria-labelledby="results-h">
+  <h2 id="results-h" class="section__title">What it saves</h2>
+  <p class="results__claim">Across 494 questions: 12–19% less work and a quarter less cost, with answers just as accurate.</p>
+  <p class="section__lede">We ran Claude Code (Sonnet 5.5) on 494 structural questions from 25 open-source Python and Rust repos: who calls this, what reaches it through one more caller, what imports this module. Every setup had the same model and tools; the only difference was the MCP server. Each tool's agent had a one-line instruction to use it; Claude Code alone had none.</p>
+
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Results per question">
+  <table class="results__table">
+    <caption class="sr-only">Typical value per structural question (a geometric mean over tasks), by setup. Changes are against Claude Code alone.</caption>
+    <thead>
+      <tr><th scope="col">Per question</th><th scope="col">Claude Code alone</th><th scope="col">+ Serena</th><th scope="col" class="is-dg">+ duckgrep</th></tr>
+    </thead>
+    <tbody>
+      <tr class="group"><th scope="rowgroup" colspan="4">Python <span>237 questions</span></th></tr>
+      <tr><th scope="row">Tool calls</th><td>3.0</td><td>2.8 <span class="d">−5%†</span></td><td class="is-dg">2.3 <span class="d">−18%</span></td></tr>
+      <tr><th scope="row">Round trips to the model</th><td>3.6</td><td>2.9 <span class="d">−16%</span></td><td class="is-dg">2.8 <span class="d">−19%</span></td></tr>
+      <tr><th scope="row">Tokens</th><td>27.4k</td><td>33.6k <span class="d">+23%</span></td><td class="is-dg">22.5k <span class="d">−18%</span></td></tr>
+      <tr><th scope="row">Cost</th><td>$0.0267</td><td>$0.0255 <span class="d">−4%†</span></td><td class="is-dg">$0.0203 <span class="d">−24%</span></td></tr>
+      <tr><th scope="row">Correct answers</th><td>94%</td><td>95%</td><td class="is-dg">96%</td></tr>
+      <tr class="group"><th scope="rowgroup" colspan="4">Rust <span>257 questions</span></th></tr>
+      <tr><th scope="row">Tool calls</th><td>3.3</td><td>3.9 <span class="d">+14%</span></td><td class="is-dg">2.6 <span class="d">−16%</span></td></tr>
+      <tr><th scope="row">Round trips to the model</th><td>3.7</td><td>3.8 <span class="d">+2%†</span></td><td class="is-dg">3.1 <span class="d">−12%</span></td></tr>
+      <tr><th scope="row">Tokens</th><td>29.4k</td><td>45.9k <span class="d">+56%</span></td><td class="is-dg">26.0k <span class="d">−12%</span></td></tr>
+      <tr><th scope="row">Cost</th><td>$0.0299</td><td>$0.0336 <span class="d">+12%</span></td><td class="is-dg">$0.0226 <span class="d">−25%</span></td></tr>
+      <tr><th scope="row">Correct answers</th><td>96%</td><td>96%</td><td class="is-dg">96%</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="results__notes">
+    <p><strong>Why it saves.</strong> duckgrep answers "who calls this, and from which function" in one call. A grep hit gives a line, and the agent then has to read around it to find the function.</p>
+    <p><strong>Without the instruction,</strong> agents still chose duckgrep for 75% of these questions, and cut tool calls by 12–19% and cost by 14–18%.</p>
+  </div>
+  <p class="fine">3,620 runs in all, made on 2026-10-02 with Claude Code 2.1.287. Values are typical per question: geometric means over tasks, so a few long runs don't swamp them. Changes compare each setup with Claude Code alone, task by task, with tool calls and round trips compared as 1 + n. † marks a difference that doesn't hold after correcting for all 160 comparisons. Every duckgrep change in calls, round trips, tokens and cost holds; the correct-answer rates differ by no more than chance in any setup. Full tables, the method and the harness: <a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md">bench/RESULTS.md</a>.</p>
+</section>
+
+<section class="why" aria-labelledby="why-h">
+  <h2 id="why-h" class="section__title">Why it matters</h2>
+  <p class="section__lede">Coding agents find their way around a codebase with chains of <code>grep</code> → read file → <code>grep</code> again. That works for "where is this string." The questions that matter when changing code are structural: who calls this, what does it call, what breaks if I change it, what's dead. Each one turns into a loop of searches, file reads and guesses, paid for in turns and tokens.</p>
+  <ul class="reasons">
+    <li><h3>It answers structural questions, not text matches.</h3><p>"Who calls this, and from which function?" is one query, not a search loop. On django, finding every call to <code>get_or_create</code> and the function it sits in took 22 calls (one grep, then 21 file reads to find the enclosing functions) and 58 KB of output. duckgrep answered it in one query and 9 KB. <a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md">A simulated benchmark</a> of one exhaustive answer, not an agent's saving.</p></li>
+    <li><h3>It answers questions no tool author anticipated.</h3><p>Code-navigation tools give agents a fixed menu: find definition, find references. duckgrep gives them a query language. "Public functions in <code>pricing/</code> with no callers outside their module" isn't a feature anyone built; the agent just writes the query.</p></li>
+    <li><h3>It joins code with its history.</h3><p>The call graph, git churn and authorship sit in the same place, so an agent can ask "what's risky to change here," which text search can't answer.</p></li>
+    <li><h3>It's trustworthy mid-edit.</h3><p>The index refreshes before every query, so it reflects the agent's latest edits. Every call-graph edge says how it was resolved, so the agent knows when to trust the graph and when to go read the code.</p></li>
+  </ul>
+</section>
+
+<section class="how" aria-labelledby="how-h">
+  <div class="how__text">
+    <h2 id="how-h" class="section__title">How it works</h2>
+    <p>duckgrep parses the repo with tree-sitter into a single DuckDB file and exposes it as one read-only <code>query(sql)</code> MCP tool. The tool's description carries the whole schema, so the agent can write a correct query on its first call.</p>
+    <p>Before every query, it re-reads the files that changed, so results reflect the agent's latest edits with no hooks. On django's 7,000 files, typical queries take 30–90 ms, and the check for changes before each adds about 140 ms when nothing changed (<a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md">latency</a>).</p>
+    <p>Python, TypeScript/TSX, JavaScript, Go and Rust. Other text files are indexed for <code>grep()</code> too. Built on DuckDB and tree-sitter.</p>
+  </div>
+  <div class="how__terms">
+    <figure class="how__term">
+      <figcaption class="dg-term__bar">Every function that reaches <code>Flask.make_response</code> in three calls · flask 3.1.0</figcaption>
+<pre class="dg-term"><span class="kw">WITH RECURSIVE</span> up(p, q, d) <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> path, qualname, <span class="num">0</span> <span class="kw">FROM</span> symbols
+  <span class="kw">WHERE</span> qualname = <span class="str">'<mark class="dg-match">Flask.make_response</mark>'</span>
+  <span class="kw">UNION SELECT</span> e.src_path, e.src_scope, d + <span class="num">1</span>
+  <span class="kw">FROM</span> edges e <span class="kw">JOIN</span> up <span class="kw">ON</span> e.dst_path = up.p <span class="kw">AND</span> e.dst_qualname = up.q
+  <span class="kw">WHERE</span> d &lt; <span class="num">3</span> <span class="kw">AND</span> e.ref_kind = <span class="str">'call'</span>
+    <span class="kw">AND</span> e.resolution <span class="kw">NOT IN</span> (<span class="str">'name'</span>, <span class="str">'ambiguous'</span>, <span class="str">'unresolved'</span>)
+    <span class="kw">AND</span> e.src_scope &lt;&gt; <span class="str">''</span>)
+<span class="kw">SELECT</span> p <span class="kw">AS</span> path, q <span class="kw">AS</span> function, <span class="fn">min</span>(d) <span class="kw">AS</span> hops
+<span class="kw">FROM</span> up <span class="kw">GROUP BY</span> p, q <span class="kw">ORDER BY</span> hops, function
+
+<span class="ctx">path              function                     hops</span>
+<span class="ctx">----------------  ---------------------------  ----</span>
+<span class="path">src/flask/app.py</span>  <mark class="dg-match">Flask.make_response</mark>          0
+<span class="path">src/flask/app.py</span>  Flask.finalize_request       1
+<span class="path">src/flask/app.py</span>  Flask.full_dispatch_request  2
+<span class="path">src/flask/app.py</span>  Flask.handle_exception       2
+<span class="path">src/flask/app.py</span>  Flask.wsgi_app               3</pre>
+    </figure>
+    <figure class="how__term">
+      <figcaption class="dg-term__bar">Code joined with history · flask 3.1.0, last 5,000 commits</figcaption>
+<pre class="dg-term"><span class="kw">SELECT</span> c.path, c.n_commits, c.n_authors,
+       <span class="fn">count</span>(<span class="kw">DISTINCT</span> e.src_path) <span class="kw">AS</span> used_by_files
+<span class="kw">FROM</span> file_churn c <span class="kw">JOIN</span> edges e
+  <span class="kw">ON</span> e.dst_path = c.path <span class="kw">AND</span> e.src_path &lt;&gt; c.path
+  <span class="kw">AND</span> e.resolution <span class="kw">NOT IN</span> (<span class="str">'name'</span>, <span class="str">'ambiguous'</span>, <span class="str">'unresolved'</span>)
+<span class="kw">WHERE</span> c.path <span class="kw">LIKE</span> <span class="str">'src/%'</span>
+<span class="kw">GROUP BY ALL ORDER BY</span> n_commits <span class="kw">DESC</span>, c.path <span class="kw">LIMIT</span> <span class="num">5</span>
+
+<span class="ctx">path                     n_commits  n_authors  used_by_files</span>
+<span class="ctx">-----------------------  ---------  ---------  -------------</span>
+<span class="path">src/flask/app.py</span>         125        28         36
+<span class="path">src/flask/helpers.py</span>     81         21         20
+<span class="path">src/flask/blueprints.py</span>  61         16         12
+<span class="path">src/flask/cli.py</span>         61         17         6
+<span class="path">src/flask/ctx.py</span>         36         8          5</pre>
+    </figure>
+  </div>
+</section>
+
+<section class="install" id="install" aria-labelledby="install-h">
+  <h2 id="install-h" class="section__title">Install</h2>
+  <ol class="steps-install">
+    <li>
+      <h3>Install the tool</h3>
+      <div class="cmd"><code class="cmd__text"><span class="cmd__prompt" aria-hidden="true">$</span> uv tool install duckgrep</code><button class="dg-btn dg-btn--secondary dg-btn--sm cmd__copy" type="button" data-copy="uv tool install duckgrep">Copy</button></div>
+    </li>
+    <li>
+      <h3>Add it to Claude Code</h3>
+      <div class="cmd"><code class="cmd__text"><span class="cmd__prompt" aria-hidden="true">$</span> claude mcp add duckgrep -- duckgrep mcp</code><button class="dg-btn dg-btn--secondary dg-btn--sm cmd__copy" type="button" data-copy="claude mcp add duckgrep -- duckgrep mcp">Copy</button></div>
+      <p>The server answers at once and builds the index in the background; the first query waits for it.</p>
+    </li>
+    <li>
+      <h3>Tell your agent to use it</h3>
+      <p>Agents reach for grep out of habit. Add this line to your <code>CLAUDE.md</code>, or your agent's instructions. It's the instruction the numbers above were measured with (there, appended to the system prompt).</p>
+      <div class="cmd cmd--block"><code class="cmd__text" id="hint">The repository in the current directory is indexed by duckgrep. To find code, call its query tool before Grep, Glob or Read: SELECT * FROM defs('name') finds where a symbol is defined, callers('name') who calls it, and grep('regex') searches the text and names each match's enclosing function. Read a file once you know where to look.</code><button class="dg-btn dg-btn--secondary dg-btn--sm cmd__copy" type="button" data-copy-from="hint">Copy</button></div>
+    </li>
+  </ol>
+  <p class="install__more">Other MCP clients run <code>duckgrep mcp</code> as a stdio server from inside the repo. The CLI (<code>duckgrep callers</code>, <code>duckgrep q</code>) and everything else are in the <a href="https://github.com/ccf/duckgrep#readme">README</a>.</p>
+</section>
+
+<section class="limits" aria-labelledby="limits-h">
+  <h2 id="limits-h" class="section__title">Where it doesn't help</h2>
+  <ul>
+    <li><strong>Finding where to fix a bug from an issue report.</strong> On 230 SWE-bench tasks, agents with duckgrep used no fewer tool calls and were no cheaper, once corrected for multiple comparisons (<a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md">results</a>). An issue usually names an error message or a function that one grep finds, so there's nothing to save. Carrying the tool's description added 11–13% tokens on Python; they're cached, so cost stayed flat.</li>
+    <li><strong>"Where is this string."</strong> Grep is as good, and cheaper.</li>
+  </ul>
+  <p>duckgrep pays off when the question is about how code connects.</p>
+</section>
+
+<section class="faq" id="faq" aria-labelledby="faq-h">
+  <h2 id="faq-h" class="section__title">FAQ</h2>
+
+  <details>
+    <summary>What can the agent query?</summary>
+    <div class="faq__a">
+      <dl class="schema">
+        <div><dt><code>files</code></dt><dd>path, language, size, hash, line count, parse errors</dd></div>
+        <div><dt><code>symbols</code></dt><dd>name, qualified name (<code>Class.method</code>), kind, parent, lines, signature, first doc line, exported</dd></div>
+        <div><dt><code>refs</code></dt><dd>every identifier use (call, read, attribute, write, type, inherit, decorator, import, …), its receiver and enclosing scope</dd></div>
+        <div><dt><code>imports</code></dt><dd>as written, plus the repo file each resolves to</dd></div>
+        <div><dt><code>edges</code></dt><dd>reference → definition (the call graph), with a resolution tier</dd></div>
+        <div><dt><code>lines</code></dt><dd>full text, for <code>grep()</code></dd></div>
+        <div><dt><code>commits</code>, <code>file_churn</code></dt><dd>git history</dd></div>
+      </dl>
+      <p>Table macros: <code>defs</code>, <code>callers</code>, <code>callees</code>, <code>outline</code>, <code>grep</code>, <code>source</code>. <code>duckgrep schema</code> prints exactly what the agent sees.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How does it resolve calls without a type checker?</summary>
+    <div class="faq__a">
+      <p>Tree-sitter gives syntax, not types, so every edge says how it was resolved:</p>
+      <ul>
+        <li><strong>Confident</strong> (<code>self</code>, <code>local</code>, <code>package</code>, <code>import</code>, <code>module</code>, <code>qualified</code>): from scope and import analysis, including aliases, relative imports, star imports (Python and Rust), <code>go.mod</code> prefixes, Cargo crate names and one hop of re-exports. <code>qualified</code> (<code>Class.method</code>) needs the class defined or imported in the calling file.</li>
+        <li><strong><code>name</code></strong>: <code>obj.method()</code> on a receiver of unknown type, matched by method name, one row per candidate up to 10.</li>
+        <li><strong><code>ambiguous</code></strong>: more candidates, or a method builtin types also have (<code>get</code>, <code>append</code>, <code>clone</code>). The target is left empty rather than guessed.</li>
+        <li><strong><code>unresolved</code></strong>: no in-repo target, such as the standard library or third-party code.</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>How accurate is the call graph?</summary>
+    <div class="faq__a">
+      <p>Measured against jedi's goto-definition on sampled calls in Python repos (<a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md">bench/RESULTS.md</a>):</p>
+      <div class="table-wrap">
+      <table class="mini">
+        <thead><tr><th scope="col">Repo</th><th scope="col">Calls with an in-repo target</th><th scope="col">Resolved confidently</th><th scope="col">Precision</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">django</th><td>1,411</td><td>73.4%</td><td>99.8%</td></tr>
+          <tr><th scope="row">freqtrade</th><td>1,646</td><td>71.9%</td><td>100%</td></tr>
+          <tr><th scope="row">requests</th><td>55</td><td>85.5%</td><td>100%</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>The rest fall to <code>name</code>, <code>ambiguous</code> or <code>unresolved</code>, which say so rather than guess. Calls on local variables are the main gap; see the <a href="https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md">roadmap</a>.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Does it stay right while the agent edits code?</summary>
+    <div class="faq__a">
+      <p>Yes. Before every query it lists the repo's files, stats each one and hashes only those whose size or modification time changed. Changed files have their rows swapped in one transaction, and call-graph edges that depend on them are recomputed when a query needs them. Tests check that the incremental index equals a full rebuild after renames, deletions and import changes. One known gap: an aliased re-export chain can keep a stale edge after an edit (<a href="https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md">roadmap</a>).</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How does it compare with Serena or a language server?</summary>
+    <div class="faq__a">
+      <p>Serena gives agents a fixed set of language-server tools (find symbol, find references). duckgrep gives them one query over the whole parse, the call graph and git history, so questions combine in a single call. In the same benchmark, Serena added 23–56% tokens and cost 12% more on Rust; duckgrep cut cost by 24–25%, and accuracy was level across all three. The trade-off: a language server resolves types exactly; duckgrep's edges say when they're guessing.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How were the numbers measured?</summary>
+    <div class="faq__a">
+      <p>The real Claude Code CLI ran in a scrubbed environment, with Bash, Read, Grep and Glob, under five setups that differ only in one MCP server and an optional one-line instruction. The 724 tasks were structural questions with answer keys from jedi and rust-analyzer, and issue localization from SWE-bench Lite, Multilingual and Live, with keys from the fix patches. Each setup is paired with plain Claude Code task by task, with bootstrap intervals and a Holm correction across all comparisons.</p>
+      <p>The harness, the suites and every number are in the repo: <a href="https://github.com/ccf/duckgrep/tree/main/bench/eval">bench/eval</a> and <a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md">bench/RESULTS.md</a>.</p>
+    </div>
+  </details>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="foot__mark">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="brand/logos/duckgrep-lockup-dark.svg">
+      <img src="brand/logos/duckgrep-lockup-light.svg" alt="duckgrep" height="24">
+    </picture>
+    <p>Built on DuckDB and tree-sitter. Apache License 2.0.</p>
+  </div>
+  <nav class="foot__nav" aria-label="Elsewhere">
+    <a href="https://github.com/ccf/duckgrep">GitHub</a>
+    <a href="https://pypi.org/project/duckgrep/">PyPI</a>
+    <a href="https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md">Results</a>
+    <a href="https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md">Roadmap</a>
+    <a href="https://github.com/ccf/duckgrep/blob/main/LICENSE">License</a>
+  </nav>
+</footer>
+</body>
+</html>

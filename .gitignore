@@ -7,3 +7,7 @@ build/
 .venv/
 .ruff_cache/
 bench/eval/runs/
+_site/
+.impeccable/review/
+.impeccable/questions/
+.impeccable/surface-round.json
