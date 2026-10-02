@@ -204,3 +204,12 @@ def test_wrangler_serves_the_build_output(tmp_path):
     served = tmp_path / config["assets"]["directory"]
     for name in ("index.html", "site.css", "site.js", "_headers", "favicon.svg", "brand/tokens.css"):
         assert (served / name).is_file(), f"{name} is not in {config['assets']['directory']}"
+
+
+def test_csp_allows_cloudflare_analytics_only():
+    """Cloudflare injects its Web Analytics beacon at the edge; the CSP allows that and no other third-party script."""
+    csp = next(ln for ln in (ROOT / "site/_headers").read_text().splitlines() if "Content-Security-Policy" in ln)
+    directives = dict(d.strip().split(" ", 1) for d in csp.split(":", 1)[1].split(";") if d.strip())
+    script = directives["script-src"].split()
+    assert [s for s in script if s.startswith("https://")] == ["https://static.cloudflareinsights.com"]
+    assert directives["connect-src"].split() == ["'self'", "https://cloudflareinsights.com"]
