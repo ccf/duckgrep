@@ -100,6 +100,38 @@ def test_duckgrep_source_of_a_named_method_locates_it():
     assert locate.turns_to_locate(run(call), [send]) == 1
 
 
+def test_duckgrep_rows_of_a_query_pinned_to_one_file_belong_to_it():
+    # pytest-5103: the agent listed a file's methods without selecting the path, which its WHERE clause fixed
+    visit = Target("src/_pytest/assertion/rewrite.py", "AssertionRewriter.visit_Call_35", ((880, 880),))
+    tsv = "name\tqualname\tstart_line\tend_line\nvisit_Call_35\tAssertionRewriter.visit_Call_35\t880\t930"
+
+    def query(sql):
+        return run(("mcp__duckgrep__query", {"sql": sql}, json.dumps({"result": tsv})))
+
+    pinned = "SELECT name, qualname, start_line, end_line FROM symbols WHERE path='src/_pytest/assertion/rewrite.py'"
+    assert locate.turns_to_locate(query(pinned), [visit]) == 1
+    nested = pinned + " AND (qualname LIKE 'AssertionRewriter.%' OR kind = 'class')"  # the query pytest-5103 ran
+    assert locate.turns_to_locate(query(nested), [visit]) == 1
+    f = "src/_pytest/assertion/rewrite.py"
+    branches = f"SELECT qualname FROM symbols WHERE path='{f}' AND start_line<=880 OR (path='{f}' AND end_line>=9)"
+    assert locate.turns_to_locate(query(branches), [visit]) == 1  # django-11001: every branch pins the one file
+    assert locate.turns_to_locate(query("SELECT * FROM outline('src/_pytest/assertion/rewrite.py')"), [visit]) == 1
+    # not pinned to one file: any of several files, or a pattern, could have produced the row
+    for loose in (
+        "SELECT name, qualname FROM symbols WHERE path LIKE '%rewrite.py'",
+        "SELECT name, qualname FROM symbols WHERE path = 'src/a.py' OR path = 'src/_pytest/assertion/rewrite.py'",
+        "SELECT name, qualname FROM symbols WHERE path IN ('src/_pytest/assertion/rewrite.py', 'src/b.py')",
+        "SELECT name, qualname FROM symbols WHERE path = 'src/a.py'",
+        "SELECT name, qualname FROM symbols",
+        "SELECT name, qualname FROM symbols WHERE path = 'src/_pytest/assertion/rewrite.py' OR kind = 'class'",
+        "SELECT qualname FROM symbols WHERE path = 'src/_pytest/assertion/rewrite.py' AND line < 9 OR path = 'b.py'",
+        "SELECT qualname FROM symbols WHERE path = 'src/_pytest/assertion/rewrite.py' AND path = 'src/b.py'",
+        "SELECT qualname FROM symbols WHERE path = 'src/_pytest/assertion/rewrite.py' UNION SELECT 'x'",
+        "not sql at all path = 'src/_pytest/assertion/rewrite.py'",
+    ):
+        assert locate.turns_to_locate(query(loose), [visit]) is None, loose
+
+
 def test_serena_name_paths_locate_impl_and_trait_methods():
     names = Target("compiler-core/src/erlang.rs", "FunctionGenerator.function_arguments_names", ((710, 710),))
     fmt = Target("crates/ignore/src/walk.rs", "WalkBuilder.fmt", ((506, 506),))

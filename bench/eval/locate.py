@@ -21,6 +21,8 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+import duckdb
+
 from . import gold
 from .stream import Call, Transcript
 
@@ -137,8 +139,55 @@ def _bash(command: str, cwd: str, roots: tuple[str, ...]) -> tuple[list[str], bo
     return sorted(set(files)), globbed, dirs or [cwd], cwd, ranges
 
 
-def _duckgrep(result: str, ev: Evidence) -> None:
-    """duckgrep's rows: a path column goes with the line and name columns of its side (dst_* or the rest).
+def _pin(node: dict) -> str | None:
+    """The one file every row that satisfies `node` (a WHERE clause) is in: a `path = '<file>'` test; an AND with
+    such a term (the others only narrow it); an OR whose branches all pin the same file. None otherwise."""
+    kind = node.get("type")
+    if kind == "CONJUNCTION_AND":
+        files = {f for child in node.get("children", []) if (f := _pin(child))}
+        return files.pop() if len(files) == 1 else None
+    if kind == "CONJUNCTION_OR":
+        files = [_pin(child) for child in node.get("children", [])]
+        return files[0] if files and None not in files and len(set(files)) == 1 else None
+    if kind == "COMPARE_EQUAL":
+        sides = (node.get("left") or {}, node.get("right") or {})
+        for column, constant in (sides, sides[::-1]):
+            if column.get("class") == "COLUMN_REF" and (column.get("column_names") or [""])[-1] == "path":
+                return _file_constant(constant)
+    return None
+
+
+def _file_constant(node: dict) -> str | None:
+    value = node.get("value") or {}
+    if node.get("class") == "CONSTANT" and (value.get("type") or {}).get("id") == "VARCHAR":
+        text = str(value.get("value", ""))
+        return text if FILE.fullmatch(text) else None
+    return None
+
+
+def pinned_file(sql: str) -> str | None:
+    """The one file a duckgrep query confines its rows to: `outline('<file>')`, or a WHERE that pins one (`_pin`).
+    Read from DuckDB's own parse, so a pattern, a set operation or an OR that lets other files in never counts."""
+    try:
+        tree = json.loads(duckdb.execute("SELECT json_serialize_sql($1)", [sql]).fetchone()[0])
+    except (duckdb.Error, TypeError, ValueError):
+        return None
+    statements = tree.get("statements") or []
+    if tree.get("error") or len(statements) != 1 or statements[0]["node"].get("type") != "SELECT_NODE":
+        return None
+    node = statements[0]["node"]
+    found = set()
+    table = node.get("from_table") or {}
+    if table.get("type") == "TABLE_FUNCTION" and (table.get("function") or {}).get("function_name") == "outline":
+        found |= {f for a in (table["function"].get("children") or []) if (f := _file_constant(a))}
+    if file := _pin(node.get("where_clause") or {}):
+        found.add(file)
+    return found.pop() if len(found) == 1 else None
+
+
+def _duckgrep(result: str, ev: Evidence, sql: str = "") -> None:
+    """duckgrep's rows: a path column goes with the line and name columns of its side (dst_* or the rest). Rows
+    with no path column belong to the one file the query pinned, if it pinned one (`pinned_file`).
     Its tabs and newlines arrive JSON-escaped, so the text is taken from the decoded rows."""
     try:
         tsv = json.loads(result).get("result", "")
@@ -150,6 +199,13 @@ def _duckgrep(result: str, ev: Evidence) -> None:
     if not rows:
         return
     head = [h.strip().lower() for h in rows[0]]
+    pinned = None if {"path", "src_path", "dst_path", "file"} & set(head) else pinned_file(sql)
+    if pinned:
+        lines = [i for i, h in enumerate(head) if "line" in h]
+        quals = [i for i, h in enumerate(head) if h in ("qualname", "caller", "scope", "symbol")]
+        for row in rows[1:]:
+            ev.pairs += [(pinned, int(row[i])) for i in lines if i < len(row) and row[i].strip().isdigit()]
+            ev.names += [(pinned, row[i].strip()) for i in quals if i < len(row) and row[i].strip()]
     for pi, ph in enumerate(head):
         if ph not in ("path", "src_path", "dst_path", "file"):
             continue
@@ -228,7 +284,7 @@ def evidence(
             if (n := _number(line)) is not None:
                 ev.pairs.append((path, n))
     elif call.name.startswith("mcp__duckgrep"):
-        _duckgrep(call.result, ev)
+        _duckgrep(call.result, ev, str(call.input.get("sql", "")))
     elif call.name.startswith("mcp__serena"):
         try:
             data = json.loads(call.result)

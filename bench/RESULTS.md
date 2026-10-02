@@ -76,6 +76,7 @@ The pilot's question, asked at scale: does a Claude Code agent find code with fe
   - Everything was pinned: harness c8264ef, Claude Code 2.1.287, Sonnet 5.5 at medium effort.
   - All 3,620 were recorded, for $124.70. One ended at the turn or budget cap.
   - The first invocation was stopped after 1,140 runs and resumed. The run it cut short was charged ($0.03) and redone, so the batch spent $124.73 in all.
+  - The records were later rescored with the locate rule for queries pinned to one file. Only turns to locate changed, in 4 records.
 - **Statistics:** each comparison pairs a setup with the baseline task by task. "Significant" below means it survives the Holm correction across all 160 comparisons.
 
 **Findings.**
@@ -109,8 +110,10 @@ The pilot's question, asked at scale: does a Claude Code agent find code with fe
   - Cost ×0.89 [0.81, 0.97] and tool calls ×0.91 [0.83, 1.00] for the unhinted setup. Raw p is 0.025 and 0.059, neither significant after correction.
   - On the 21 post-cutoff issues, duckgrep-hint succeeded on 52% against 38% (+14 points [0, +29]). That's too few tasks to rest on.
 - **Accuracy on localization is level.** Success differs from the baseline by +0 to −4 points, none significant.
-  - The "located" rows dip with the hint (Python −6 points with duckgrep-hint, −5 with serena-hint). That's mostly the metric.
-  - Turns to locate credits a duckgrep row only when the row names the file. Agents often filtered by file in the SQL (`WHERE path = …`) and didn't select the path. So 13 of the 24 Python duckgrep-hint runs counted as "not located" still gave the right answer, against 6 of 15 for the baseline. Runs that really didn't find the code are 11 against 9.
+  - The "located" rows dip with the hint (Python −4 points with duckgrep-hint, −5 with serena-hint). That's mostly agents answering without looking at the definition.
+  - Turns to locate counts a function only when a result shows its definition line or names it in its file. Hinted agents more often answered from a search hit inside the function, naming the right function without ever displaying its `def` line.
+  - So 11 of the 22 Python duckgrep-hint runs counted as "not located" still gave the right answer, and 13 of 23 for serena-hint, against 6 of 15 for the baseline. Runs that really didn't find the code are 11, 10 and 9.
+  - A first version of this section blamed duckgrep rows filtered by file in the SQL, which the locate rule didn't credit. The rule now credits a query that pins one file (`locate.pinned_file`, read from DuckDB's own parse of the SQL). That changed 4 of the 3,620 records.
   - Success is the measure to read here.
 
 **What this means.**
@@ -119,7 +122,6 @@ The pilot's question, asked at scale: does a Claude Code agent find code with fe
 
 **Open.**
 - **A second repetition** (about $125) would tighten the Rust localization intervals. The structural results don't need it.
-- **Turns to locate** should credit a duckgrep row when the query itself restricts the file. That needs a `locate.py` change, then `rescore`; success is unaffected.
 - **The failure audit:** the spec's audit of failed runs on a sample hasn't been done yet.
 - **Tool-definition tokens:** a smaller schema in the description, or one loaded on demand, would cut what every request pays.
 
@@ -418,11 +420,11 @@ How to read the tables: each row pairs a setup with the baseline task by task, a
 | cost ($) | 162 | 0.0267 | serena 0.0294 | ×1.10 [1.05, 1.15] | 0.000 | 0.000 | 27% |
 | cost ($) | 162 | 0.0267 | serena-hint 0.0288 | ×1.08 [1.03, 1.13] | 0.000 | 0.029 | 35% |
 | turns to locate | 162 | 1.7 | duckgrep 1.9 | +0.23 [+0.02, +0.48] | 0.018 | 1.000 | 45% |
-| turns to locate | 162 | 1.7 | duckgrep-hint 1.9 | +0.22 [+0.01, +0.46] | 0.062 | 1.000 | 47% |
+| turns to locate | 162 | 1.7 | duckgrep-hint 1.9 | +0.20 [-0.01, +0.44] | 0.127 | 1.000 | 48% |
 | turns to locate | 162 | 1.7 | serena 1.9 | +0.16 [-0.02, +0.35] | 0.021 | 1.000 | 46% |
 | turns to locate | 162 | 1.7 | serena-hint 1.8 | +0.12 [-0.02, +0.27] | 0.085 | 1.000 | 47% |
 | located | 162 | 91% | duckgrep 88% | -3 pp [-8, +1] | 0.197 | 1.000 | 48% |
-| located | 162 | 91% | duckgrep-hint 85% | -6 pp [-10, -1] | 0.029 | 1.000 | 47% |
+| located | 162 | 91% | duckgrep-hint 86% | -4 pp [-9, +1] | 0.090 | 1.000 | 48% |
 | located | 162 | 91% | serena 88% | -2 pp [-7, +2] | 0.248 | 1.000 | 49% |
 | located | 162 | 91% | serena-hint 86% | -5 pp [-9, -1] | 0.021 | 1.000 | 48% |
 | success | 162 | 85% | duckgrep 85% | +0 pp [-4, +4] | 1.000 | 1.000 | 50% |
@@ -491,11 +493,11 @@ How to read the tables: each row pairs a setup with the baseline task by task, a
 | cost ($) | 237 | 0.0267 | duckgrep-hint 0.0203 | ×0.76 [0.72, 0.80] | 0.000 | 0.000 | 76% |
 | cost ($) | 237 | 0.0267 | serena 0.0295 | ×1.10 [1.07, 1.14] | 0.000 | 0.000 | 27% |
 | cost ($) | 237 | 0.0267 | serena-hint 0.0255 | ×0.96 [0.92, 0.99] | 0.117 | 1.000 | 53% |
-| turns to locate | 237 | 1.6 | duckgrep 1.1 | -0.45 [-0.54, -0.37] | 0.000 | 0.000 | 71% |
+| turns to locate | 237 | 1.6 | duckgrep 1.1 | -0.46 [-0.54, -0.38] | 0.000 | 0.000 | 71% |
 | turns to locate | 237 | 1.6 | duckgrep-hint 1.0 | -0.56 [-0.64, -0.48] | 0.000 | 0.000 | 76% |
 | turns to locate | 237 | 1.6 | serena 1.5 | -0.06 [-0.12, +0.00] | 0.065 | 1.000 | 53% |
 | turns to locate | 237 | 1.6 | serena-hint 1.1 | -0.47 [-0.55, -0.39] | 0.000 | 0.000 | 72% |
-| located | 237 | 100% | duckgrep 99% | -0 pp [-2, +1] | 0.564 | 1.000 | 50% |
+| located | 237 | 100% | duckgrep 100% | +0 pp [-1, +1] | 1.000 | 1.000 | 50% |
 | located | 237 | 100% | duckgrep-hint 100% | +0 pp [-1, +1] | 1.000 | 1.000 | 50% |
 | located | 237 | 100% | serena 100% | +0 pp [-1, +1] | 1.000 | 1.000 | 50% |
 | located | 237 | 100% | serena-hint 98% | -1 pp [-3, +0] | 0.180 | 1.000 | 49% |
@@ -528,11 +530,11 @@ How to read the tables: each row pairs a setup with the baseline task by task, a
 | cost ($) | 257 | 0.0299 | duckgrep-hint 0.0226 | ×0.75 [0.72, 0.79] | 0.000 | 0.000 | 79% |
 | cost ($) | 257 | 0.0299 | serena 0.0346 | ×1.16 [1.12, 1.19] | 0.000 | 0.000 | 21% |
 | cost ($) | 257 | 0.0299 | serena-hint 0.0336 | ×1.12 [1.09, 1.16] | 0.000 | 0.000 | 28% |
-| turns to locate | 257 | 1.7 | duckgrep 1.2 | -0.46 [-0.56, -0.37] | 0.000 | 0.000 | 71% |
+| turns to locate | 257 | 1.7 | duckgrep 1.2 | -0.47 [-0.56, -0.39] | 0.000 | 0.000 | 71% |
 | turns to locate | 257 | 1.7 | duckgrep-hint 1.1 | -0.61 [-0.70, -0.52] | 0.000 | 0.000 | 77% |
 | turns to locate | 257 | 1.7 | serena 1.7 | +0.03 [-0.04, +0.09] | 0.187 | 1.000 | 48% |
 | turns to locate | 257 | 1.7 | serena-hint 1.8 | +0.13 [+0.03, +0.23] | 0.005 | 0.564 | 44% |
-| located | 257 | 98% | duckgrep 100% | +1 pp [-0, +3] | 0.180 | 1.000 | 51% |
+| located | 257 | 98% | duckgrep 100% | +2 pp [+0, +3] | 0.046 | 1.000 | 51% |
 | located | 257 | 98% | duckgrep-hint 100% | +2 pp [+0, +3] | 0.046 | 1.000 | 51% |
 | located | 257 | 98% | serena 100% | +2 pp [+0, +3] | 0.046 | 1.000 | 51% |
 | located | 257 | 98% | serena-hint 100% | +1 pp [+0, +3] | 0.083 | 1.000 | 51% |
