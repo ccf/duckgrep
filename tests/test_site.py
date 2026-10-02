@@ -186,3 +186,14 @@ def test_race_claims_match_snapshot():
         assert re.findall(r'class="meter__d">([^<]+)<', lanes) == [f"−{calls}", f"−{tokens}%", f"−{cost}%"]
         ratio = dg["cost_usd"] / base["cost_usd"]
         assert abs(ratio - snap["median_cost_ratio"]) < 0.03, "the replayed run is no longer typical"
+
+
+def test_wrangler_serves_the_build_output():
+    """Cloudflare deploys what wrangler.jsonc points at; it must be what site/build.sh writes."""
+    text = "\n".join(
+        ln for ln in (ROOT / "wrangler.jsonc").read_text().splitlines() if not ln.lstrip().startswith("//")
+    )
+    config = json.loads(text)
+    assert config["assets"]["directory"] == "./_site"
+    assert 'OUT="${1:-_site}"' in (ROOT / "site/build.sh").read_text()
+    assert "main" not in config  # static assets only: no Worker script
