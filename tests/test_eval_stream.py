@@ -196,3 +196,17 @@ def test_serenas_instructions_alone_are_not_adoption():
     assert m["mcp_share"] == 0.0  # and is no share of using the tool
     assert stream.metrics(calls("mcp__serena__initial_instructions", "mcp__serena__find_symbol"))["adopted"]
     assert stream.metrics(calls("mcp__duckgrep__query"))["adopted"]
+
+
+def test_a_builtin_plugin_is_never_a_config_problem_but_any_other_is_and_both_are_recorded():
+    # Claude Code switches built-in plugins on remotely (cc-plugin-plugin-authoring appeared overnight); they add no
+    # tools, skills or commands an agent can see, and those are checked on their own
+    tr = run("plain")
+    tr.init["plugins"] = [
+        {"name": "cc-plugin-plugin-authoring", "path": "builtin", "source": "cc-plugin-plugin-authoring@builtin"},
+        {"name": "cc-plugin-diff", "path": "builtin", "source": "cc-plugin-diff@builtin"},
+    ]
+    assert stream.config_problems(tr, BUILTINS, set(), model=HAIKU) == []
+    assert stream.metrics(tr)["plugins"] == ["cc-plugin-diff", "cc-plugin-plugin-authoring"]
+    tr.init["plugins"].append({"name": "superpowers", "path": "/x", "source": "superpowers@market"})
+    assert stream.config_problems(tr, BUILTINS, set(), model=HAIKU) == ["plugins loaded: ['superpowers']"]

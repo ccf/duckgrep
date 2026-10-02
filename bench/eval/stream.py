@@ -12,7 +12,6 @@ from . import config
 
 SEARCH_TOOLS = frozenset({"Grep", "Glob", "Bash"})
 NOT_USE = frozenset({"mcp__serena__initial_instructions"})  # MCP calls that are not using the tool
-BUILTIN_PLUGINS = frozenset({"cc-plugin-agents-md", "cc-plugin-telemetry"})  # cannot be removed; same in every setup
 
 
 @dataclass
@@ -142,7 +141,9 @@ def config_problems(tr: Transcript, tools: set[str], servers: set[str], model: s
     if set(status) != servers:
         problems.append(f"MCP servers are {sorted(status)}, not {sorted(servers)}")
     problems += [f"MCP server {n} is {s}" for n, s in sorted(status.items()) if s != "connected"]
-    plugins = {p.get("name") for p in init.get("plugins") or []} - BUILTIN_PLUGINS
+    # a built-in plugin can't be removed, comes and goes by remote switch, and is the same in every setup; what one
+    # could add that an agent sees (tools, skills, commands, hooks) is checked on its own
+    plugins = {p.get("name") for p in init.get("plugins") or [] if p.get("path") != "builtin"}
     if plugins:
         problems.append(f"plugins loaded: {sorted(plugins)}")
     for key in ("skills", "slash_commands", "memory_paths"):
@@ -232,6 +233,7 @@ def metrics(tr: Transcript) -> dict:
         "cost_usd": round(cost(tok), 6),
         "cli_cost_usd": res.get("total_cost_usd"),  # swings with cache warmth; recorded, not used
         "models": sorted(res.get("modelUsage") or {}),
+        "plugins": sorted(p.get("name") for p in tr.init.get("plugins") or []),
         "duration_ms": res.get("duration_ms"),
         "tool_seconds": {k: round(v, 3) for k, v in seconds.items()},
         "final_text": res.get("result") or "",
