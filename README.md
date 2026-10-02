@@ -2,7 +2,7 @@
 
 **Grep finds strings. duckgrep answers questions.**
 
-Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so questions that take dozens of greps take one query.
+Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop.
 
 ## Why it matters
 
@@ -102,8 +102,12 @@ A bare name (`helper()`) resolves only through its file's scope and imports. It 
 
 Full numbers are in [bench/RESULTS.md](bench/RESULTS.md). Headlines:
 
+- **Agents on real tasks (Claude Code with Sonnet 5.5; 3,620 runs on 724 tasks):**
+  - **Structural questions** (494 questions on callers, two-hop callers and importers, from 25 open-source Python and Rust repos): with duckgrep, agents used 12–19% fewer tool calls, 8–19% fewer round trips and 14–25% less cost than with Claude Code's own tools alone. Accuracy held: 96% success with duckgrep, against 94% (Python) and 96% (Rust) without.
+  - **Finding where to fix an issue** (230 SWE-bench tasks): it saved nothing, since the spot is usually one grep away, and on Python, carrying the tool added 11–13% tokens. Those are cached, so cost was flat.
+  - **Serena, measured alongside:** it added 47–58% tokens on structural questions.
 - **Latency (django, 7k files):** a no-op refresh takes ~140 ms, one edited file ~330 ms (+~0.8 s call-graph sync when the query needs it), and typical queries 30–90 ms. On vscode (19.5k files, 6.5M refs) typical queries take 80–370 ms. The full initial index of vscode takes ~2.5 min on 2 cores.
-- **vs ripgrep on agent-style questions (django):** "Who calls `get_or_create`, from which function" took 22 rg calls and 58 KB for grep vs 1 call and 9 KB for duckgrep. "Everything within 3 hops of `execute_sql`" took 110 calls and 104 KB vs 1 call and 113 bytes.
+- **vs ripgrep on agent-style questions (django; simulated generously for grep, one exhaustive answer per question):** "Who calls `get_or_create`, from which function" took 22 rg calls and 58 KB for grep vs 1 call and 9 KB for duckgrep. "Everything within 3 hops of `execute_sql`" took 110 calls and 104 KB vs 1 call and 113 bytes.
 - **Call-graph precision vs jedi:**
   - requests: confident tiers covered 85.5% of 55 in-repo calls at 100% precision.
   - freqtrade (1,118 in-repo calls): 73% at 100% precision.
@@ -114,7 +118,7 @@ Full numbers are in [bench/RESULTS.md](bench/RESULTS.md). Headlines:
 1. **Calls on local variables** (`compiler.execute_sql()`) fall to `name`/`ambiguous`, and so do methods named like builtins (`cache.get()`) and methods of external objects (`con.execute()` on a duckdb connection). On django, a 3-hop caller walk finds 4 functions via confident edges and 2,639 if name-only edges are followed. Light local type inference would turn 20–65% of these receiver calls into correct confident edges (measured against jedi on five Python repos): inherited `self`/`super()` methods, `x = Foo()`, annotated parameters, `self.attr`, imported module-level instances, and return annotations. It is the next big win.
 2. Add a TS equivalent of `bench/accuracy.py`, with tsserver as the reference.
 3. Optional SCIP ingestion where an indexer exists, for exact edges.
-4. Task-level eval: agent success, turns and tokens on real tasks with vs without duckgrep (vs plain grep and Serena).
+4. Finding where to fix an issue: the task-level eval measured no saving there, as an issue usually names something one grep finds. A second repetition of the eval would settle a possible small gain on Rust (cost ×0.89, not yet significant).
 5. Refresh on edit touches every ref sharing a name with the edited file's definitions (~60k refs for django `query.py`). Scope the dirty set tighter.
 6. **Aliased re-export chains** (`from pkg import X as Y` where `pkg/__init__.py` re-exports `X`, and TS barrels) can keep a stale edge after an edit to the underlying module. The differential fuzzer still finds this on a re-export-heavy synthetic repo; real repos rarely hit it (6 of 32,754 import edges in a large TS repo).
 

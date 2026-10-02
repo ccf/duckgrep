@@ -28,7 +28,7 @@ Colours are `var(--token-name)`; type styles are classes (`.type-display`, `.typ
 
 ---
 
-duckgrep gives your coding agent **a live, queryable model of your codebase** (definitions, callers, imports, history), so questions that take dozens of greps take one query. Its identity borrows DuckDB's vocabulary — the yellow, near-black ink, flat surfaces, a grotesk plus JetBrains Mono — and adds one idea of its own: the **duck-d**, a lowercase *d* built from a disc and a pill that doubles as a duck's head looking up, bill first. Use this system for the website, docs, the GitHub README and social cards.
+duckgrep gives your coding agent **a live, queryable model of your codebase** (definitions, callers, imports, history), so structural questions take one query instead of a search loop. Its identity borrows DuckDB's vocabulary — the yellow, near-black ink, flat surfaces, a grotesk plus JetBrains Mono — and adds one idea of its own: the **duck-d**, a lowercase *d* built from a disc and a pill that doubles as a duck's head looking up, bill first. Use this system for the website, docs, the GitHub README and social cards.
 
 ## Name and mark
 
@@ -53,7 +53,7 @@ For the GitHub README, which cannot follow the viewer's theme with CSS, use a `<
 ## Messaging
 
 - **Tagline:** "Grep finds strings. duckgrep answers questions." Always two sentences, in that order, verbatim. Set it on two lines, breaking after "strings."; when it is the headline, give "answers questions" the `match-bg`/`match-ink` highlight.
-- **Subhead:** "Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so questions that take dozens of greps take one query." Use it under the tagline, in link previews and as the repo description.
+- **Subhead:** "Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop." Use it under the tagline, in link previews and as the repo description.
 - **The problem:** agents find their way around with chains of `grep` → read file → `grep` again. That works for "where is this string." The questions that matter when changing code are structural — *who calls this, what does it call, what breaks if I change it, what's dead* — and each turns into a loop of searches, file reads and guesses, paid for in turns and tokens.
 - **Four reasons, in this order, with their bold lead-ins as written** (feature cards or section heads):
   1. **It answers structural questions, not text matches.**
@@ -61,6 +61,7 @@ For the GitHub README, which cannot follow the viewer's theme with CSS, use a `<
   3. **It joins code with its history.** — call graph, git churn and authorship in one place.
   4. **It's trustworthy mid-edit.** — refreshed before every query; every edge says how it was resolved.
 - **Hero proof point** — quote exactly, with the repo named: on django, finding every call to `get_or_create` and the function it sits in took 22 grep calls and 58 KB of output; duckgrep answered it in one query and 9 KB. Supporting: "everything within 3 hops of `execute_sql`" took 110 calls and 104 KB vs 1 call and 113 bytes; typical queries run in 30–90 ms on django (7k files). Link every number to `bench/RESULTS.md`.
+- **Agent proof point** — the measured effect on real agents. Quote it with its scope, never as a multiple: "In 3,620 Claude Code runs on 494 real structural questions across 25 open-source repos, agents with duckgrep used 12–19% fewer tool calls and cost 14–25% less, with the same accuracy." The django figures above are a simulated benchmark of one exhaustive answer per question; never present their 22× or 110× as what an agent saves. Where duckgrep doesn't help (finding where to fix an issue: no saving), say so when the numbers are shown at length.
 - **The mechanism** (for "How it works", never the headline): tree-sitter parses the repo into a single DuckDB file, exposed as one read-only `query(sql)` MCP tool whose description carries the whole schema.
 - **Honesty is part of the brand.** State what it can't resolve (resolution tiers, known gaps) as plainly as the README does; never claim full type resolution.
 
