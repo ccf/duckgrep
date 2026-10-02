@@ -1,6 +1,6 @@
 #!/bin/sh
 # Assemble duckgrep.dev into _site/ from site/ and the brand assets. It only copies; nothing compiles.
-# Cloudflare Pages: build command `sh site/build.sh`, output directory `_site`. An argument builds elsewhere.
+# Cloudflare Workers Builds runs this, then `npx wrangler deploy` serves _site/ (see wrangler.jsonc). An argument builds elsewhere.
 set -eu
 cd "$(dirname "$0")/.."
 OUT="${1:-_site}"

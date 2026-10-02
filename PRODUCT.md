@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-static HTML/CSS: hand-written pages that use `brand/tokens.css` and `brand/components.css` directly, with no build step. Hosted on Cloudflare Pages from this repo (the domain is duckgrep.dev).
+static HTML/CSS: hand-written pages that use `brand/tokens.css` and `brand/components.css` directly, with no build step. Hosted on Cloudflare Workers as static assets from this repo (`wrangler.jsonc`; the domain is duckgrep.dev).
 
 ## Users
 

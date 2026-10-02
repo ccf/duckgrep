@@ -1,0 +1,12 @@
+// duckgrep.dev: a Worker that only serves static assets (no script).
+// Cloudflare Workers Builds runs the build command `sh site/build.sh`, then
+// `npx wrangler deploy` (main) or `npx wrangler versions upload` (other branches).
+// _site/_headers sets the security headers; the custom domain is attached in the dashboard.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "duckgrep",
+  "compatibility_date": "2026-10-02",
+  "assets": {
+    "directory": "./_site"
+  }
+}
