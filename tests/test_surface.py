@@ -1,6 +1,7 @@
 """The agent-facing surface: result limits, verbatim text, macro disambiguation, MCP startup, roots."""
 
 import os
+import re
 import subprocess
 import threading
 import time
@@ -164,3 +165,16 @@ def test_schema_doc_states_the_bare_name_and_unresolved_rules_accurately():
         "unresolved  no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow); dst_* NULL"
         in SCHEMA_DOC
     )
+
+
+def test_the_tool_description_documents_every_table_and_macro_within_its_budget():
+    # every request an agent makes carries it: what it doesn't need costs on each one
+    from duckgrep.mcp_server import QUERY_DOC
+    from duckgrep.schema import SCHEMA_DOC
+
+    # each as an entry, name(, so that n_lines doesn't stand in for lines, nor a mention in an example for a table
+    for name in ("files", "symbols", "refs", "imports", "imports_resolved", "lines", "commits", "file_changes",
+                 "file_churn", "edges", "defs", "callers", "callees", "outline", "grep", "source"):  # fmt: skip
+        assert re.search(rf"(?<![\w.]){name}\(", SCHEMA_DOC), name
+    assert "(dst_path, dst_qualname)" in SCHEMA_DOC  # two hops that keep same-named functions apart
+    assert len(QUERY_DOC) <= 3100, len(QUERY_DOC)
