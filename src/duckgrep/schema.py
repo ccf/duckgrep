@@ -443,5 +443,6 @@ EXAMPLES
   SELECT * FROM defs('Session');
   SELECT * FROM callers('Session.request') WHERE resolution <> 'name';
   SELECT * FROM grep('(?i)retry') WHERE path LIKE 'src/%';
-  two hops: callers() again on each caller's qualname, or join edges on (dst_path, dst_qualname)
+  two hops: join edges on (dst_path, dst_qualname) = a first hop's (src_path, src_scope);
+    callers('qualname') also takes same-named functions in other files
 """
