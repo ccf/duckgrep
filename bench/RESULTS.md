@@ -77,7 +77,7 @@ Run with duckgrep at main dc9814b on shallow clones: freqtrade f2ec745 and djang
 
 - **freqtrade:** 1,646 of the 3,000 calls had an in-repo target. Confident tiers covered 71.9% of them, at 100% precision.
 - **django:** 1,411 had an in-repo target. Confident tiers covered 73.4%, at 99.8% precision.
-  - The one confident miss was `geos.Point._create_empty` in `gdal/geometries.py`, resolved to the same-named `Point` class in the calling file.
+  - Two kinds of confident errors make up the 0.2% imprecision. Once, an edge missed jedi's target entirely: `geos.Point._create_empty` in `gdal/geometries.py` resolved to the same-named `Point` class in the calling file (the `qualified` row's 87.5%). And a few `import` edges listed a second candidate alongside the right one (that row's 99.8%).
 - **Calls jedi resolved outside the repo:** duckgrep marked 97% (freqtrade) and 78% (django) of them `unresolved`. The rest were `ambiguous`, or `name` with a false in-repo candidate (1% and 13%).
 
 ## A/B evaluation: full run, repetition 1 (2026-10-02)
