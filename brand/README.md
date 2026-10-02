@@ -69,7 +69,7 @@ For the GitHub README, which cannot follow the viewer's theme with CSS, use a `<
 
 - Plain and confident, like the repo README: a bold claim as a full sentence, then the evidence that backs it. Contrast is the house move ("Grep finds strings. duckgrep answers questions."; "one query, not a search loop"). "It answers at once and builds the index in the background." not "duckgrep empowers you to…".
 - Show, then tell: every claim sits next to a real `duckgrep` command or SQL query and its real output.
-- Sentence case for headings and buttons ("Why it matters", "How it works", "Install", "Results so far"). No exclamation marks, no emoji, no superlatives.
+- Sentence case for headings and buttons ("What it saves", "Why it matters", "How it works", "Install"). No exclamation marks, no emoji, no superlatives.
 - "you" for the reader; "agents" for coding agents (Claude Code first — its one-line setup is `claude mcp add duckgrep -- duckgrep mcp`). Numbers are real benchmarks with the repo named, or left out.
 - Name the comparison fairly: ripgrep and Serena are the reference points; state measured differences, never disparage.
 - Credit DuckDB and tree-sitter plainly: "Built on DuckDB." Never imply endorsement by DuckDB Labs or the DuckDB Foundation.

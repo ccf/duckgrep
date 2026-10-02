@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 duckgrep parses a repo with tree-sitter (Python, TS/TSX/JS, Go, Rust) into one DuckDB file, `<root>/.duckgrep/index.duckdb`, and gives coding agents one read-only `query(sql)` MCP tool whose description carries the schema (`SCHEMA_DOC`). The bet: structural questions (who calls this, what does it call, what breaks if I change it) take one SQL call instead of grep → read → grep chains. It has to beat plain grep on tool calls, tokens and turns-to-locate on real tasks, measured, or the structure isn't earning its keep. It is Python on purpose: the goal is proving that, and the heavy lifting is already native (tree-sitter, DuckDB).
 
-README "Known gaps / next" is the roadmap; `bench/RESULTS.md` holds the measured numbers, with the machine, versions and commits behind them.
+`docs/roadmap.md` is the roadmap; `bench/RESULTS.md` holds the measured numbers, with the machine, versions and commits behind them. The README leads with the agent A/B results; its FAQ carries the schema, resolution tiers and freshness, and `CONTRIBUTING.md` the dev setup.
 
 ## Commands
 
