@@ -58,7 +58,27 @@ jedi's goto-definition serves as the reference. 55 calls had an in-repo target; 
 | qualified | 3.6% | 100% | 100% | 1.0 |
 | unresolved | 1.8% | 0% | 0% | 0 |
 
-Confident tiers covered 85.5% of in-repo calls with 100% precision. Of the calls jedi resolved outside the repo, duckgrep marked 86% `unresolved` and 14% `name`, meaning a false in-repo candidate. The sample is small; a django run is still to do.
+Confident tiers covered 85.5% of in-repo calls with 100% precision. Of the calls jedi resolved outside the repo, duckgrep marked 86% `unresolved` and 14% `name`, meaning a false in-repo candidate.
+
+### freqtrade and django (2026-10-02, 3,000 sampled calls each)
+
+Run with duckgrep at main dc9814b on shallow clones: freqtrade f2ec745 and django 0ae93a0, both of 2026-10-02.
+
+| duckgrep tier | freqtrade share | contains jedi target | exactly it | django share | contains jedi target | exactly it |
+|---|---:|---:|---:|---:|---:|---:|
+| import | 45.6% | 100% | 100% | 39.5% | 100% | 99.8% |
+| module | 0.1% | 100% | 100% | 15.9% | 100% | 100% |
+| self | 7.2% | 100% | 100% | 10.4% | 100% | 100% |
+| local | 10.6% | 100% | 100% | 7.1% | 100% | 100% |
+| qualified | 8.5% | 100% | 100% | 0.6% | 87.5% | 87.5% |
+| name | 26.8% | 100% | 75.1% (1.6 candidates) | 14.7% | 100% | 57.5% (2.1 candidates) |
+| ambiguous | 1.2% | 0% | 0% | 11.0% | 0% | 0% |
+| unresolved | 0.2% | 0% | 0% | 0.9% | 0% | 0% |
+
+- **freqtrade:** 1,646 of the 3,000 calls had an in-repo target. Confident tiers covered 71.9% of them, at 100% precision.
+- **django:** 1,411 had an in-repo target. Confident tiers covered 73.4%, at 99.8% precision.
+  - The one confident miss was `geos.Point._create_empty` in `gdal/geometries.py`, resolved to the same-named `Point` class in the calling file.
+- **Calls jedi resolved outside the repo:** duckgrep marked 97% (freqtrade) and 78% (django) of them `unresolved`. The rest were `ambiguous`, or `name` with a false in-repo candidate (1% and 13%).
 
 ## A/B evaluation: full run, repetition 1 (2026-10-02)
 

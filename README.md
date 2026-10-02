@@ -29,7 +29,7 @@ We measured duckgrep with Claude Code (Sonnet 5.5) on 494 structural questions f
 
 **Where it doesn't help:** finding where to fix a bug from an issue report (230 SWE-bench tasks). The issue usually names something one grep finds, so there's nothing to save. Carrying the tool's description added 11–13% tokens on Python; they're cached, so cost stayed flat.
 
-<sub>3,620 runs in all, made on 2026-10-02 with Claude Code 2.1.287. Changes compare each setup with Claude Code alone, task by task, with tool calls and round trips compared as 1 + n. † marks a difference that doesn't hold after correcting for all 160 comparisons; every duckgrep change above holds. Full tables, the method and the harness are in [bench/RESULTS.md](bench/RESULTS.md) and [bench/eval](bench/eval).</sub>
+<sub>3,620 runs in all, made on 2026-10-02 with Claude Code 2.1.287. Changes compare each setup with Claude Code alone, task by task, with tool calls and round trips compared as 1 + n. † marks a difference that doesn't hold after correcting for all 160 comparisons. Every duckgrep change in calls, round trips, tokens and cost holds; the correct-answer rates differ by no more than chance in any setup. Full tables, the method and the harness are in [bench/RESULTS.md](bench/RESULTS.md) and [bench/eval](bench/eval).</sub>
 
 ## Why it matters
 
@@ -136,11 +136,13 @@ A bare name (`helper()`) resolves only through its file's scope and imports. It 
 <details>
 <summary><b>How accurate is the call graph?</b></summary>
 
-Measured against jedi's goto-definition on Python repos ([bench/RESULTS.md](bench/RESULTS.md)):
+Measured against jedi's goto-definition on sampled calls in Python repos ([bench/RESULTS.md](bench/RESULTS.md)):
 
-- requests: confident tiers covered 85.5% of 55 in-repo calls at 100% precision.
-- freqtrade (1,118 in-repo calls): 73% at 100% precision.
-- django (474): 72–76% at 99.4–100%. The misses reached the right definition plus a same-named nested class.
+| repo | calls with an in-repo target | resolved confidently | precision |
+|---|---:|---:|---:|
+| django | 1,411 | 73.4% | 99.8% |
+| freqtrade | 1,646 | 71.9% | 100% |
+| requests | 55 | 85.5% | 100% |
 
 The rest fall to `name`, `ambiguous` or `unresolved`, which say so rather than guess. Calls on local variables are the main gap; see the [roadmap](docs/roadmap.md).
 </details>
