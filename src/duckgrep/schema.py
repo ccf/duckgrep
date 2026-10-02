@@ -443,14 +443,5 @@ EXAMPLES
   SELECT * FROM defs('Session');
   SELECT * FROM callers('Session.request') WHERE resolution <> 'name';
   SELECT * FROM grep('(?i)retry') WHERE path LIKE 'src/%';
-  -- functions nothing references (by edge; aliases and module.attr calls count)
-  SELECT s.path, s.qualname FROM symbols s WHERE s.kind = 'function'
-    AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.dst_path = s.path AND e.dst_qualname = s.qualname);
-  -- transitive callers (2 hops), keyed on (path, qualname) so same-named functions elsewhere don't join
-  WITH RECURSIVE up(p, q, d) AS (SELECT path, qualname, 0 FROM symbols WHERE qualname = 'Session.send' UNION
-    SELECT e.src_path, e.src_scope, d+1 FROM edges e JOIN up ON e.dst_path = up.p AND e.dst_qualname = up.q
-    WHERE d < 2 AND e.resolution <> 'name' AND e.src_scope <> '')
-  SELECT * FROM up;
-  -- hottest files by churn that define classes
-  SELECT c.* FROM file_churn c WHERE path IN (SELECT path FROM symbols WHERE kind='class') ORDER BY n_commits DESC LIMIT 10;
+  two hops: callers() again on each caller's qualname, or join edges on (dst_path, dst_qualname)
 """
