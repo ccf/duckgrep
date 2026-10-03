@@ -252,44 +252,46 @@ py_tx AS (  -- dotted names to resolve, per file: binding types, callees, return
           AND regexp_matches(recv_last, '^[A-Z]')
     )
 ),
-py_def AS (  -- a dotted name in a file -> the definition it names (class, function, Class.method): local first
+py_def AS (  -- a dotted name in a file -> the definition it names (class, function, Class.method); bline: where
+            -- the referencing file binds the name, so of several bindings the latest wins, as in Python
     SELECT * FROM (
-        SELECT t.path, t.text, s.path AS dpath, s.qualname AS dqual, s.kind AS dkind, s.returns, s.start_line AS dline, 0 AS p
+        SELECT t.path, t.text, t.head, s.path AS dpath, s.qualname AS dqual, s.kind AS dkind, s.returns,
+               s.start_line AS dline, s.start_line AS bline, 0 AS p
         FROM py_tx t JOIN symbols s ON s.path = t.path AND s.qualname = t.text
-        -- a bare name a nested def or class in this file also defines may mean that local one: don't guess
-        WHERE NOT EXISTS (SELECT 1 FROM symbols n WHERE n.path = t.path AND n.name = t.head AND n.parent IS NOT NULL
-                            AND n.kind IN ('class', 'function'))
       UNION ALL  -- from m import Foo  (Foo, Foo.create)
-        SELECT t.path, t.text, s.path, s.qualname, s.kind, s.returns, s.start_line, 1
+        SELECT t.path, t.text, t.head, s.path, s.qualname, s.kind, s.returns, s.start_line, i.line, 1
         FROM py_tx t
         JOIN py_imp i ON i.path = t.path AND i."local" = t.head AND i.name IS NOT NULL AND NOT i.target_is_module
         JOIN symbols s ON s.path = i.target_path AND s.qualname = i.name || substr(t.text, length(t.head) + 1)
       UNION ALL  -- ... re-exported by m
-        SELECT t.path, t.text, s.path, s.qualname, s.kind, s.returns, s.start_line, 2
+        SELECT t.path, t.text, t.head, s.path, s.qualname, s.kind, s.returns, s.start_line, i.line, 2
         FROM py_tx t
         JOIN py_imp i ON i.path = t.path AND i."local" = t.head AND i.name IS NOT NULL AND NOT i.target_is_module
         JOIN py_rx x ON x.mod_path = i.target_path AND x."local" = i.name
         JOIN symbols s ON s.path = x.target_path AND s.qualname = x.name || substr(t.text, length(t.head) + 1)
       UNION ALL  -- mod.Foo, a.b.Foo through a module import
-        SELECT t.path, t.text, s.path, s.qualname, s.kind, s.returns, s.start_line, 3
+        SELECT t.path, t.text, t.head, s.path, s.qualname, s.kind, s.returns, s.start_line, i.line, 3
         FROM py_tx t
         JOIN py_imp i ON i.path = t.path AND t.prefix IS NOT NULL AND i.target_path IS NOT NULL
              AND ((i."local" = t.prefix AND (i.name IS NULL OR i.target_is_module))
                   OR (i.name IS NULL AND i.alias IS NULL AND i.module = t.prefix))
         JOIN symbols s ON s.path = i.target_path AND s.parent IS NULL AND s.name = t.tail
       UNION ALL  -- ... re-exported by that module
-        SELECT t.path, t.text, s.path, s.qualname, s.kind, s.returns, s.start_line, 4
+        SELECT t.path, t.text, t.head, s.path, s.qualname, s.kind, s.returns, s.start_line, i.line, 4
         FROM py_tx t
         JOIN py_imp i ON i.path = t.path AND t.prefix IS NOT NULL AND i.target_path IS NOT NULL
              AND ((i."local" = t.prefix AND (i.name IS NULL OR i.target_is_module))
                   OR (i.name IS NULL AND i.alias IS NULL AND i.module = t.prefix))
         JOIN py_rx x ON x.mod_path = i.target_path AND x."local" = t.tail
         JOIN symbols s ON s.path = x.target_path AND s.parent IS NULL AND s.name = x.name
-    )
+    ) c
     WHERE NOT EXISTS (  -- `class Foo` then `Foo = Other` (or an import of Foo): the name no longer means the class
-        SELECT 1 FROM bindings bb WHERE bb.path = dpath AND bb.scope = '' AND bb.name = split_part(dqual, '.', 1)
-          AND bb.kind IN ('assign', 'annot', 'import', 'global') AND bb.line > dline)
-    QUALIFY row_number() OVER (PARTITION BY path, text ORDER BY p, dline DESC, dpath, dqual) = 1  -- later wins
+        SELECT 1 FROM bindings bb WHERE bb.path = c.dpath AND bb.scope = '' AND bb.name = split_part(c.dqual, '.', 1)
+          AND bb.kind IN ('assign', 'annot', 'import', 'global') AND bb.line > c.dline)
+      -- a name a nested def or class in this file also defines may mean that local one: don't guess at all
+      AND NOT EXISTS (SELECT 1 FROM symbols n WHERE n.path = c.path AND n.name = c.head AND n.parent IS NOT NULL
+                        AND n.kind IN ('class', 'function'))
+    QUALIFY row_number() OVER (PARTITION BY c.path, c.text ORDER BY c.bline DESC, c.p, c.dpath, c.dqual) = 1
 ),
 py_ext AS (  -- a dotted name in a file that names something outside the repo: an unresolved import, a builtin
     SELECT t.path, t.text FROM py_tx t

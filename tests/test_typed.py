@@ -486,3 +486,39 @@ def test_class_body_bindings_are_not_visible_in_methods(tmp_path):
         },
     )
     assert ("other.py", "Other.run", "typed") not in edges_at(root, "m.py", "run")
+
+
+def test_a_nested_namesake_blocks_imports_of_the_name_too(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "other.py": "class Foo:\n    def run(self):\n        return 0\n",
+            "m.py": "from other import Foo\n\n\nclass Foo:\n    def run(self):\n        return 1\n\n\ndef helper():\n    class Foo:\n"
+            "        pass\n\n    return Foo\n\n\ndef f():\n    x = Foo()\n    return x.run()\n",
+        },
+    )
+    assert ("other.py", "Foo.run", "typed") not in edges_at(root, "m.py", "run")
+
+
+def test_the_later_import_of_a_name_wins(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a.py": "\n" * 20 + "class Foo:\n    def run(self):\n        return 1\n",
+            "b.py": "class Foo:\n    def run(self):\n        return 2\n",
+            "m.py": "from a import Foo\nfrom b import Foo\n\n\ndef f():\n    x = Foo()\n    return x.run()\n",
+        },
+    )
+    assert ("a.py", "Foo.run", "typed") not in edges_at(root, "m.py", "run")
+
+
+def test_a_nested_namesake_in_another_file_does_not_block(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "elsewhere.py": "def g():\n    class Base:\n        pass\n\n    return Base\n",
+            "use.py": "from base import Base\n\n\ndef f():\n    x = Base()\n    return x.run()\n",
+        },
+    )
+    assert edges_at(root, "use.py", "run") == [("base.py", "Base.run", "typed")]
