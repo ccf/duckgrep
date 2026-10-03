@@ -30,6 +30,20 @@ The full vscode (re)index took 144 s.
 
 Symbols used: django `QuerySet.get_or_create` (edit `django/db/models/query.py`), vscode `createDecorator` (edit `src/vs/base/common/strings.ts`), requests `Session.request`.
 
+## Catching up after many changes (django)
+
+A django checkout moved back N commits, re-indexed from a copy of the index at `0ae93a02`, against a full index of the same checkout. Medians of 3 runs (load average 12–16), with process startup:
+
+| commits back (files changed) | full index | catch-up before | catch-up after |
+|---|---:|---:|---:|
+| 0 (none; only mtimes) | 9.2 s | 2.2 s | 0.6 s |
+| 50 (159) | 9.3 s | 6.6 s | 4.0 s |
+| 300 (698) | 9.2 s | 14.0 s | 9.2 s |
+| 1,000 (1,402) | 7.3 s | 17.0 s | 6.9 s |
+
+- **The fix:** the typed tier's dirty seed found re-exporting files with a correlated `EXISTS` over an `OR` join (3.1 s on 698 files; now two equality joins, 4 ms, the same 900 names on four change sets). It ran twice per freshen, and it no longer runs at all before a full edge rebuild. Files whose mtime changed but not their content are updated in one statement instead of one per file.
+- **Timed in-process** (no startup), the 300-commit catch-up went from 13.5 s to 5.8 s. What remains is re-parsing 590 files, recomputing their edges (2.5 s) and reading 1,201 new commits.
+
 ## vs ripgrep (`bench/vs_grep.py`, django)
 
 The grep side is simulated generously: every rg call is exact, and reading a hit's enclosing function counts as one call per distinct file.

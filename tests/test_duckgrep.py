@@ -99,6 +99,16 @@ def test_touch_without_change_is_not_reparsed(repo):
     assert q.run(repo, "SELECT 1").note == ""
 
 
+def test_touched_files_store_their_new_mtime(repo):
+    rows(repo, "SELECT 1")
+    touched = ["pkg/core.py", "pkg/__init__.py", "web/api.ts"]
+    for i, rel in enumerate(touched):
+        os.utime(os.path.join(repo, rel), ns=(1_700_000_000_000_000_000 + i, 1_700_000_000_000_000_000 + i))
+    q.run(repo, "SELECT 1")
+    got = dict(rows(repo, f"SELECT path, mtime_ns FROM files WHERE path IN {tuple(touched)}"))
+    assert got == {rel: os.stat(os.path.join(repo, rel)).st_mtime_ns for rel in touched}
+
+
 def test_read_only(repo):
     with pytest.raises(Exception, match="read-only"):
         q.run(repo, "DELETE FROM symbols")
