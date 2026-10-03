@@ -477,7 +477,7 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
 
   def normalize_type(text: str, cls: str | None = None, generic_head: bool = False) -> str | None:
       """An annotation as one dotted class name, or None: unwraps Optional/X | None/quotes/Annotated/type[...],
-      maps Self to `cls`. With generic_head, Base[T] names Base (for base classes); otherwise a subscript
+      maps Self to `cls` (the enclosing class qualname). With generic_head, Base[T] names Base (for base classes); otherwise a subscript
       (a container or generic) is None."""
       t = " ".join(text.split())
       if len(t) >= 2 and t[0] == t[-1] and t[0] in "'\"":
@@ -568,7 +568,7 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
               a = c.named_children[0]
               left, right, ann = (a.child_by_field_name(f) for f in ("left", "right", "type"))
               if left is not None and left.type == "identifier":
-                  tt = normalize_type(text(ann), short) if ann is not None else value_type(right, {})
+                  tt = normalize_type(text(ann), qual) if ann is not None else value_type(right, {})
                   add(qual, "self." + text(left), "attr", tt, left)
               return
           walk(c, qual, (qual, short), {})
@@ -586,7 +586,7 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
               for b in sup.named_children if sup is not None else []:
                   if b.type == "keyword_argument":
                       continue
-                  bt = normalize_type(text(b), short, generic_head=True)
+                  bt = normalize_type(text(b), qual, generic_head=True)
                   if bt not in _NO_METHODS:
                       add(qual, "", "base", bt, b, pos)
                   pos += 1
@@ -605,7 +605,7 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
                   pname, ann = param(p)
                   if pname is None:
                       continue
-                  tt = normalize_type(text(ann), cls[1] if cls else None) if ann is not None else None
+                  tt = normalize_type(text(ann), cls[0] if cls else None) if ann is not None else None
                   add(qual, pname, "param", tt, p)
                   if tt:
                       ps[pname] = tt
@@ -615,8 +615,7 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
               return
           if t == "assignment":
               left, right, ann = (n.child_by_field_name(f) for f in ("left", "right", "type"))
-              short = cls[1] if cls else None
-              tt = normalize_type(text(ann), short) if ann is not None else value_type(right, params)
+              tt = normalize_type(text(ann), cls[0] if cls else None) if ann is not None else value_type(right, params)
               if left is not None and left.type == "identifier":
                   add(scope, text(left), "annot" if ann is not None else "assign", tt, left)
               elif left is not None and left.type == "attribute":
@@ -768,7 +767,7 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
                       rt = node.child_by_field_name("return_type")
                       if rt is not None:
                           cls_q = classes[-1] if classes else None
-                          returns = normalize_type(_text(src, rt), cls_q.rsplit(".", 1)[-1] if cls_q else None)
+                          returns = normalize_type(_text(src, rt), cls_q)  # Self: the class qualname
   ```
 
   Then add `returns,` after the `_exported(...)` element of the tuple. Change the final return to:
@@ -1198,6 +1197,7 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
     UNION ALL  -- Foo.m(), mod.Foo.m(): a class receiver (qualified covers Foo's own methods; this adds its bases)
       SELECT r.path, r.line, r.col, d.dpath, d.dqual, 0, FALSE
       FROM py_r r JOIN py_def d ON d.path = r.path AND d.text = r.receiver AND d.dkind = 'class'
+      ANTI JOIN py_scoped s ON s.path = r.path AND s.line = r.line AND s.col = r.col  -- a name bound in scope isn't the class
   ),
   py_hit AS (  -- the method on that class or its nearest in-repo ancestor
       SELECT t.path, t.line, t.col, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind,

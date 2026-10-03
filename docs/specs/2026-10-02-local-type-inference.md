@@ -106,7 +106,7 @@ Each of these is a later spec:
   - `Annotated[X, ...]`;
   - `typing.` and `typing_extensions.` prefixes.
 
-  `Self` becomes the enclosing class. Anything else that isn't a plain dotted name is NULL: other unions, generics other than the ones listed, and subscripts.
+  `Self` becomes the enclosing class's qualified name (so a nested class's `Self` can't match a same-named top-level class). Anything else that isn't a plain dotted name is NULL: other unions, generics other than the ones listed, and subscripts.
 - **New column `symbols.returns`:** the normalised return annotation of a function or method, the same normalisation, NULL when absent.
 - **Where the facts live:** parameter names, `with`/`except ... as` targets and string annotations are recorded as `bindings` rows, not as new refs. Resolution needs only the facts, and this leaves the shared walker unchanged for every language. The one walker change is `symbols.returns`.
 - **Not handled in Phase 1:** a call to a `@property` (`obj.prop()`) still resolves like a method call, because `symbols` doesn't record decorators. Such calls are rare, and usually a bug in the calling code.
