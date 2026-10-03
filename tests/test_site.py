@@ -296,4 +296,4 @@ def test_the_github_links_carry_the_github_mark_and_a_name():
     tags = re.findall(r'<a [^>]*href="https://github.com/ccf/duckgrep"[^>]*>', page)
     for tag, inner in zip(tags, links, strict=True):
         assert "<svg" in inner and 'aria-hidden="true"' in inner, "the GitHub mark, decorative"
-        assert "aria-label=" in tag or re.sub(r"<[^>]+>", "", inner).strip(), "an accessible name"
+        assert re.search(r'aria-label="[^"]*[^"\s]', tag) or re.sub(r"<[^>]+>", "", inner).strip(), "an accessible name"
