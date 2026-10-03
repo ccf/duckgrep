@@ -53,6 +53,8 @@ Bugbot and Greptile review every PR:
 
 Never commit on, merge into or push `main` directly; a pre-commit hook refuses commits on it.
 
+A PR that changes what package users see adds a line under `## [Unreleased]` in `CHANGELOG.md`. A release moves those lines under the new version's dated heading. `tests/test_changelog.py` and the release workflow both refuse a version without one.
+
 Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, named `YYYY-MM-DD-<topic>.md`. Keep tool, skill and plugin names out of their paths and text.
 
 ## How it fits together
