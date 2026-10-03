@@ -242,3 +242,17 @@ def test_structured_data():
     assert ld["description"] in PAGE.read_text()  # the subhead, verbatim
     assert set(ld["sameAs"]) == {"https://github.com/ccf/duckgrep", "https://pypi.org/project/duckgrep/"}
     assert not {"aggregateRating", "review", "softwareVersion"} & set(ld)
+
+
+def test_font_link_matches_tokens_import():
+    """The head links the stylesheet tokens.css @imports, so the browser finds it early and fetches it once;
+    a brand font change must update both or the page loads two stylesheets."""
+    import html
+
+    (imported,) = re.findall(r'@import url\("([^"]+)"\)', (ROOT / "brand/tokens.css").read_text())
+    linked = [
+        html.unescape(href)
+        for href in re.findall(r'<link rel="stylesheet" href="([^"]+)"', PAGE.read_text())
+        if "fonts.googleapis.com" in href
+    ]
+    assert linked == [imported]
