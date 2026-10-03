@@ -80,6 +80,32 @@ Run with duckgrep at main 2e48a98 on shallow clones: freqtrade f2ec745 and djang
   - The calls that turned out to be in-repo once the stubs were off mostly fell to `name`, so coverage is lower than the earlier 73.4%.
 - **Calls jedi resolved outside the repo:** duckgrep marked 98% (freqtrade) and 89% (django) of them `unresolved`. The rest were `ambiguous`, or `name` with a false in-repo candidate (0% and 2%).
 
+### Typed receivers (2026-10-03)
+
+The `typed` tier infers a Python receiver's class from syntax, resolves it through imports, and walks in-repo base classes (spec `docs/specs/2026-10-02-local-type-inference.md`). It was measured against jedi on the same checkouts and samples as above: django 0ae93a0 and freqtrade f2ec745 with 3,000 calls each, and requests 611c616 with 300. `main` is 60ddb8a (stubs off, stdlib fix in); the typed tier is the `feat/typed-tier` branch.
+
+| | django, main | django, typed | freqtrade, main | freqtrade, typed | requests, main | requests, typed |
+|---|---:|---:|---:|---:|---:|---:|
+| calls with an in-repo target | 1,555 | 1,590 | 1,631 | 1,612 | 148 | 154 |
+| confident coverage | 66.8% | **87.3%** | 74.3% | **93.4%** | 67.6% | **87.0%** |
+| confident precision | 100% | 100% | 100% | 100% | 100% | 100% |
+| `typed` share (exactly jedi's target) | – | 23.3% (100%) | – | 20.3% (100%) | – | 15.6% (100%) |
+| `name` share | 19.9% | 4.0% | 24.6% | 6.2% | 23.0% | 10.4% |
+| `ambiguous` share | 11.7% | 6.2% | 1.0% | 0.4% | 5.4% | 0.6% |
+| jedi-external calls given a false `name` candidate | 1% | 0% | 0% | 0% | 6% | 0% |
+
+- **Coverage:** confident coverage rose 20.5 points on django, 19.1 on freqtrade and 19.4 on requests, with no confident miss in any sample.
+- **External objects:** calls on receivers whose class is outside the repo are now `unresolved` instead of `name` guesses. The in-repo counts move slightly between runs because the new rules change which calls jedi and duckgrep both resolve.
+- **Latency on django** (`bench/latency.py`, `django/db/models/query.py`, `main` and typed runs interleaved):
+  - A full index takes 9–11 s for both.
+  - Typical queries are unchanged.
+  - Edge sync after a one-file edit recomputes 70,673 refs, against 63,609 on `main`.
+  - The edge SQL for the same 40,000 refs takes about 185 ms, against 150 ms on `main`.
+  - Absolute sync times aren't comparable this run, because the machine ran other builds (load average 11–38): `main`'s own sync measured 336–678 ms and the typed tier's 530 ms.
+- **Two fixes made the latency bar:**
+  - staging the method lookup: the planner had joined every class's ancestry to every method first;
+  - marking only re-exported imports as dirty: editing `query.py` had marked the methods of 101 imported classes.
+
 ## A/B evaluation: full run, repetition 1 (2026-10-02)
 
 The pilot's question, asked at scale: does a Claude Code agent find code with fewer tool calls, tokens and round trips when it has duckgrep, without losing accuracy? The design is in `docs/specs/2026-09-30-ab-eval-full-run.md`. The tables are in the next section but one, "A/B evaluation: full".

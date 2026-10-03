@@ -314,13 +314,13 @@
       <table class="mini">
         <thead><tr><th scope="col">Repo</th><th scope="col">Calls with an in-repo target</th><th scope="col">Resolved confidently</th><th scope="col">Precision</th></tr></thead>
         <tbody>
-          <tr><th scope="row">django</th><td>1,532</td><td>65.7%</td><td>100%</td></tr>
-          <tr><th scope="row">freqtrade</th><td>1,623</td><td>71.4%</td><td>100%</td></tr>
-          <tr><th scope="row">requests</th><td>55</td><td>85.5%</td><td>100%</td></tr>
+          <tr><th scope="row">django</th><td>1,590</td><td>87.3%</td><td>100%</td></tr>
+          <tr><th scope="row">freqtrade</th><td>1,612</td><td>93.4%</td><td>100%</td></tr>
+          <tr><th scope="row">requests</th><td>154</td><td>87.0%</td><td>100%</td></tr>
         </tbody>
       </table>
       </div>
-      <p>The rest fall to <code>name</code>, <code>ambiguous</code> or <code>unresolved</code>, which say so rather than guess. Calls on local variables are the main gap; see the <a href="https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md">roadmap</a>.</p>
+      <p>The rest fall to <code>name</code>, <code>ambiguous</code> or <code>unresolved</code>, which say so rather than guess. What remains are receivers syntax can't type (unannotated parameters, loop variables, chained calls, and runtime-built APIs such as Django's managers); see the <a href="https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md">roadmap</a>.</p>
     </div>
   </details>
 
