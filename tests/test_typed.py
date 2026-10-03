@@ -440,3 +440,49 @@ def test_other_rebindings_stop_a_parameter_typing_an_attribute(tmp_path, case):
         },
     )
     assert ("base.py", "Base.run", "typed") not in edges_at(root, "svc.py", "run")
+
+
+def test_distinct_external_bases_with_one_name_stay_distinct(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "b.py": "from extone import External\n\n\nclass B(External):\n    pass\n",
+            "c.py": "from exttwo import External\n\n\nclass C(External):\n    def m(self):\n        return 1\n",
+            "d.py": "from b import B\nfrom c import C\n\n\nclass D(B, C):\n    pass\n\n\ndef f():\n    x = D()\n    return x.m()\n",
+        },
+    )
+    assert ("c.py", "C.m", "typed") not in edges_at(root, "d.py", "m")  # extone.External may define m first
+
+
+def test_a_binding_before_the_class_does_not_hide_it(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "Foo = None\n\n\nclass Foo:\n    def run(self):\n        return 1\n\n\ndef f():\n    x = Foo()\n    return x.run()\n"
+        },
+    )
+    assert edges_at(root, "m.py", "run") == [("m.py", "Foo.run", "typed")]
+
+
+def test_a_function_local_class_is_not_its_module_namesake(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "class Foo:\n    def run(self):\n        return 1\n\n\ndef f():\n    class Foo:\n        def run(self):\n"
+            "            return 2\n\n    x = Foo()\n    return x.run()\n",
+        },
+    )
+    assert ("m.py", "Foo.run", "typed") not in edges_at(root, "m.py", "run")
+
+
+def test_class_body_bindings_are_not_visible_in_methods(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "m.py": "from base import Base\nfrom other import Other\n\nx = Base()\n\n\nclass C:\n    if True:\n        x = Other()\n\n"
+            "    def go(self):\n        return x.run()\n",
+        },
+    )
+    assert ("other.py", "Other.run", "typed") not in edges_at(root, "m.py", "run")
