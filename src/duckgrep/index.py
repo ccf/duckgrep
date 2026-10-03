@@ -320,7 +320,7 @@ def edges_version() -> str:
 
     A change rebuilds edges.
     """
-    key = f"{schema.EDGES_COMPUTE}\0{schema.VIEWS}\0{schema.NAME_CAP}"
+    key = f"{schema.EDGES_COMPUTE}\0{schema.VIEWS}\0{schema.NAME_CAP}\0{schema.INHERIT_DEPTH}"
     return hashlib.blake2b(key.encode(), digest_size=8).hexdigest()
 
 
@@ -551,7 +551,9 @@ EDGE_BATCH_REFS = 400_000
 
 
 def _compute_edges(con, source: str, where: str = "TRUE") -> None:
-    con.execute(schema.EDGES_COMPUTE.format(source=source, where=where, cap=schema.NAME_CAP))
+    con.execute(
+        schema.EDGES_COMPUTE.format(source=source, where=where, cap=schema.NAME_CAP, depth=schema.INHERIT_DEPTH)
+    )
 
 
 def _rebuild_edges(con) -> None:

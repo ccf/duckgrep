@@ -161,7 +161,11 @@ def test_confident_label_is_deterministic(tmp_path):
         labels = set()
         for _ in range(40):
             con.execute("DELETE FROM edges")
-            con.execute(schema.EDGES_COMPUTE.format(source="refs", where="TRUE", cap=schema.NAME_CAP))
+            con.execute(
+                schema.EDGES_COMPUTE.format(
+                    source="refs", where="TRUE", cap=schema.NAME_CAP, depth=schema.INHERIT_DEPTH
+                )
+            )
             q = "SELECT resolution FROM edges WHERE src_path = 'lib/core.py' AND name = 'helper' AND line = 9"
             labels |= set(con.execute(q).fetchall())
     finally:
