@@ -55,6 +55,8 @@ Never commit on, merge into or push `main` directly; a pre-commit hook refuses c
 
 A PR that changes what package users see adds a line under `## [Unreleased]` in `CHANGELOG.md`. A release moves those lines under the new version's dated heading. `tests/test_changelog.py` and the release workflow both refuse a version without one.
 
+Release every feature and fix. Once a PR that adds a CHANGELOG line merges, cut a release without waiting to be asked: a `release/<version>` PR bumps the version (a patch for fixes and speedups, a minor for features), runs `uv lock` and dates the Unreleased notes. After it merges, `gh release create v<version> --target main` with that version's CHANGELOG section as the notes, then watch the release workflow and confirm a clean install from PyPI (`CONTRIBUTING.md`, Releasing).
+
 Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, named `YYYY-MM-DD-<topic>.md`. Keep tool, skill and plugin names out of their paths and text.
 
 ## How it fits together

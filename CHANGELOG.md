@@ -4,6 +4,8 @@ Notable changes to the `duckgrep` package, newest first. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-03
+
 ### Changed
 - **Catching up after many files change is faster.** After a branch switch, a big pull or a copied index, the next query re-indexes the changed files. Moving a django checkout 300 commits (698 files) now takes 5.8 s instead of 13.5 s, and a copied index on the same commit catches up in 0.6 s instead of 2.2 s.
 
@@ -40,6 +42,7 @@ Notable changes to the `duckgrep` package, newest first. The format follows [Kee
 - **The first release.** A tree-sitter index of Python, TypeScript/TSX, JavaScript, Go and Rust in one DuckDB file, refreshed before every query. It's served as one read-only `query(sql)` MCP tool (`duckgrep mcp`), with a CLI (`duckgrep q`, `callers`, `callees`, `def`, `outline`, `grep`, `source`).
 - **A call graph with resolution tiers:** `self`, `local`, `package`, `import`, `module`, `qualified`, `name`, `ambiguous` and `unresolved`. Git history comes in as `commits`, `file_changes` and `file_churn`.
 
-[Unreleased]: https://github.com/ccf/duckgrep/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ccf/duckgrep/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ccf/duckgrep/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ccf/duckgrep/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ccf/duckgrep/releases/tag/v0.1.0
