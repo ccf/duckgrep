@@ -23,6 +23,7 @@ import duckdb
 import pyarrow as pa
 
 from . import schema
+from .bindings import BINDING_COLS
 from .extract import EXT_LANG, FAMILY, extract
 
 DB_DIR = ".duckgrep"
@@ -58,11 +59,12 @@ SYMBOL_COLS = [
     "signature",
     "doc",
     "exported",
+    "returns",
 ]
 REF_COLS = ["path", "lang", "name", "kind", "receiver", "line", "col", "scope", "scope_class"]
 IMPORT_COLS = ["path", "family", "module", "name", "alias", "local", "line", "key", "subkey"]
 MODULE_COLS = ["path", "family", "key", "drop_n"]
-PER_FILE_TABLES = ["symbols", "refs", "imports", "modules", "lines"]
+PER_FILE_TABLES = ["symbols", "refs", "imports", "modules", "lines", "bindings"]
 
 
 @dataclass
@@ -299,12 +301,15 @@ def _grammar_versions() -> str:
 
 
 def extractor_version() -> str:
-    """What stored rows depend on: extractor code, grammars and table layout. A change forces a full re-parse."""
+    """What stored rows depend on: extractor and binding-rule code, grammars and table layout. A change forces a
+    full re-parse."""
+    from . import bindings as _b
     from . import extract as _e
 
     h = hashlib.blake2b(digest_size=8)
-    with open(_e.__file__, "rb") as f:
-        h.update(f.read())
+    for mod in (_e, _b):
+        with open(mod.__file__, "rb") as f:
+            h.update(f.read())
     h.update(_grammar_versions().encode())
     h.update(schema.TABLES.encode())
     return h.hexdigest()
@@ -479,7 +484,7 @@ def freshen(
             for i in range(0, len(jobs), CHUNK):
                 chunk = [(root, p, lang, parse, ctx) for p, lang, parse in jobs[i : i + CHUNK]]
                 results = ex.map(_work, chunk, chunksize=8) if ex else map(_work, chunk)
-                rows = {"symbols": [], "refs": [], "imports": [], "modules": []}
+                rows = {"symbols": [], "refs": [], "imports": [], "modules": [], "bindings": []}
                 lines = {"path": [], "line": [], "text": []}
                 for p, file_lines, res in results:
                     if file_lines is None:
@@ -497,6 +502,7 @@ def freshen(
                 _insert(con, "refs", REF_COLS, rows["refs"])
                 _insert(con, "imports", IMPORT_COLS, rows["imports"])
                 _insert(con, "modules", MODULE_COLS, rows["modules"])
+                _insert(con, "bindings", BINDING_COLS, rows["bindings"])
                 if lines["path"]:
                     con.register("_lines", pa.table(lines))
                     con.execute("INSERT INTO lines BY NAME SELECT * FROM _lines")

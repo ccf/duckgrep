@@ -7,7 +7,7 @@ consistent with the base tables and never needs a global rebuild.
 
 from . import builtin_names
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 TABLES = """
 CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR);
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     end_line   INTEGER,
     signature  VARCHAR,
     doc        VARCHAR,             -- first line of docstring / leading comment
-    exported   BOOLEAN
+    exported   BOOLEAN,
+    returns    VARCHAR              -- normalised return annotation (Python), NULL if none
 );
 
 CREATE TABLE IF NOT EXISTS refs (
@@ -49,6 +50,16 @@ CREATE TABLE IF NOT EXISTS refs (
     col         INTEGER,
     scope       VARCHAR,            -- qualname of innermost enclosing symbol ('' = module level)
     scope_class VARCHAR             -- qualname of innermost enclosing class-like scope
+);
+
+CREATE TABLE IF NOT EXISTS bindings (  -- Python: what each name is bound to, per scope (see bindings.py)
+    path      VARCHAR,
+    scope     VARCHAR,            -- def/class qualname ('' = module); base and attr rows: the class
+    name      VARCHAR,            -- the name, self.<attr> for attributes, '' for base rows
+    kind      VARCHAR,            -- assign | annot | param | attr | base | global
+    type_text VARCHAR,            -- dotted class name, call:<callee>, builtin type of a literal, or NULL
+    line      INTEGER,
+    pos       INTEGER             -- base rows: position in the class's bases
 );
 
 CREATE TABLE IF NOT EXISTS imports (

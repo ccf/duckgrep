@@ -121,3 +121,32 @@ def test_nested_scopes_use_walker_qualnames():
 def test_bindings_survive_parse_errors():
     rows = bind("def f(:\n    pass\n\ndef g():\n    x = Foo()\n")
     assert ("m.py", "g", "x", "assign", "call:Foo", 5, 0) in rows
+
+
+def test_bindings_and_returns_are_stored_and_refreshed(tmp_path):
+    from helpers import fresh_snapshot, make_repo, rows, snapshot, write
+
+    root = make_repo(
+        tmp_path / "r",
+        {"a.py": "class Foo:\n    def make(self) -> 'Self':\n        return self\n\n\ndef f():\n    x = Foo()\n"},
+    )
+    assert rows(root, "SELECT scope, name, kind, type_text FROM bindings ORDER BY ALL") == [
+        ("Foo.make", "self", "param", None),
+        ("f", "x", "assign", "call:Foo"),
+    ]
+    assert rows(root, "SELECT qualname, returns FROM symbols WHERE returns IS NOT NULL") == [("Foo.make", "Foo")]
+    write(root, "a.py", "def f():\n    x = Bar()\n")
+    assert rows(root, "SELECT name, type_text FROM bindings") == [("x", "call:Bar")]
+    tables = ("symbols", "bindings", "edges")
+    assert snapshot(root, tables) == fresh_snapshot(root, tmp_path, tables)
+
+
+def test_a_change_to_the_binding_rules_forces_a_reparse(tmp_path, monkeypatch):
+    from duckgrep import bindings
+    from duckgrep.index import extractor_version
+
+    before = extractor_version()
+    fake = tmp_path / "bindings.py"
+    fake.write_text(open(bindings.__file__).read() + "\n# a rule changed\n")
+    monkeypatch.setattr(bindings, "__file__", str(fake))
+    assert extractor_version() != before

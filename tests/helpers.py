@@ -14,6 +14,7 @@ COLUMNS = {
     "refs": "*",
     "imports": "*",
     "modules": "*",
+    "bindings": "*",
     "lines": "*",
     "edges": "*",
 }
