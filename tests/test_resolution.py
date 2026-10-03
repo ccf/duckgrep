@@ -265,3 +265,46 @@ def test_callers_summary_counts_only_the_class_language(tmp_path):
     got = rows(root, "SELECT targets FROM callers('Cache.get') WHERE src_path IS NULL")
     assert got == [("1 call(s) of .get() on receivers of unknown type are not listed; callers('get') shows them",)]
     assert rows(root, "SELECT * FROM callers('NoSuchClass.get')") == []
+
+
+def test_stdlib_imports_do_not_resolve_to_nested_repo_modules(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "proj/utils/json.py": "def dumps(x):\n    return x\n",
+            "proj/app.py": "import json\n\n\ndef f():\n    return json.dumps(1)\n",
+        },
+    )
+    assert edges_at(root, "proj/app.py", "dumps") == [(None, None, "unresolved")]
+
+
+def test_stdlib_names_still_resolve_to_top_level_and_src_modules(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "json.py": "def dumps(x):\n    return x\n",
+            "app.py": "import json\n\n\ndef f():\n    return json.dumps(1)\n",
+            "src/math.py": "def tau():\n    return 6\n",
+            "src/use.py": "import math\n\n\ndef g():\n    return math.tau()\n",
+        },
+    )
+    assert edges_at(root, "app.py", "dumps") == [("json.py", "dumps", "module")]
+    assert edges_at(root, "src/use.py", "tau") == [("src/math.py", "tau", "module")]
+
+
+def test_private_stdlib_modules_and_the_resolved_imports_view(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "proj/utils/_json.py": "def scan(x):\n    return x\n",
+            "proj/utils/json.py": "def dumps(x):\n    return x\n",
+            "proj/app.py": "import _json\nimport json\nfrom proj.utils import json as pj\n",
+            "src/math.py": "def tau():\n    return 6\n",
+            "src/use.py": "import math\n",
+        },
+    )
+    got = dict(rows(root, "SELECT path || ':' || module, target_path FROM imports_resolved ORDER BY ALL"))
+    assert got["proj/app.py:_json"] is None
+    assert got["proj/app.py:json"] is None
+    assert got["proj/app.py:proj.utils"] is not None  # an ordinary package import still resolves
+    assert got["src/use.py:math"] == "src/math.py"
