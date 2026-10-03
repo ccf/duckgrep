@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not found · duckgrep</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="/brand/tokens.css">
+<link rel="stylesheet" href="/brand/components.css">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<header class="top">
+  <a class="top__home" href="/" aria-label="duckgrep home">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="/brand/logos/duckgrep-lockup-dark.svg">
+      <img src="/brand/logos/duckgrep-lockup-light.svg" alt="duckgrep" height="32">
+    </picture>
+  </a>
+</header>
+<main class="notfound">
+  <h1 class="section__title">Nothing here.</h1>
+<pre class="dg-term"><span class="prompt">$</span> duckgrep q "SELECT path, lang, size FROM files WHERE path = '<span class="dg-match">this page</span>'"
+<span class="ctx">path  lang  size</span>
+<span class="ctx">----  ----  ----</span></pre>
+  <p><a href="/">Back to duckgrep.dev →</a></p>
+</main>
+</body>
+</html>

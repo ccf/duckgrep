@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 OUT="${1:-_site}"
 rm -rf "$OUT"
 mkdir -p "$OUT/brand"
-cp site/index.html site/site.css site/site.js site/_headers "$OUT"/
+cp site/index.html site/404.html site/site.css site/site.js site/_headers site/robots.txt site/sitemap.xml "$OUT"/
 cp brand/tokens.css brand/components.css "$OUT"/brand/
 cp -R brand/logos "$OUT"/brand/logos
 rm -f "$OUT"/brand/logos/README.md

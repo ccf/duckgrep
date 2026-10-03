@@ -7,6 +7,8 @@
   "name": "duckgrep",
   "compatibility_date": "2026-10-02",
   "assets": {
-    "directory": "./_site"
+    "directory": "./_site",
+    // unknown paths get _site/404.html, with a 404 status
+    "not_found_handling": "404-page"
   }
 }

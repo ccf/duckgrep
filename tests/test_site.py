@@ -22,10 +22,11 @@ class Collect(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.refs: list[str] = []
-        self.scripts: list[str] = []
+        self.scripts: list[str] = []  # inline scripts that run, which the CSP must hash
+        self.data: list[str] = []  # JSON-LD blocks: data, never run
         self.steps: list[dict] = []
         self.lanes: list[str] = []
-        self._script = False
+        self._into: list[str] | None = None
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -33,8 +34,8 @@ class Collect(HTMLParser):
             if a.get(key):
                 self.refs.append(a[key])
         if tag == "script" and "src" not in a:
-            self._script = True
-            self.scripts.append("")
+            self._into = self.data if a.get("type") == "application/ld+json" else self.scripts
+            self._into.append("")
         if tag == "div" and a.get("data-task"):
             self.lanes.append(a["data-task"])
         if tag == "li" and "data-ms" in a:
@@ -42,16 +43,16 @@ class Collect(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag == "script":
-            self._script = False
+            self._into = None
 
     def handle_data(self, data):
-        if self._script:
-            self.scripts[-1] += data
+        if self._into is not None:
+            self._into[-1] += data
 
 
-def parse() -> Collect:
+def parse(page: Path = PAGE) -> Collect:
     c = Collect()
-    c.feed(PAGE.read_text())
+    c.feed(page.read_text())
     return c
 
 
@@ -202,5 +203,42 @@ def test_wrangler_serves_the_build_output(tmp_path):
     config = json.loads(text)
     assert "main" not in config  # static assets only: no Worker script
     served = tmp_path / config["assets"]["directory"]
-    for name in ("index.html", "site.css", "site.js", "_headers", "favicon.svg", "brand/tokens.css"):
+    for name in (
+        "index.html",
+        "404.html",
+        "robots.txt",
+        "sitemap.xml",
+        "site.css",
+        "site.js",
+        "_headers",
+        "favicon.svg",
+        "brand/tokens.css",
+    ):
         assert (served / name).is_file(), f"{name} is not in {config['assets']['directory']}"
+
+
+def test_not_found_page_links_resolve(built):
+    """404.html is served at any path, so its links must be absolute and present in the build."""
+    for ref in parse(ROOT / "site/404.html").refs:
+        if ref.startswith("https:"):
+            continue
+        assert ref.startswith("/"), f"{ref} is relative; it would break below the site root"
+        assert (built / ref.lstrip("/")).is_file() or ref == "/", f"{ref} is missing from the build"
+    assert 'name="robots" content="noindex"' in (ROOT / "site/404.html").read_text()
+
+
+def test_robots_points_at_the_sitemap():
+    robots = (ROOT / "site/robots.txt").read_text()
+    assert "Sitemap: https://duckgrep.dev/sitemap.xml" in robots and "Disallow: /\n" not in robots
+    assert "<loc>https://duckgrep.dev/</loc>" in (ROOT / "site/sitemap.xml").read_text()
+
+
+def test_structured_data():
+    """Facts only: no version that would drift, no ratings or users, links that exist."""
+    (block,) = parse().data
+    ld = json.loads(block)
+    assert ld["@type"] == "SoftwareApplication" and ld["name"] == "duckgrep"
+    assert ld["offers"]["price"] == "0"
+    assert ld["description"] in PAGE.read_text()  # the subhead, verbatim
+    assert set(ld["sameAs"]) == {"https://github.com/ccf/duckgrep", "https://pypi.org/project/duckgrep/"}
+    assert not {"aggregateRating", "review", "softwareVersion"} & set(ld)
