@@ -58,11 +58,19 @@ METHODS = _pairs("py", _PY_METHODS) | _pairs("js", _JS_METHODS) | _pairs("rs", _
 GLOBALS = _pairs("py", _PY_GLOBALS) | _pairs("js", _JS_GLOBALS) | _pairs("rs", _RS_GLOBALS)
 
 
-# top-level standard-library module names (sys.stdlib_module_names, CPython 3.12, private ones dropped):
-# an absolute import of one of these never means a nested repo module that happens to share the name
+# top-level standard-library module names (sys.stdlib_module_names, CPython 3.12, private ones included:
+# `import _json` is importable too): an absolute import of one of these never means a nested repo module
 _PY_STDLIB = """
-abc aifc antigravity argparse array ast asyncio atexit audioop base64 bdb binascii bisect builtins bz2
-cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent
+__future__ _abc _aix_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk _codecs_iso2022
+_codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _compat_pickle _compression _contextvars _crypt
+_csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib
+_frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _io _json _locale _lsprof _lzma _markupbase
+_md5 _msi _multibytecodec _multiprocessing _opcode _operator _osx_support _overlapped _pickle _posixshmem
+_posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong _queue _random _scproxy _sha1 _sha2 _sha3
+_signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct _symtable _thread
+_threading_local _tkinter _tokenize _tracemalloc _typing _uuid _warnings _weakref _weakrefset _winapi
+_zoneinfo abc aifc antigravity argparse array ast asyncio atexit audioop base64 bdb binascii bisect builtins
+bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent
 configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal
 difflib dis doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch
 fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac
