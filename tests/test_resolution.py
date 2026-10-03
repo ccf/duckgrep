@@ -265,3 +265,28 @@ def test_callers_summary_counts_only_the_class_language(tmp_path):
     got = rows(root, "SELECT targets FROM callers('Cache.get') WHERE src_path IS NULL")
     assert got == [("1 call(s) of .get() on receivers of unknown type are not listed; callers('get') shows them",)]
     assert rows(root, "SELECT * FROM callers('NoSuchClass.get')") == []
+
+
+def test_stdlib_imports_do_not_resolve_to_nested_repo_modules(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "proj/utils/json.py": "def dumps(x):\n    return x\n",
+            "proj/app.py": "import json\n\n\ndef f():\n    return json.dumps(1)\n",
+        },
+    )
+    assert edges_at(root, "proj/app.py", "dumps") == [(None, None, "unresolved")]
+
+
+def test_stdlib_names_still_resolve_to_top_level_and_src_modules(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "json.py": "def dumps(x):\n    return x\n",
+            "app.py": "import json\n\n\ndef f():\n    return json.dumps(1)\n",
+            "src/math.py": "def tau():\n    return 6\n",
+            "src/use.py": "import math\n\n\ndef g():\n    return math.tau()\n",
+        },
+    )
+    assert edges_at(root, "app.py", "dumps") == [("json.py", "dumps", "module")]
+    assert edges_at(root, "src/use.py", "tau") == [("src/math.py", "tau", "module")]

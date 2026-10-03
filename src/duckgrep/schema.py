@@ -118,6 +118,14 @@ CREATE TABLE IF NOT EXISTS file_changes (
 
 NAME_CAP = 10
 
+# A Python key whose first part is a stdlib module name matches a repo module only when it is the module's full
+# path (drop_n = 0) or its path under a top-level src/ (src layout): `import json` is the stdlib, not
+# proj/utils/json.py reached by dotted suffix.
+STDLIB_GUARD = (
+    "NOT (family = 'py' AND drop_n > 0 AND split_part(key, '.', 1) IN (@PY_STDLIB@)"
+    " AND NOT (drop_n = 1 AND starts_with(path, 'src/')))"
+)
+
 # Computes edges for the refs in {source} selected by {where} (a predicate on refs r).
 # Must stay consistent with the imports_resolved view below.
 # Tiers: 1 = confident (self, local, package, import, module, qualified)
@@ -136,7 +144,7 @@ WITH r AS (
 imps AS (SELECT * FROM imports WHERE path IN (SELECT DISTINCT path FROM r)),
 best_mod AS (
     SELECT family, key, path FROM modules
-    WHERE key IN (SELECT key FROM imps UNION SELECT subkey FROM imps)
+    WHERE key IN (SELECT key FROM imps UNION SELECT subkey FROM imps) AND @STDLIB_GUARD@
     QUALIFY row_number() OVER (PARTITION BY family, key ORDER BY drop_n, length(path), path) = 1
 ),
 imp AS (
@@ -303,8 +311,15 @@ def _values(pairs) -> str:
     return ", ".join(f"('{f}', '{n}')" for f, n in sorted(pairs))
 
 
-EDGES_COMPUTE = _EDGES_TEMPLATE.replace("@BUILTIN_METHODS@", _values(builtin_names.METHODS)).replace(
-    "@BUILTIN_GLOBALS@", _values(builtin_names.GLOBALS)
+def _names(words) -> str:
+    return ", ".join(f"'{w}'" for w in sorted(words))
+
+
+_GUARD = STDLIB_GUARD.replace("@PY_STDLIB@", _names(builtin_names.PY_STDLIB))
+EDGES_COMPUTE = (
+    _EDGES_TEMPLATE.replace("@BUILTIN_METHODS@", _values(builtin_names.METHODS))
+    .replace("@BUILTIN_GLOBALS@", _values(builtin_names.GLOBALS))
+    .replace("@STDLIB_GUARD@", _GUARD)
 )
 
 VIEWS = r"""
@@ -312,6 +327,7 @@ VIEWS = r"""
 CREATE OR REPLACE VIEW imports_resolved AS
 WITH best AS (
     SELECT family, key, path FROM modules
+    WHERE @STDLIB_GUARD@
     QUALIFY row_number() OVER (PARTITION BY family, key ORDER BY drop_n, length(path), path) = 1
 )
 SELECT i.*,
@@ -406,7 +422,7 @@ CREATE OR REPLACE MACRO source(q) AS TABLE
            l.line, l.text
     FROM s JOIN lines l ON l.path = s.path AND l.line BETWEEN s.start_line AND s.end_line, k
     ORDER BY l.line;
-"""
+""".replace("@STDLIB_GUARD@", _GUARD)
 
 # Shown to agents in the MCP tool description and by `duckgrep schema`.
 SCHEMA_DOC = """\
