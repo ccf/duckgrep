@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>duckgrep: Grep finds strings. duckgrep answers questions.</title>
+<title>duckgrep: a code index for coding agents (MCP server)</title>
 <meta name="description" content="Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop.">
 <link rel="canonical" href="https://duckgrep.dev/">
 <meta property="og:type" content="website">
@@ -15,6 +15,7 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="duckgrep: Grep finds strings. duckgrep answers questions.">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="duckgrep: Grep finds strings. duckgrep answers questions.">
 <link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -23,11 +24,35 @@
 <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- the fonts tokens.css @imports, requested here so the browser finds them without waiting for tokens.css -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;700&amp;family=JetBrains+Mono:wght@400;700;800&amp;display=swap">
 <link rel="stylesheet" href="brand/tokens.css">
 <link rel="stylesheet" href="brand/components.css">
 <link rel="stylesheet" href="site.css">
 <script>document.documentElement.classList.add("js")</script>
 <script src="site.js" defer></script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "SoftwareApplication",
+ "name": "duckgrep",
+ "description": "Give your coding agent a live, queryable model of your codebase (definitions, callers, imports, history), so structural questions take one query instead of a search loop.",
+ "url": "https://duckgrep.dev/",
+ "applicationCategory": "DeveloperApplication",
+ "operatingSystem": "macOS, Linux",
+ "license": "https://www.apache.org/licenses/LICENSE-2.0",
+ "offers": {
+  "@type": "Offer",
+  "price": "0",
+  "priceCurrency": "USD"
+ },
+ "downloadUrl": "https://pypi.org/project/duckgrep/",
+ "sameAs": [
+  "https://github.com/ccf/duckgrep",
+  "https://pypi.org/project/duckgrep/"
+ ]
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>

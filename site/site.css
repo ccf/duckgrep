@@ -403,3 +403,7 @@ code, pre, .dg-term, .dg-term * { font-variant-ligatures: none; }
 
 /* a name in a terminal bar keeps its own case */
 .dg-term__bar code { font: inherit; text-transform: none; letter-spacing: 0; }
+
+/* 404.html */
+.notfound { width: min(1120px, 100% - 2 * clamp(16px, 4vw, 32px)); margin: clamp(48px, 8vw, 96px) auto; display: grid; gap: var(--space-4); justify-items: start; }
+.notfound .dg-term { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
