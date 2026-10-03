@@ -1,6 +1,6 @@
 // duckgrep.dev: a Worker that only serves static assets (no script).
 // Cloudflare Workers Builds runs the build command `sh site/build.sh`, then
-// `npx wrangler deploy` (main) or `npx wrangler versions upload` (other branches).
+// `npx wrangler deploy` (main) or `npx wrangler preview` (other branches).
 // _site/_headers sets the security headers; the custom domain is attached in the dashboard.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -8,5 +8,11 @@
   "compatibility_date": "2026-10-02",
   "assets": {
     "directory": "./_site"
+  },
+  // `npx wrangler preview` (non-production branches) needs this block, even empty
+  "previews": {},
+  // Workers Logs: request logs and metrics in the dashboard
+  "observability": {
+    "enabled": true
   }
 }
