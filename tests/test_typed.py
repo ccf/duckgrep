@@ -547,3 +547,14 @@ def test_a_function_level_import_does_not_retype_module_code(tmp_path):
         },
     )
     assert ("other.py", "Foo.run", "typed") not in edges_at(root, "m.py", "run")
+
+
+def test_a_refused_name_is_not_called_external(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "class Foo:\n    def run(self):\n        return 1\n\n\ndef helper():\n    from extlib import Foo\n\n    return Foo\n\n\n"
+            "x = Foo()\n\n\ndef f():\n    return x.run()\n",
+        },
+    )
+    assert edges_at(root, "m.py", "run") == [("m.py", "Foo.run", "name")]  # unknown, not unresolved

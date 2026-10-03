@@ -308,6 +308,10 @@ py_def AS (  -- a dotted name in a file -> the definition it names (class, funct
 py_ext AS (  -- a dotted name in a file that names something outside the repo: an unresolved import, a builtin
     SELECT t.path, t.text FROM py_tx t
     ANTI JOIN py_def d ON d.path = t.path AND d.text = t.text
+    -- a name refused as ambiguous (bound more than once, or by a nested def) is unknown, not external
+    ANTI JOIN py_multi m ON m.path = t.path AND m.name = t.head
+    ANTI JOIN (SELECT DISTINCT path, name FROM symbols WHERE parent IS NOT NULL AND kind IN ('class', 'function')) n
+         ON n.path = t.path AND n.name = t.head
     WHERE EXISTS (SELECT 1 FROM py_imp i WHERE i.path = t.path AND i."local" = t.head AND i.target_path IS NULL)
        OR (t.text IN (SELECT name FROM builtin_globals WHERE family = 'py')
            AND NOT EXISTS (SELECT 1 FROM py_imp i WHERE i.path = t.path AND i."local" = t.head)
