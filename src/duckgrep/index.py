@@ -23,6 +23,7 @@ import duckdb
 import pyarrow as pa
 
 from . import schema
+from .bindings import BINDING_COLS
 from .extract import EXT_LANG, FAMILY, extract
 
 DB_DIR = ".duckgrep"
@@ -58,11 +59,12 @@ SYMBOL_COLS = [
     "signature",
     "doc",
     "exported",
+    "returns",
 ]
 REF_COLS = ["path", "lang", "name", "kind", "receiver", "line", "col", "scope", "scope_class"]
 IMPORT_COLS = ["path", "family", "module", "name", "alias", "local", "line", "key", "subkey"]
 MODULE_COLS = ["path", "family", "key", "drop_n"]
-PER_FILE_TABLES = ["symbols", "refs", "imports", "modules", "lines"]
+PER_FILE_TABLES = ["symbols", "refs", "imports", "modules", "lines", "bindings"]
 
 
 @dataclass
@@ -299,12 +301,15 @@ def _grammar_versions() -> str:
 
 
 def extractor_version() -> str:
-    """What stored rows depend on: extractor code, grammars and table layout. A change forces a full re-parse."""
+    """What stored rows depend on: extractor and binding-rule code, grammars and table layout. A change forces a
+    full re-parse."""
+    from . import bindings as _b
     from . import extract as _e
 
     h = hashlib.blake2b(digest_size=8)
-    with open(_e.__file__, "rb") as f:
-        h.update(f.read())
+    for mod in (_e, _b):
+        with open(mod.__file__, "rb") as f:
+            h.update(f.read())
     h.update(_grammar_versions().encode())
     h.update(schema.TABLES.encode())
     return h.hexdigest()
@@ -315,7 +320,7 @@ def edges_version() -> str:
 
     A change rebuilds edges.
     """
-    key = f"{schema.EDGES_COMPUTE}\0{schema.VIEWS}\0{schema.NAME_CAP}"
+    key = f"{schema.EDGES_COMPUTE}\0{schema.VIEWS}\0{schema.NAME_CAP}\0{schema.INHERIT_DEPTH}"
     return hashlib.blake2b(key.encode(), digest_size=8).hexdigest()
 
 
@@ -470,6 +475,10 @@ def freshen(
                 "CREATE OR REPLACE TEMP TABLE _aff_keys AS "
                 "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)"
             )
+            con.execute(
+                "CREATE OR REPLACE TEMP TABLE _aff_types AS "
+                + schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM _chg")
+            )
             for t in PER_FILE_TABLES + ["files"]:
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
 
@@ -479,7 +488,7 @@ def freshen(
             for i in range(0, len(jobs), CHUNK):
                 chunk = [(root, p, lang, parse, ctx) for p, lang, parse in jobs[i : i + CHUNK]]
                 results = ex.map(_work, chunk, chunksize=8) if ex else map(_work, chunk)
-                rows = {"symbols": [], "refs": [], "imports": [], "modules": []}
+                rows = {"symbols": [], "refs": [], "imports": [], "modules": [], "bindings": []}
                 lines = {"path": [], "line": [], "text": []}
                 for p, file_lines, res in results:
                     if file_lines is None:
@@ -497,6 +506,7 @@ def freshen(
                 _insert(con, "refs", REF_COLS, rows["refs"])
                 _insert(con, "imports", IMPORT_COLS, rows["imports"])
                 _insert(con, "modules", MODULE_COLS, rows["modules"])
+                _insert(con, "bindings", BINDING_COLS, rows["bindings"])
                 if lines["path"]:
                     con.register("_lines", pa.table(lines))
                     con.execute("INSERT INTO lines BY NAME SELECT * FROM _lines")
@@ -523,7 +533,7 @@ def freshen(
         elif replaced:
             _mark_edges_dirty(con)
         if replaced:
-            for t in ("_chg", "_aff_names", "_aff_keys"):
+            for t in ("_chg", "_aff_names", "_aff_keys", "_aff_types"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
         if ctx_json is not None:
             con.execute("INSERT OR REPLACE INTO meta VALUES ('module_ctx', ?)", [ctx_json])
@@ -545,7 +555,9 @@ EDGE_BATCH_REFS = 400_000
 
 
 def _compute_edges(con, source: str, where: str = "TRUE") -> None:
-    con.execute(schema.EDGES_COMPUTE.format(source=source, where=where, cap=schema.NAME_CAP))
+    con.execute(
+        schema.EDGES_COMPUTE.format(source=source, where=where, cap=schema.NAME_CAP, depth=schema.INHERIT_DEPTH)
+    )
 
 
 def _rebuild_edges(con) -> None:
@@ -613,18 +625,29 @@ def _mark_edges_dirty(con) -> None:
           ON k.family = i.family AND (k.key = i.key OR k.key = i.subkey)
         WHERE i.name = '*' AND i."local" IS NULL
     """)
+    # typed edges also depend on other files' classes, bases, attr types and return annotations
+    con.execute(
+        schema.TYPED_DIRTY.format(
+            seed_after=schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM edges_dirty WHERE kind = 'path'"),
+            depth=schema.INHERIT_DEPTH,
+        )
+    )
     con.execute("DROP TABLE IF EXISTS _new_keys")
 
 
 def sync_edges(con) -> int:
-    """Recompute edges for everything marked dirty. Returns the number of refs recomputed."""
+    """Recompute edges for everything marked dirty. Returns the number of refs recomputed.
+
+    The dirty refs are read through `refs` by rowid (a copy into a temp table cost DuckDB far more memory) and
+    computed in batches of EDGE_BATCH_REFS. If a sync still runs out of memory, it falls back to the batched full
+    rebuild rather than leave dirty rows behind that would fail every later call-graph query."""
     if con.execute("SELECT count(*) FROM edges_dirty").fetchone()[0] == 0:
         return 0
     con.execute("BEGIN")
     try:
         con.execute("""
             CREATE OR REPLACE TEMP TABLE _r AS
-            SELECT * FROM refs WHERE rowid IN (
+            SELECT rowid AS rid, path, line, col, name, hash(path) AS h FROM refs WHERE rowid IN (
                 SELECT rowid FROM refs WHERE path IN (SELECT path FROM edges_dirty WHERE kind = 'path')
                 UNION SELECT rowid FROM refs WHERE name IN (SELECT name FROM edges_dirty WHERE kind = 'name')
                 -- refs bound through an import: by name (f()) or through their receiver (m.f(), Class.m())
@@ -642,10 +665,25 @@ def sync_edges(con) -> int:
                 SELECT e.rowid FROM edges e SEMI JOIN _r ON _r.path = e.src_path AND _r.line = e.line
                                                        AND _r.col = e.col AND _r.name = e.name)
         """)
-        _compute_edges(con, "_r")
+        batches = max(1, -(-n // EDGE_BATCH_REFS))
+        for b in range(batches):
+            part = "" if batches == 1 else f" WHERE h % {batches} = {b}"
+            _compute_edges(con, "refs", f"r.rowid IN (SELECT rid FROM _r{part})")
         con.execute("DELETE FROM edges_dirty")
         con.execute("DROP TABLE IF EXISTS _r")
         con.execute("COMMIT")
+    except duckdb.OutOfMemoryException:
+        con.execute("ROLLBACK")
+        con.execute("BEGIN")
+        try:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('edges_rebuild_pending', '1')")
+            _rebuild_edges(con)
+            con.execute("DELETE FROM meta WHERE key = 'edges_rebuild_pending'")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        return con.execute("SELECT count(*) FROM refs").fetchone()[0]
     except Exception:
         con.execute("ROLLBACK")
         raise

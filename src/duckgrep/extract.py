@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 
 import tree_sitter as ts
 
+from .bindings import extract_bindings, normalize_type
+
 EXT_LANG = {
     ".py": "python",
     ".pyi": "python",
@@ -846,6 +848,12 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
                 start = node
                 if node.parent is not None and node.parent.type == "decorated_definition":
                     start = node.parent
+                returns = None
+                if lang == "python" and t == "function_definition":
+                    rt = node.child_by_field_name("return_type")
+                    if rt is not None:
+                        cls_q = classes[-1] if classes else None
+                        returns = normalize_type(_text(src, rt), cls_q)  # Self: the class qualname
                 symbols.append(
                     (
                         path,
@@ -859,6 +867,7 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
                         _signature(node, body, src, lang),
                         _docstring(node, body, spec, lang, src),
                         _exported(node, name, kind, lang),
+                        returns,
                     )
                 )
                 if push and not pops:
@@ -903,4 +912,17 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
     if errors == 0 and tree.root_node.has_error:
         errors = 1
     mods = [(path, family, k, d) for k, d in module_keys(path, lang, ctx)]
-    return {"symbols": symbols, "refs": refs, "imports": imports, "modules": mods, "parse_errors": errors}
+    binds = []
+    if lang == "python":
+        try:
+            binds = extract_bindings(tree.root_node, src, path)
+        except RecursionError:  # nesting deeper than the binding walk recurses: no facts, so no inference
+            binds = []
+    return {
+        "symbols": symbols,
+        "refs": refs,
+        "imports": imports,
+        "modules": mods,
+        "bindings": binds,
+        "parse_errors": errors,
+    }

@@ -80,6 +80,40 @@ Run with duckgrep at main 2e48a98 on shallow clones: freqtrade f2ec745 and djang
   - The calls that turned out to be in-repo once the stubs were off mostly fell to `name`, so coverage is lower than the earlier 73.4%.
 - **Calls jedi resolved outside the repo:** duckgrep marked 98% (freqtrade) and 89% (django) of them `unresolved`. The rest were `ambiguous`, or `name` with a false in-repo candidate (0% and 2%).
 
+### Typed receivers (2026-10-03)
+
+The `typed` tier infers a Python receiver's class from syntax, resolves it through imports, and walks in-repo base classes (spec `docs/specs/2026-10-02-local-type-inference.md`). It was measured against jedi on the same checkouts as above: django 0ae93a0 and freqtrade f2ec745 with 3,000 sampled calls each, and requests 611c616 with 300. `main` is 60ddb8a (stubs off, stdlib fix in). The typed tier is the `feat/typed-tier` branch, after the final review's fixes.
+
+| | django, main | django, typed | freqtrade, main | freqtrade, typed | requests, main | requests, typed |
+|---|---:|---:|---:|---:|---:|---:|
+| calls with an in-repo target | 1,555 | 1,569 | 1,631 | 1,647 | 148 | 161 |
+| confident coverage | 66.8% | **87.8%** | 74.3% | **90.9%** | 67.6% | **90.1%** |
+| confident precision | 100% | 99.9% | 100% | 100% | 100% | 100% |
+| `typed` share (exactly jedi's target) | – | 21.6% (100%) | – | 18.0% (100%) | – | 16.8% (100%) |
+| `name` share | 19.9% | 4.2% | 24.6% | 8.3% | 23.0% | 3.7% |
+| `ambiguous` share | 11.7% | 6.4% | 1.0% | 0.4% | 5.4% | 2.5% |
+| jedi-external calls given a false `name` candidate | 1% | 0% | 0% | 1% | 6% | 0% |
+
+- **Coverage:** confident coverage rose 21.0 points on django, 16.6 on freqtrade and 22.5 on requests. Every `typed` edge in the samples was exactly jedi's target. django's 99.9% comes from a few existing `import` and `local` edges listing an extra candidate. Requests' 300-call sample is small, and its share varies from run to run.
+- **Refusals:** where syntax can't settle it, the tier makes no edge:
+  - a diamond with several definers;
+  - an external or unnameable base listed before the in-repo definer;
+  - a name bound on more than one line of its file;
+  - a name a nested def or class also defines.
+
+  These cost a point or two of coverage, and no precision.
+- **External objects:** calls on receivers whose class is outside the repo are now `unresolved` instead of `name` guesses.
+- **The samples:** `bench/accuracy.py`'s sample isn't fixed from run to run (it shuffles an unordered result), so the in-repo counts vary by a few percent between columns. The 20-point gap is far larger than that noise.
+- **Latency on django** (`bench/latency.py`, `django/db/models/query.py`):
+  - A full index takes 9–11 s on both.
+  - Typical queries are unchanged.
+  - Edge sync after a one-file edit recomputes 70,673 refs (63,609 on `main`) and takes 430–470 ms at a load average of about 7, against 336 ms for `main`.
+  - Other builds were running on the machine (load average 7–38), so absolute times vary between runs. For the same 40,000 refs, the edge SQL takes about 185 ms against 150 ms on `main`.
+- **Fixes made along the way:**
+  - The method lookup is staged: the planner had joined every class's ancestry to every method first.
+  - The dirty marking takes only re-exported imports, where it had marked the methods of 101 classes imported by `query.py`.
+  - Edge sync reads dirty refs through `refs` by rowid, in batches, and falls back to a batched rebuild if it runs out of memory. A one-line edit to `django/db/models/fields/__init__.py` had exhausted the default 2 GB and left the index stuck; it now syncs in about a second.
+
 ## A/B evaluation: full run, repetition 1 (2026-10-02)
 
 The pilot's question, asked at scale: does a Claude Code agent find code with fewer tool calls, tokens and round trips when it has duckgrep, without losing accuracy? The design is in `docs/specs/2026-09-30-ab-eval-full-run.md`. The tables are in the next section but one, "A/B evaluation: full".
