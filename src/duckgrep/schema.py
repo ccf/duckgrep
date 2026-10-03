@@ -372,15 +372,20 @@ py_type AS (  -- typed receiver -> its class (cpath, cqual) and where the method
     FROM py_r r JOIN py_def d ON d.path = r.path AND d.text = r.receiver AND d.dkind = 'class'
     ANTI JOIN py_scoped s ON s.path = r.path AND s.line = r.line AND s.col = r.col  -- a name bound in scope isn't the class
 ),
-py_hit AS (  -- the method on that class or its nearest in-repo ancestor
-    SELECT t.path, t.line, t.col, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind,
-           s.start_line AS dst_line
+py_cand AS MATERIALIZED (  -- each typed receiver's classes to search, in resolution order (staged: joining the
+                          -- ancestry to every method first was the tier's main cost)
+    SELECT t.path, t.line, t.col, r.name, a.apath, a.aqual, a.ord
     FROM py_type t
     JOIN py_r r ON r.path = t.path AND r.line = t.line AND r.col = t.col
     JOIN py_mro a ON a.path = t.cpath AND a.qual = t.cqual AND a.depth >= t.from_depth
-    JOIN symbols s ON s.path = a.apath AND s.parent = a.aqual AND s.name = r.name AND s.kind IN ('method', 'class')
     WHERE NOT t.ext
-    QUALIFY row_number() OVER (PARTITION BY t.path, t.line, t.col ORDER BY a.ord, s.start_line) = 1
+),
+py_hit AS (  -- the method on that class or its nearest in-repo ancestor
+    SELECT c.path, c.line, c.col, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind,
+           s.start_line AS dst_line
+    FROM py_cand c
+    JOIN symbols s ON s.path = c.apath AND s.parent = c.aqual AND s.name = c.name AND s.kind IN ('method', 'class')
+    QUALIFY row_number() OVER (PARTITION BY c.path, c.line, c.col ORDER BY c.ord, s.start_line) = 1
 ),
 py_type_ext AS (  -- receivers whose bound type is outside the repo
     SELECT b.path, b.line, b.col FROM py_bind b
