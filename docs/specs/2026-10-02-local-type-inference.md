@@ -108,15 +108,8 @@ Each of these is a later spec:
 
   `Self` becomes the enclosing class. Anything else that isn't a plain dotted name is NULL: other unions, generics other than the ones listed, and subscripts.
 - **New column `symbols.returns`:** the normalised return annotation of a function or method, the same normalisation, NULL when absent.
-- **Also recorded:**
-  - `@classmethod` and `@staticmethod` decorators: already visible in `symbols.signature`, made explicit as needed;
-  - `@property` methods: excluded from call resolution (a property is read, not called).
-- **Walker fixes this needs:**
-  - parameter names are recorded as `param` bindings, where today they are dropped;
-  - `with`/`except ... as` targets become `write` refs, as they should be;
-  - string annotations are parsed so the class names inside them produce `type` refs.
-
-  All three change extraction, so `extractor_version` changes and the index re-parses, as designed.
+- **Where the facts live:** parameter names, `with`/`except ... as` targets and string annotations are recorded as `bindings` rows, not as new refs. Resolution needs only the facts, and this leaves the shared walker unchanged for every language. The one walker change is `symbols.returns`.
+- **Not handled in Phase 1:** a call to a `@property` (`obj.prop()`) still resolves like a method call, because `symbols` doesn't record decorators. Such calls are rare, and usually a bug in the calling code.
 
 ### 2. Resolution in `EDGES_COMPUTE`: a new confident tier, `typed`
 
