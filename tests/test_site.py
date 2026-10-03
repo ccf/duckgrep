@@ -156,11 +156,11 @@ def test_prose_numbers_match_readme():
         "230 SWE-bench",
         "11–13%",
         "23–56%",
-        "1,524",
-        "88.5%",
-        "1,656",
-        "92.9%",
-        "86.4%",
+        "1,602",
+        "87.4%",
+        "1,612",
+        "91.7%",
+        "93.1%",
         "30–90 ms",
     ):
         assert figure in readme and figure in page, figure

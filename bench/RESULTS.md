@@ -86,15 +86,16 @@ The `typed` tier infers a Python receiver's class from syntax, resolves it throu
 
 | | django, main | django, typed | freqtrade, main | freqtrade, typed | requests, main | requests, typed |
 |---|---:|---:|---:|---:|---:|---:|
-| calls with an in-repo target | 1,555 | 1,524 | 1,631 | 1,656 | 148 | 154 |
-| confident coverage | 66.8% | **88.5%** | 74.3% | **92.9%** | 67.6% | **86.4%** |
+| calls with an in-repo target | 1,555 | 1,602 | 1,631 | 1,612 | 148 | 144 |
+| confident coverage | 66.8% | **87.4%** | 74.3% | **91.7%** | 67.6% | **93.1%** |
 | confident precision | 100% | 100% | 100% | 100% | 100% | 100% |
-| `typed` share (exactly jedi's target) | – | 22.2% (100%) | – | 22.3% (100%) | – | 25.3% (100%) |
-| `name` share | 19.9% | 5.1% | 24.6% | 6.8% | 23.0% | 9.7% |
-| `ambiguous` share | 11.7% | 4.7% | 1.0% | 0.2% | 5.4% | 3.2% |
-| jedi-external calls given a false `name` candidate | 1% | 0% | 0% | 0% | 6% | 0% |
+| `typed` share (exactly jedi's target) | – | 20.2% (100%) | – | 17.7% (100%) | – | 16.7% (100%) |
+| `name` share | 19.9% | 4.5% | 24.6% | 7.8% | 23.0% | 4.2% |
+| `ambiguous` share | 11.7% | 6.6% | 1.0% | 0.4% | 5.4% | 0.0% |
+| jedi-external calls given a false `name` candidate | 1% | 0% | 0% | 0% | 6% | 1% |
 
-- **Coverage:** confident coverage rose 21.7 points on django, 18.6 on freqtrade and 18.8 on requests, with no confident miss in any sample.
+- **Coverage:** confident coverage rose 20.6 points on django, 17.4 on freqtrade and 25.5 on requests, with no confident miss in any sample. Requests' 300-call sample is small, and its share varies from run to run.
+- **Refusals:** where Python's method resolution order can't be read safely, the tier makes no edge. That covers a diamond with several definers, and an external or unnameable base listed before the in-repo definer. This costs about a point of coverage against the run before that rule.
 - **External objects:** calls on receivers whose class is outside the repo are now `unresolved` instead of `name` guesses.
 - **The samples:** `bench/accuracy.py`'s sample isn't fixed from run to run (it shuffles an unordered result), so the in-repo counts vary by a few percent between columns. The 20-point gap is far larger than that noise.
 - **Latency on django** (`bench/latency.py`, `django/db/models/query.py`):
