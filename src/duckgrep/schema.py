@@ -140,10 +140,11 @@ UNION SELECT regexp_extract(CASE WHEN starts_with(type_text, 'call:') THEN subst
                             '[^.]*$')
       FROM bindings WHERE path IN ({files}) AND type_text IS NOT NULL AND (kind IN ('base', 'attr') OR scope = '')
 UNION SELECT regexp_extract(returns, '[^.]*$') FROM symbols WHERE path IN ({files}) AND returns IS NOT NULL
-UNION SELECT i."local" FROM imports i  -- names the file re-exports: imported by name from it by other files
+UNION SELECT name FROM imports WHERE path IN ({files}) AND family = 'py' AND name IS NOT NULL AND "local" <> name
+UNION SELECT unnest([i."local", i.name]) FROM imports i  -- names the file re-exports, under both names
       WHERE i.path IN ({files}) AND i.family = 'py' AND i."local" IS NOT NULL
-        AND EXISTS (SELECT 1 FROM imports j JOIN modules m ON m.family = j.family AND m.key = j.key
-                    WHERE m.path = i.path AND j.name = i."local")
+        AND EXISTS (SELECT 1 FROM imports j JOIN modules m ON m.family = j.family AND m.key IN (j.key, j.subkey)
+                    WHERE m.path = i.path AND (j.name = i."local" OR j.name IS NULL OR m.key = j.subkey))
 """
 
 TYPED_DIRTY = """
@@ -160,9 +161,10 @@ start(name) AS (
 cls(name, depth) AS (
     SELECT name, 0 FROM start
   UNION
-    SELECT regexp_extract(b.type_text, '[^.]*$'), c.depth + 1
+    SELECT unnest([regexp_extract(b.type_text, '[^.]*$'), i.name]), c.depth + 1
     FROM cls c JOIN bindings b ON b.kind = 'base' AND b.type_text IS NOT NULL
          AND regexp_extract(b.scope, '[^.]*$') = c.name
+    LEFT JOIN imports i ON i.path = b.path AND i."local" = split_part(b.type_text, '.', 1) AND i.name IS NOT NULL
     WHERE c.depth < {depth}
 )
 SELECT DISTINCT 'name', NULL, s.name FROM symbols s
@@ -321,23 +323,31 @@ py_scoped AS (  -- bare-name receivers: the bindings of each enclosing scope tha
            count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') AS n_untyped,
            count(DISTINCT b.type_text) AS n_types, min(b.type_text) AS type_text
     FROM py_r r
-    JOIN bindings b ON b.path = r.path AND b.name = r.receiver AND b.kind IN ('assign', 'annot', 'param', 'global')
+    JOIN bindings b ON b.path = r.path AND b.name = r.receiver
+         AND b.kind IN ('assign', 'annot', 'param', 'global', 'import')
          AND (b.scope = r.scope OR b.scope = '' OR starts_with(r.scope, b.scope || '.'))
     WHERE r.receiver NOT IN ('self', 'cls') AND regexp_matches(r.receiver, '^[A-Za-z_][A-Za-z0-9_]*$')
     GROUP BY ALL
+    HAVING count(*) FILTER (WHERE b.kind <> 'import') > 0  -- a name only imported is resolved through the import
+),
+py_global AS (  -- names a global/nonlocal statement rebinds somewhere in the file: never inferred there
+    SELECT DISTINCT path, name FROM bindings WHERE kind = 'global'
 ),
 py_bind AS (  -- receiver -> (file to resolve its type in, type text), when every binding agrees
     SELECT path, line, col, path AS tpath, type_text FROM (
-        SELECT * FROM py_scoped
-        QUALIFY row_number() OVER (PARTITION BY path, line, col ORDER BY length(scope) DESC) = 1
+        SELECT s.* FROM py_scoped s
+        JOIN py_r r ON r.path = s.path AND r.line = s.line AND r.col = s.col
+        ANTI JOIN py_global g ON g.path = r.path AND g.name = r.receiver
+        QUALIFY row_number() OVER (PARTITION BY s.path, s.line, s.col ORDER BY length(s.scope) DESC) = 1
     ) WHERE n_untyped = 0 AND n_types = 1
   UNION ALL  -- `from m import cache`, with cache bound once at the top of m
     SELECT r.path, r.line, r.col, i.target_path, min(b.type_text)
     FROM py_r r
     JOIN py_imp i ON i.path = r.path AND i."local" = r.receiver AND i.name IS NOT NULL AND NOT i.target_is_module
     JOIN bindings b ON b.path = i.target_path AND b.scope = '' AND b.name = i.name
-         AND b.kind IN ('assign', 'annot', 'global')
+         AND b.kind IN ('assign', 'annot', 'global', 'import')
     ANTI JOIN py_scoped s ON s.path = r.path AND s.line = r.line AND s.col = r.col
+    ANTI JOIN py_global g ON g.path = i.target_path AND g.name = i.name
     GROUP BY ALL
     HAVING count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') = 0 AND count(DISTINCT b.type_text) = 1
   UNION ALL  -- self.attr / cls.attr: the nearest class in the ancestry that binds the attribute

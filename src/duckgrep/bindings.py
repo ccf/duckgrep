@@ -275,13 +275,29 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             for c in n.named_children:
                 if c.type == "identifier":
                     add(scope, text(c), "global", None, c)
-        elif t in ("import_statement", "import_from_statement") and scope:
+        elif t in ("import_statement", "import_from_statement"):
+            # at module level an import is its own kind: alone it lets the resolver follow the import, beside another
+            # binding of the name it blocks inference (try: from fast import x / except: x = Slow())
+            kind = "assign" if scope else "import"
             for c in n.children_by_field_name("name"):
                 if c.type == "aliased_import":
                     a = c.child_by_field_name("alias")
-                    add(scope, text(a), "assign", None, a)
+                    add(scope, text(a), kind, None, a)
                 else:
-                    add(scope, text(c).split(".")[0], "assign", None, c)
+                    add(scope, text(c).split(".")[0], kind, None, c)
+        elif t == "lambda":  # its parameters shadow the name inside the lambda, whose refs carry this scope
+            plist = n.child_by_field_name("parameters")
+            for p in plist.named_children if plist is not None else []:
+                pname = param(p)[0]
+                if pname is not None:
+                    add(scope, pname, "assign", None, p)
+        elif t == "case_clause":  # match captures bind names (a class name in a pattern only blocks, harmlessly)
+            stack = [c for c in n.named_children if c.type == "case_pattern"]
+            while stack:
+                c = stack.pop()
+                if c.type == "identifier":
+                    add(scope, text(c), "assign", None, c)
+                stack.extend(c.named_children)
         for c in n.named_children:
             walk(c, scope, cls, params)
 

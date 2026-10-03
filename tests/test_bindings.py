@@ -150,3 +150,15 @@ def test_a_change_to_the_binding_rules_forces_a_reparse(tmp_path, monkeypatch):
     fake.write_text(open(bindings.__file__).read() + "\n# a rule changed\n")
     monkeypatch.setattr(bindings, "__file__", str(fake))
     assert extractor_version() != before
+
+
+def test_a_deeply_nested_expression_does_not_stop_indexing(tmp_path):
+    from helpers import make_repo, rows
+
+    deep = "SQL = (" + " + ".join(['"part"'] * 5000) + ")\n"
+    root = make_repo(
+        tmp_path / "r",
+        {"deep.py": deep + "\n\ndef f():\n    x = Foo()\n    return x\n", "ok.py": "def g():\n    y = Bar()\n"},
+    )
+    assert rows(root, "SELECT count(*) FROM files WHERE path = 'deep.py'") == [(1,)]
+    assert ("y", "call:Bar") in rows(root, "SELECT name, type_text FROM bindings WHERE path = 'ok.py'")

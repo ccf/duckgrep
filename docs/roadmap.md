@@ -10,6 +10,8 @@ What's next for duckgrep, and the gaps known today. The measured numbers behind 
 
 ## Known gaps
 
+- **Typed receivers that turn external:** when a class's ancestry gains or loses an external base in another file, or a callee's return annotation becomes external, calls on its instances should flip between `name` and `unresolved`. The incremental index doesn't mark them, so they keep the old tier until those refs are recomputed. A full rebuild gets them right. The fix needs a narrow trigger: one that compares each seed class's external status before and after, because marking every descendant's users was too broad on django.
+
 - **Finding where to fix an issue:** the agent A/B run measured no saving there, because an issue usually names something one grep finds. A second repetition would settle a possible small gain on Rust (cost ×0.89, not yet significant).
 - **Refresh on edit** touches every ref sharing a name with the edited file's definitions: about 60k refs for django's `query.py`. The dirty set could be scoped tighter.
 - **Aliased re-export chains** can keep a stale edge after an edit to the underlying module. That covers `from pkg import X as Y` where `pkg/__init__.py` re-exports `X`, and TS barrels.

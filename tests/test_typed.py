@@ -1,5 +1,6 @@
 """The typed tier: receiver calls resolved through the receiver's class, inferred from syntax (Python)."""
 
+import pytest
 from helpers import make_repo, rows
 
 
@@ -332,3 +333,26 @@ def test_a_deleted_name_is_not_inferred(tmp_path):
         },
     )
     assert {r[2] for r in edges_at(root, "use.py", "run")} == {"name"}
+
+
+SHADOWS = {
+    "lambda parameter": "def f():\n    x = Base()\n    g = lambda x: x.run()\n    return g\n",
+    "global rebinding in another function": "x = Base()\n\n\ndef g():\n    global x\n    x = Other()\n\n\ndef h():\n    return x.run()\n",
+    "nonlocal rebinding": "def f():\n    x = Base()\n\n    def g():\n        nonlocal x\n        x = Other()\n\n    g()\n    return x.run()\n",
+    "match capture": "def f(v):\n    x = Base()\n    match v:\n        case [x]:\n            pass\n    return x.run()\n",
+    "match as capture": "def f(v):\n    x = Base()\n    match v:\n        case Other() as x:\n            pass\n    return x.run()\n",
+    "module-level import of the same name": "try:\n    from extlib import x\nexcept ImportError:\n    x = Base()\n\n\ndef f():\n    return x.run()\n",
+}
+
+
+@pytest.mark.parametrize("case", sorted(SHADOWS))
+def test_other_bindings_block_inference(tmp_path, case):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "use.py": "from base import Base\nfrom other import Other\n\n\n" + SHADOWS[case],
+        },
+    )
+    assert ("base.py", "Base.run", "typed") not in edges_at(root, "use.py", "run")

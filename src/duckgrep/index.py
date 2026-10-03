@@ -636,14 +636,18 @@ def _mark_edges_dirty(con) -> None:
 
 
 def sync_edges(con) -> int:
-    """Recompute edges for everything marked dirty. Returns the number of refs recomputed."""
+    """Recompute edges for everything marked dirty. Returns the number of refs recomputed.
+
+    The dirty refs are read through `refs` by rowid (a copy into a temp table cost DuckDB far more memory) and
+    computed in batches of EDGE_BATCH_REFS. If a sync still runs out of memory, it falls back to the batched full
+    rebuild rather than leave dirty rows behind that would fail every later call-graph query."""
     if con.execute("SELECT count(*) FROM edges_dirty").fetchone()[0] == 0:
         return 0
     con.execute("BEGIN")
     try:
         con.execute("""
             CREATE OR REPLACE TEMP TABLE _r AS
-            SELECT * FROM refs WHERE rowid IN (
+            SELECT rowid AS rid, path, line, col, name, hash(path) AS h FROM refs WHERE rowid IN (
                 SELECT rowid FROM refs WHERE path IN (SELECT path FROM edges_dirty WHERE kind = 'path')
                 UNION SELECT rowid FROM refs WHERE name IN (SELECT name FROM edges_dirty WHERE kind = 'name')
                 -- refs bound through an import: by name (f()) or through their receiver (m.f(), Class.m())
@@ -661,10 +665,25 @@ def sync_edges(con) -> int:
                 SELECT e.rowid FROM edges e SEMI JOIN _r ON _r.path = e.src_path AND _r.line = e.line
                                                        AND _r.col = e.col AND _r.name = e.name)
         """)
-        _compute_edges(con, "_r")
+        batches = max(1, -(-n // EDGE_BATCH_REFS))
+        for b in range(batches):
+            part = "" if batches == 1 else f" WHERE h % {batches} = {b}"
+            _compute_edges(con, "refs", f"r.rowid IN (SELECT rid FROM _r{part})")
         con.execute("DELETE FROM edges_dirty")
         con.execute("DROP TABLE IF EXISTS _r")
         con.execute("COMMIT")
+    except duckdb.OutOfMemoryException:
+        con.execute("ROLLBACK")
+        con.execute("BEGIN")
+        try:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('edges_rebuild_pending', '1')")
+            _rebuild_edges(con)
+            con.execute("DELETE FROM meta WHERE key = 'edges_rebuild_pending'")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        return con.execute("SELECT count(*) FROM refs").fetchone()[0]
     except Exception:
         con.execute("ROLLBACK")
         raise

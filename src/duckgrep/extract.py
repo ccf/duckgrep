@@ -912,7 +912,12 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
     if errors == 0 and tree.root_node.has_error:
         errors = 1
     mods = [(path, family, k, d) for k, d in module_keys(path, lang, ctx)]
-    binds = extract_bindings(tree.root_node, src, path) if lang == "python" else []
+    binds = []
+    if lang == "python":
+        try:
+            binds = extract_bindings(tree.root_node, src, path)
+        except RecursionError:  # nesting deeper than the binding walk recurses: no facts, so no inference
+            binds = []
     return {
         "symbols": symbols,
         "refs": refs,
