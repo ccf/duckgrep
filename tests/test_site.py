@@ -156,11 +156,10 @@ def test_prose_numbers_match_readme():
         "230 SWE-bench",
         "11–13%",
         "23–56%",
-        "1,411",
-        "73.4%",
-        "99.8%",
-        "1,646",
-        "71.9%",
+        "1,532",
+        "65.7%",
+        "1,623",
+        "71.4%",
         "85.5%",
         "30–90 ms",
     ):
@@ -267,3 +266,24 @@ def test_csp_allows_cloudflare_analytics_only():
     # the whole list, so a wildcard, data: or another host can't slip in beside the beacon
     assert directives["script-src"].split() == ["'self'", f"'sha256-{digest}'", "https://static.cloudflareinsights.com"]
     assert directives["connect-src"].split() == ["'self'", "https://cloudflareinsights.com"]
+
+
+def test_accuracy_table_matches_readme_row_by_row():
+    """The FAQ's call-graph accuracy table: each repo's row on the site equals its row in the README."""
+    readme = (ROOT / "README.md").read_text()
+    section = readme[readme.index("How accurate is the call graph?") :]
+    want = {
+        cells[0]: cells[1:]
+        for line in section.splitlines()[:20]
+        if line.startswith("| ") and not line.startswith("| repo") and not line.startswith("|---")
+        for cells in [[c.strip() for c in line.strip("|").split("|")]]
+    }
+    page = PAGE.read_text()
+    table = page[page.index('<table class="mini">') : page.index("</table>", page.index('<table class="mini">'))]
+    got = {
+        cells[0]: cells[1:]
+        for row in re.findall(r"<tr>(.*?)</tr>", table, re.S)
+        for cells in [[re.sub(r"<[^>]+>", "", c).strip() for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row)]]
+        if cells and cells[0] != "Repo"
+    }
+    assert got == want and set(want) == {"django", "freqtrade", "requests"}
