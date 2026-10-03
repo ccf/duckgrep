@@ -141,8 +141,8 @@ Measured against jedi's goto-definition on sampled calls in Python repos ([bench
 
 | repo | calls with an in-repo target | resolved confidently | precision |
 |---|---:|---:|---:|
-| django | 1,411 | 73.4% | 99.8% |
-| freqtrade | 1,646 | 71.9% | 100% |
+| django | 1,532 | 65.7% | 100% |
+| freqtrade | 1,623 | 71.4% | 100% |
 | requests | 55 | 85.5% | 100% |
 
 The rest fall to `name`, `ambiguous` or `unresolved`, which say so rather than guess. Calls on local variables are the main gap; see the [roadmap](https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md).

@@ -49,6 +49,13 @@ def main(root, n=300, seed=0):
     random.Random(seed).shuffle(refs)
     # make jedi resolve the repo's own packages to the repo, not to an installed copy
     extra = [os.path.join(root, d) for d in ("src", "lib") if os.path.isdir(os.path.join(root, d))]
+    # jedi bundles django-stubs and answers with them for the repo's own django: the reference must be the
+    # repo's source, so point the stub path at nothing (harmless for repos that only use django)
+    import pathlib
+
+    import jedi.inference.gradual.typeshed as typeshed
+
+    typeshed.DJANGO_INIT_PATH = pathlib.Path("/nonexistent/django-stubs/__init__.pyi")
     project = jedi.Project(root, added_sys_path=extra)
     scripts = {}
     ranges = {}  # (path, name) -> [(start, end, qualname)]
@@ -112,7 +119,7 @@ def main(root, n=300, seed=0):
             f"{tier:12s} {n_ / stats['in_repo']:6.1%} {c['hit'] / n_:21.1%} {c['exact'] / n_:11.1%} "
             f"{c['cands'] / n_:10.1f}"
         )
-        if tier in ("self", "local", "import", "module", "qualified", "package"):
+        if tier in ("self", "local", "import", "module", "qualified", "package", "typed"):
             confident.update(c)
     if confident["n"]:
         print(
