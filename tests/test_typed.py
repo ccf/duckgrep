@@ -239,3 +239,28 @@ def test_cyclic_and_deep_hierarchies_terminate(tmp_path):
     )
     assert {r[2] for r in edges_at(root, "a.py", "nope")} <= {"unresolved", "name"}
     assert ("k.py", "K12.deep", "typed") not in edges_at(root, "k.py", "deep")
+
+
+def test_external_and_literal_types_are_unresolved(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "buf.py": "class Buf:\n    def getvalue(self):\n        return 1\n\n    def append(self, x):\n        return x\n",
+            "use.py": "import io\n\n\ndef f():\n    out = io.StringIO()\n    return out.getvalue()\n\n\n"
+            "def g():\n    xs = []\n    xs.append(1)\n    return xs\n",
+        },
+    )
+    assert edges_at(root, "use.py", "getvalue") == [(None, None, "unresolved")]
+    assert edges_at(root, "use.py", "append") == [(None, None, "unresolved")]
+
+
+def test_methods_missing_from_a_class_with_an_external_base_are_unresolved(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "other.py": "class Other:\n    def assertEqual(self, a, b):\n        return a == b\n",
+            "t.py": "import unittest\n\n\nclass T(unittest.TestCase):\n    def test(self):\n"
+            "        self.assertEqual(1, 1)\n",
+        },
+    )
+    assert edges_at(root, "t.py", "assertEqual") == [(None, None, "unresolved")]

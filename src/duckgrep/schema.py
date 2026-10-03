@@ -333,11 +333,23 @@ py_hit AS (  -- the method on that class or its nearest in-repo ancestor
     WHERE NOT t.ext
     QUALIFY row_number() OVER (PARTITION BY t.path, t.line, t.col ORDER BY a.depth, a.ord, s.start_line) = 1
 ),
-py_typed_ext AS (  -- typed receivers whose method can only be outside the repo (extended in Task 6)
+py_type_ext AS (  -- receivers whose bound type is outside the repo
+    SELECT b.path, b.line, b.col FROM py_bind b
+    JOIN py_ext x ON x.path = b.tpath
+         AND x.text = CASE WHEN starts_with(b.type_text, 'call:') THEN substr(b.type_text, 6) ELSE b.type_text END
+  UNION
+    SELECT b.path, b.line, b.col FROM py_bind b
+    JOIN py_def d ON d.path = b.tpath AND d.text = substr(b.type_text, 6) AND d.dkind IN ('function', 'method')
+    JOIN py_ext x ON x.path = d.dpath AND x.text = d.returns
+    WHERE starts_with(b.type_text, 'call:')
+),
+py_typed_ext AS (  -- typed receivers whose method can only be outside the repo
+    SELECT path, line, col FROM py_type_ext
+    ANTI JOIN py_type t USING (path, line, col)
+  UNION
     SELECT t.path, t.line, t.col FROM py_type t
     JOIN py_open o ON o.path = t.cpath AND o.qual = t.cqual AND o.ext AND NOT o.opaque
     ANTI JOIN py_hit h ON h.path = t.path AND h.line = t.line AND h.col = t.col
-    WHERE NOT t.ext
 ),
 t1 AS (
     SELECT r.*, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind, s.start_line AS dst_line,
