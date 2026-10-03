@@ -283,6 +283,9 @@ py_def AS (  -- a dotted name in a file -> the definition it names (class, funct
         JOIN py_rx x ON x.mod_path = i.target_path AND x."local" = t.tail
         JOIN symbols s ON s.path = x.target_path AND s.parent IS NULL AND s.name = x.name
     )
+    WHERE NOT EXISTS (  -- `class Foo` then `Foo = Other` (or an import of Foo): the name no longer means the class
+        SELECT 1 FROM bindings bb WHERE bb.path = dpath AND bb.scope = '' AND bb.name = split_part(dqual, '.', 1)
+          AND bb.kind IN ('assign', 'annot', 'import', 'global'))
     QUALIFY row_number() OVER (PARTITION BY path, text ORDER BY p, dpath, dqual) = 1
 ),
 py_ext AS (  -- a dotted name in a file that names something outside the repo: an unresolved import, a builtin
@@ -294,7 +297,7 @@ py_ext AS (  -- a dotted name in a file that names something outside the repo: a
            AND NOT EXISTS (SELECT 1 FROM symbols s WHERE s.path = t.path AND s.name = t.head AND s.parent IS NULL))
 ),
 py_base AS (  -- class -> its bases in order; ext: outside the repo; opaque: can't be named
-    SELECT b.path, b.scope AS qual, b.pos, d.dpath AS bpath, d.dqual AS bqual,
+    SELECT b.path, b.scope AS qual, b.pos, b.type_text AS btext, d.dpath AS bpath, d.dqual AS bqual,
            x.text IS NOT NULL AS ext, d.dpath IS NULL AND x.text IS NULL AS opaque
     FROM bindings b
     LEFT JOIN (SELECT * FROM py_def WHERE dkind = 'class') d ON d.path = b.path AND d.text = b.type_text
@@ -402,10 +405,11 @@ py_defs AS (  -- the in-repo ancestors that define the called method
 py_diamond AS (  -- classes reaching an ancestor by two paths: there the last-occurrence order may not be Python's
     SELECT DISTINCT path, qual FROM (SELECT path, qual FROM py_anc GROUP BY path, qual, apath, aqual HAVING count(*) > 1)
 ),
-py_blocker AS (  -- bases outside the repo or unnameable, at their depth-first position in a class's ancestry
-    SELECT a.path, a.qual, list_append(a.ord, b.pos) AS ord
+py_blocker AS (  -- bases outside the repo or unnameable, each at its last depth-first position in a class's ancestry
+    SELECT a.path, a.qual, max(list_append(a.ord, b.pos)) AS ord
     FROM py_anc a JOIN py_base b ON b.path = a.apath AND b.qual = a.aqual
     WHERE b.ext OR b.opaque
+    GROUP BY a.path, a.qual, coalesce(b.btext, b.path || ':' || b.qual || ':' || b.pos)
 ),
 py_hit AS (  -- the first definer in resolution order, unless the order is uncertain or an unknown base comes first
     SELECT path, line, col, dst_path, dst_qualname, dst_kind, dst_line FROM (
@@ -414,7 +418,8 @@ py_hit AS (  -- the first definer in resolution order, unless the order is uncer
         FROM py_defs d
     ) h
     WHERE rk = 1
-      AND NOT (n_def > 1 AND EXISTS (SELECT 1 FROM py_diamond x WHERE x.path = h.cpath AND x.qual = h.cqual))
+      AND NOT (n_def > 1 AND len(h.ord) > 0
+               AND EXISTS (SELECT 1 FROM py_diamond x WHERE x.path = h.cpath AND x.qual = h.cqual))
       AND NOT EXISTS (SELECT 1 FROM py_blocker k WHERE k.path = h.cpath AND k.qual = h.cqual AND k.ord < h.ord)
 ),
 py_type_ext AS (  -- receivers whose bound type is outside the repo

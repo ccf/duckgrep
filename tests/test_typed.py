@@ -381,3 +381,62 @@ def test_an_external_base_listed_first_blocks_the_in_repo_method(tmp_path):
     )
     assert ("base.py", "Base.run", "typed") not in edges_at(root, "c.py", "run")  # External.run may win
     assert edges_at(root, "c.py", "get") == [("base.py", "Base.get", "typed")]  # Base comes first in D
+
+
+def test_a_diamond_class_that_defines_the_method_keeps_its_edge(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "class Base:\n    def d(self):\n        return 0\n\n\nclass L(Base):\n    pass\n\n\nclass R(Base):\n"
+            "    def d(self):\n        return 1\n\n\nclass D(L, R):\n    def d(self):\n        return 2\n\n\n"
+            "def f():\n    x = D()\n    return x.d()\n",
+        },
+    )
+    assert edges_at(root, "m.py", "d") == [("m.py", "D.d", "typed")]
+
+
+def test_a_shared_external_base_comes_after_the_in_repo_definer(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "from extlib import External\n\n\nclass B(External):\n    pass\n\n\nclass C(External):\n"
+            "    def m(self):\n        return 1\n\n\nclass D(B, C):\n    pass\n\n\ndef f():\n    x = D()\n    return x.m()\n",
+        },
+    )
+    assert edges_at(root, "m.py", "m") == [("m.py", "C.m", "typed")]  # MRO: D, B, C, External
+
+
+def test_a_rebound_class_name_is_not_its_class(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "m.py": "from other import Other\n\n\nclass Base:\n    def run(self):\n        return 9\n\n\nBase = Other\n",
+            "use.py": "from m import Base\n\n\ndef f():\n    x = Base()\n    return x.run()\n",
+        },
+    )
+    assert ("m.py", "Base.run", "typed") not in edges_at(root, "use.py", "run")
+    assert ("m.py", "Base.run", "typed") not in edges_at(root, "m.py", "run")
+
+
+REBINDS = {
+    "match capture": "        match v:\n            case [p]:\n                pass\n",
+    "function-level import": "        from other import Other as p\n",
+    "nested nonlocal write": "        def g():\n            nonlocal p\n            p = Other()\n\n        g()\n",
+}
+
+
+@pytest.mark.parametrize("case", sorted(REBINDS))
+def test_other_rebindings_stop_a_parameter_typing_an_attribute(tmp_path, case):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "svc.py": "from base import Base\nfrom other import Other\n\n\nclass Svc:\n    def __init__(self, p: Base, v=None):\n"
+            + REBINDS[case]
+            + "        self.h = p\n\n    def go(self):\n        return self.h.run()\n",
+        },
+    )
+    assert ("base.py", "Base.run", "typed") not in edges_at(root, "svc.py", "run")

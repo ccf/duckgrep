@@ -94,6 +94,14 @@ def normalize_type(text: str, cls: str | None = None, generic_head: bool = False
     return t if DOTTED.match(t) else None
 
 
+def _subtree(n):
+    stack = [n]
+    while stack:
+        c = stack.pop()
+        yield c
+        stack.extend(c.named_children)
+
+
 def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
     out: list[tuple] = []
 
@@ -140,6 +148,10 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
         while stack:
             n = stack.pop()
             if n.type in ("function_definition", "class_definition", "lambda"):
+                # a nested def can still rebind it: `nonlocal p; p = ...`
+                for c in _subtree(n):
+                    if c.type == "nonlocal_statement":
+                        out.update(text(i) for i in c.named_children if i.type == "identifier")
                 continue
             target = None
             if n.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
@@ -151,6 +163,14 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             elif n.type == "delete_statement":
                 for c in n.named_children:
                     out.update(text(i) for i in idents(c))
+            elif n.type in ("import_statement", "import_from_statement"):
+                for c in n.children_by_field_name("name"):
+                    a = c.child_by_field_name("alias") if c.type == "aliased_import" else None
+                    out.add(text(a) if a is not None else text(c).split(".")[0])
+            elif n.type in ("global_statement", "nonlocal_statement"):
+                out.update(text(c) for c in n.named_children if c.type == "identifier")
+            elif n.type == "case_pattern":
+                out.update(text(c) for c in _subtree(n) if c.type == "identifier")
             if target is not None:
                 out.update(text(i) for i in idents(target))
             stack.extend(n.named_children)
