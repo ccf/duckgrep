@@ -39,6 +39,7 @@ _TARGETS = {
     "list",
     "list_splat_pattern",
     "as_pattern_target",
+    "expression_list",
 }
 
 
@@ -133,6 +134,28 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             return params.get(text(v))
         return _LITERALS.get(v.type)
 
+    def rebound(body) -> set[str]:
+        """names (re)assigned anywhere in a function body, not counting nested defs, classes and lambdas"""
+        out, stack = set(), [body]
+        while stack:
+            n = stack.pop()
+            if n.type in ("function_definition", "class_definition", "lambda"):
+                continue
+            target = None
+            if n.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
+                target = n.child_by_field_name("left")
+            elif n.type == "as_pattern":
+                target = n.child_by_field_name("alias")
+            elif n.type == "named_expression":
+                target = n.child_by_field_name("name")
+            elif n.type == "delete_statement":
+                for c in n.named_children:
+                    out.update(text(i) for i in idents(c))
+            if target is not None:
+                out.update(text(i) for i in idents(target))
+            stack.extend(n.named_children)
+        return out
+
     def param(p):
         """(name, annotation node) for one parameter node"""
         t = p.type
@@ -201,7 +224,8 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
                     ps[pname] = tt
             body = n.child_by_field_name("body")
             if body is not None:
-                walk(body, qual, cls, ps)
+                again = rebound(body)  # an annotation no longer types a parameter that is reassigned
+                walk(body, qual, cls, {k: v for k, v in ps.items() if k not in again})
             return
         if t == "assignment":
             left, right, ann = (n.child_by_field_name(f) for f in ("left", "right", "type"))
@@ -243,6 +267,10 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             nm = n.child_by_field_name("name")
             if nm is not None:
                 add(scope, text(nm), "assign", None, nm)
+        elif t == "delete_statement":
+            for c in n.named_children:
+                for i in idents(c):
+                    add(scope, text(i), "assign", None, i)
         elif t in ("global_statement", "nonlocal_statement"):
             for c in n.named_children:
                 if c.type == "identifier":

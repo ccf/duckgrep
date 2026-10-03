@@ -296,6 +296,9 @@ py_anc AS (  -- class -> itself and its in-repo ancestors (depth-first, left to 
     FROM py_anc a JOIN py_base b ON b.path = a.apath AND b.qual = a.aqual
     WHERE b.bpath IS NOT NULL AND a.depth < {depth}
 ),
+py_mro AS (  -- each class's ancestors in resolution order: depth-first, left to right, each at its last occurrence
+    SELECT path, qual, apath, aqual, max(ord) AS ord, min(depth) AS depth FROM py_anc GROUP BY ALL
+),
 py_open AS (  -- classes with a base outside the repo, or one that can't be named, anywhere in their ancestry
     SELECT a.path, a.qual, bool_or(b.ext) AS ext, bool_or(b.opaque) AS opaque
     FROM py_anc a JOIN py_base b ON b.path = a.apath AND b.qual = a.aqual
@@ -332,12 +335,12 @@ py_bind AS (  -- receiver -> (file to resolve its type in, type text), when ever
                count(*) FILTER (WHERE b.type_text IS NULL) AS n_untyped,
                count(DISTINCT b.type_text) AS n_types, min(b.type_text) AS type_text
         FROM py_r r
-        JOIN py_anc a ON a.path = r.path AND a.qual = r.scope_class
+        JOIN py_mro a ON a.path = r.path AND a.qual = r.scope_class
         JOIN bindings b ON b.path = a.apath AND b.scope = a.aqual AND b.kind = 'attr'
              AND b.name = 'self.' || regexp_extract(r.receiver, '^(?:self|cls)[.]([A-Za-z_][A-Za-z0-9_]*)$', 1)
         WHERE regexp_matches(r.receiver, '^(self|cls)[.][A-Za-z_][A-Za-z0-9_]*$')
-        GROUP BY r.path, r.line, r.col, a.apath, a.depth, a.ord
-        QUALIFY row_number() OVER (PARTITION BY r.path, r.line, r.col ORDER BY a.depth, a.ord) = 1
+        GROUP BY r.path, r.line, r.col, a.apath, a.ord
+        QUALIFY row_number() OVER (PARTITION BY r.path, r.line, r.col ORDER BY a.ord) = 1
     ) WHERE n_untyped = 0 AND n_types = 1
 ),
 py_type AS (  -- typed receiver -> its class (cpath, cqual) and where the method search starts, or ext
@@ -366,10 +369,10 @@ py_hit AS (  -- the method on that class or its nearest in-repo ancestor
            s.start_line AS dst_line
     FROM py_type t
     JOIN py_r r ON r.path = t.path AND r.line = t.line AND r.col = t.col
-    JOIN py_anc a ON a.path = t.cpath AND a.qual = t.cqual AND a.depth >= t.from_depth
+    JOIN py_mro a ON a.path = t.cpath AND a.qual = t.cqual AND a.depth >= t.from_depth
     JOIN symbols s ON s.path = a.apath AND s.parent = a.aqual AND s.name = r.name AND s.kind IN ('method', 'class')
     WHERE NOT t.ext
-    QUALIFY row_number() OVER (PARTITION BY t.path, t.line, t.col ORDER BY a.depth, a.ord, s.start_line) = 1
+    QUALIFY row_number() OVER (PARTITION BY t.path, t.line, t.col ORDER BY a.ord, s.start_line) = 1
 ),
 py_type_ext AS (  -- receivers whose bound type is outside the repo
     SELECT b.path, b.line, b.col FROM py_bind b

@@ -292,3 +292,43 @@ def test_a_rebound_capitalised_name_is_not_a_class_receiver(tmp_path):
     # the qualified tier still reads `Base.run()` as the class's method: a pre-existing gap, out of scope here
     assert ("base.py", "Base.run", "typed") not in edges_at(root, "use.py", "run")
     assert ("other.py", "OtherBase.run", "typed") in edges_at(root, "use.py", "run")
+
+
+def test_inheritance_order_follows_python_mro(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "class A1:\n    def m(self):\n        return 'A1'\n\n\nclass A(A1):\n    pass\n\n\nclass B:\n"
+            "    def m(self):\n        return 'B'\n\n\nclass C(A, B):\n    pass\n\n\n"
+            "class Base:\n    def d(self):\n        return 'Base'\n\n\nclass L(Base):\n    pass\n\n\nclass R(Base):\n"
+            "    def d(self):\n        return 'R'\n\n\nclass D(L, R):\n    pass\n\n\n"
+            "def f():\n    c = C()\n    x = D()\n    c.m()\n    return x.d()\n",
+        },
+    )
+    assert edges_at(root, "m.py", "m") == [("m.py", "A1.m", "typed")]  # left grandparent before right parent
+    assert edges_at(root, "m.py", "d") == [("m.py", "R.d", "typed")]  # diamond: R before the shared Base
+
+
+def test_a_rebound_parameter_does_not_type_an_attribute(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "svc.py": "from base import Base\nfrom other import Other\n\n\nclass Svc:\n    def __init__(self, p: Base):\n"
+            "        p = Other()\n        self.h = p\n\n    def go(self):\n        return self.h.run()\n",
+        },
+    )
+    assert ("base.py", "Base.run", "typed") not in edges_at(root, "svc.py", "run")
+
+
+def test_a_deleted_name_is_not_inferred(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "use.py": "from base import Base\n\n\ndef f():\n    x = Base()\n    del x\n    return x.run()\n",
+        },
+    )
+    assert {r[2] for r in edges_at(root, "use.py", "run")} == {"name"}
