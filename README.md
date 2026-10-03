@@ -141,9 +141,9 @@ Measured against jedi's goto-definition on sampled calls in Python repos ([bench
 
 | repo | calls with an in-repo target | resolved confidently | precision |
 |---|---:|---:|---:|
-| django | 1,602 | 87.4% | 100% |
-| freqtrade | 1,612 | 91.7% | 100% |
-| requests | 144 | 93.1% | 100% |
+| django | 1,569 | 87.8% | 99.9% |
+| freqtrade | 1,647 | 90.9% | 100% |
+| requests | 161 | 90.1% | 100% |
 
 The rest fall to `name`, `ambiguous` or `unresolved`, which say so rather than guess. What remains are receivers syntax can't type (unannotated parameters, loop variables, chained calls, and runtime-built APIs such as Django's managers); see the [roadmap](https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md).
 </details>
