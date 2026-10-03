@@ -4,6 +4,9 @@ Notable changes to the `duckgrep` package, newest first. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+- **Catching up after many files change is faster.** After a branch switch, a big pull or a copied index, the next query re-indexes the changed files. Moving a django checkout 300 commits (698 files) now takes 5.8 s instead of 13.5 s, and a copied index on the same commit catches up in 0.6 s instead of 2.2 s.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added

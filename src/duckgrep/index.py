@@ -464,21 +464,22 @@ def freshen(
             con.register("_chg_src", pa.table({"path": replaced}))
             con.execute("CREATE OR REPLACE TEMP TABLE _chg AS SELECT DISTINCT path FROM _chg_src")
             con.unregister("_chg_src")
-            # what the old versions defined / exported (needed to find edges that point at them)
-            con.execute(
-                "CREATE OR REPLACE TEMP TABLE _aff_names AS "
-                "SELECT name FROM symbols WHERE path IN (SELECT path FROM _chg) "
-                'UNION SELECT "local" FROM imports WHERE path IN (SELECT path FROM _chg) '
-                'AND "local" IS NOT NULL'
-            )
-            con.execute(
-                "CREATE OR REPLACE TEMP TABLE _aff_keys AS "
-                "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)"
-            )
-            con.execute(
-                "CREATE OR REPLACE TEMP TABLE _aff_types AS "
-                + schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM _chg")
-            )
+            if not rebuild_edges:  # a rebuild recomputes every edge, so it needs no dirty seeds
+                # what the old versions defined / exported (needed to find edges that point at them)
+                con.execute(
+                    "CREATE OR REPLACE TEMP TABLE _aff_names AS "
+                    "SELECT name FROM symbols WHERE path IN (SELECT path FROM _chg) "
+                    'UNION SELECT "local" FROM imports WHERE path IN (SELECT path FROM _chg) '
+                    'AND "local" IS NOT NULL'
+                )
+                con.execute(
+                    "CREATE OR REPLACE TEMP TABLE _aff_keys AS "
+                    "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)"
+                )
+                con.execute(
+                    "CREATE OR REPLACE TEMP TABLE _aff_types AS "
+                    + schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM _chg")
+                )
             for t in PER_FILE_TABLES + ["files"]:
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
 
@@ -525,7 +526,10 @@ def freshen(
             [tuple(r) for r in file_rows.values()],
         )
         if touched:
-            con.executemany("UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?", touched)
+            size, mtime, path = zip(*touched, strict=True)
+            con.register("_touch", pa.table({"path": path, "size": size, "mtime_ns": mtime}))
+            con.execute("UPDATE files SET size = t.size, mtime_ns = t.mtime_ns FROM _touch t WHERE files.path = t.path")
+            con.unregister("_touch")
         if rebuild_edges:
             _rebuild_edges(con)
             con.execute("DELETE FROM meta WHERE key = 'edges_rebuild_pending'")

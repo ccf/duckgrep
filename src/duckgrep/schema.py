@@ -142,9 +142,13 @@ UNION SELECT regexp_extract(CASE WHEN starts_with(type_text, 'call:') THEN subst
 UNION SELECT regexp_extract(returns, '[^.]*$') FROM symbols WHERE path IN ({files}) AND returns IS NOT NULL
 UNION SELECT name FROM imports WHERE path IN ({files}) AND family = 'py' AND name IS NOT NULL AND "local" <> name
 UNION SELECT unnest([i."local", i.name]) FROM imports i  -- names the file re-exports, under both names
+      JOIN (  -- how other files import the file's module: a name from it, or the whole module (name NULL)
+          SELECT m.path, CASE WHEN j.name IS NULL OR m.key = j.subkey THEN NULL ELSE j.name END AS name
+          FROM modules m JOIN imports j ON j.family = m.family AND j.key = m.key WHERE m.path IN ({files})
+          UNION SELECT m.path, NULL FROM modules m JOIN imports j ON j.family = m.family AND j.subkey = m.key
+          WHERE m.path IN ({files})
+      ) x ON x.path = i.path AND (x.name IS NULL OR x.name = i."local")
       WHERE i.path IN ({files}) AND i.family = 'py' AND i."local" IS NOT NULL
-        AND EXISTS (SELECT 1 FROM imports j JOIN modules m ON m.family = j.family AND m.key IN (j.key, j.subkey)
-                    WHERE m.path = i.path AND (j.name = i."local" OR j.name IS NULL OR m.key = j.subkey))
 """
 
 TYPED_DIRTY = """
