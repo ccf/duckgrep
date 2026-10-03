@@ -287,3 +287,13 @@ def test_accuracy_table_matches_readme_row_by_row():
         if cells and cells[0] != "Repo"
     }
     assert got == want and set(want) == {"django", "freqtrade", "requests"}
+
+
+def test_the_github_links_carry_the_github_mark_and_a_name():
+    page = PAGE.read_text()
+    links = re.findall(r'<a [^>]*href="https://github.com/ccf/duckgrep"[^>]*>(.*?)</a>', page, re.S)
+    assert len(links) >= 2
+    tags = re.findall(r'<a [^>]*href="https://github.com/ccf/duckgrep"[^>]*>', page)
+    for tag, inner in zip(tags, links, strict=True):
+        assert "<svg" in inner and 'aria-hidden="true"' in inner, "the GitHub mark, decorative"
+        assert re.search(r'aria-label="[^"]*[^"\s]', tag) or re.sub(r"<[^>]+>", "", inner).strip(), "an accessible name"

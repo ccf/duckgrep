@@ -67,6 +67,12 @@ main > section.race { width: min(1360px, 100% - 2 * clamp(16px, 4vw, 32px)); }
 .top__nav { display: flex; gap: var(--space-4); font: 600 15px/20px var(--font-sans); }
 .top__nav a { color: var(--ink-muted); }
 .top__nav a:hover { color: var(--ink); }
+.top__nav { align-items: center; }
+.top__gh { display: inline-flex; padding: 4px; margin: -4px; border-radius: var(--radius-sm); }
+.top__gh .gh { width: 22px; height: 22px; }
+.foot__gh { display: inline-flex; align-items: center; gap: 6px; }
+.foot__gh .gh { width: 16px; height: 16px; }
+.gh { display: block; flex: none; }
 
 /* hero */
 .hero { padding-block: clamp(32px, 4.5vw, 56px) var(--space-5); }
