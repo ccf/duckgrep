@@ -475,6 +475,10 @@ def freshen(
                 "CREATE OR REPLACE TEMP TABLE _aff_keys AS "
                 "SELECT DISTINCT family, key FROM modules WHERE path IN (SELECT path FROM _chg)"
             )
+            con.execute(
+                "CREATE OR REPLACE TEMP TABLE _aff_types AS "
+                + schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM _chg")
+            )
             for t in PER_FILE_TABLES + ["files"]:
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
 
@@ -529,7 +533,7 @@ def freshen(
         elif replaced:
             _mark_edges_dirty(con)
         if replaced:
-            for t in ("_chg", "_aff_names", "_aff_keys"):
+            for t in ("_chg", "_aff_names", "_aff_keys", "_aff_types"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
         if ctx_json is not None:
             con.execute("INSERT OR REPLACE INTO meta VALUES ('module_ctx', ?)", [ctx_json])
@@ -621,6 +625,13 @@ def _mark_edges_dirty(con) -> None:
           ON k.family = i.family AND (k.key = i.key OR k.key = i.subkey)
         WHERE i.name = '*' AND i."local" IS NULL
     """)
+    # typed edges also depend on other files' classes, bases, attr types and return annotations
+    con.execute(
+        schema.TYPED_DIRTY.format(
+            seed_after=schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM edges_dirty WHERE kind = 'path'"),
+            depth=schema.INHERIT_DEPTH,
+        )
+    )
     con.execute("DROP TABLE IF EXISTS _new_keys")
 
 

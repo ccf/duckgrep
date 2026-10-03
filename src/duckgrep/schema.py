@@ -130,6 +130,43 @@ CREATE TABLE IF NOT EXISTS file_changes (
 NAME_CAP = 10
 INHERIT_DEPTH = 8  # base classes walked for typed receivers
 
+# Typed edges depend on other files' signature-level facts: the class a type names, its bases and their
+# methods, attr bindings, a callee's return annotation, a module-level instance's type. When files change,
+# the names those facts mention (before and after) are expanded to their ancestors by name, and every method
+# of those classes is marked dirty by name. Over-approximate on purpose; {files} is a subquery of paths.
+TYPED_DIRTY_SEED = """
+SELECT name FROM symbols WHERE path IN ({files}) AND lang = 'python' AND kind = 'class'
+UNION SELECT regexp_extract(CASE WHEN starts_with(type_text, 'call:') THEN substr(type_text, 6) ELSE type_text END,
+                            '[^.]*$')
+      FROM bindings WHERE path IN ({files}) AND type_text IS NOT NULL AND (kind IN ('base', 'attr') OR scope = '')
+UNION SELECT regexp_extract(returns, '[^.]*$') FROM symbols WHERE path IN ({files}) AND returns IS NOT NULL
+UNION SELECT "local" FROM imports WHERE path IN ({files}) AND family = 'py' AND "local" IS NOT NULL
+"""
+
+TYPED_DIRTY = """
+INSERT INTO edges_dirty
+WITH RECURSIVE seed(name) AS (
+    SELECT name FROM _aff_types
+    UNION {seed_after}
+),
+start(name) AS (
+    SELECT name FROM seed
+    UNION SELECT regexp_extract(s.returns, '[^.]*$') FROM symbols s SEMI JOIN seed ON seed.name = s.name
+    WHERE s.returns IS NOT NULL
+),
+cls(name, depth) AS (
+    SELECT name, 0 FROM start
+  UNION
+    SELECT regexp_extract(b.type_text, '[^.]*$'), c.depth + 1
+    FROM cls c JOIN bindings b ON b.kind = 'base' AND b.type_text IS NOT NULL
+         AND regexp_extract(b.scope, '[^.]*$') = c.name
+    WHERE c.depth < {depth}
+)
+SELECT DISTINCT 'name', NULL, s.name FROM symbols s
+SEMI JOIN (SELECT DISTINCT name FROM cls) c ON regexp_extract(s.parent, '[^.]*$') = c.name
+WHERE s.lang = 'python' AND s.kind IN ('method', 'class')
+"""
+
 # Computes edges for the refs in {source} selected by {where} (a predicate on refs r).
 # Must stay consistent with the imports_resolved view below.
 # Tiers: 1 = confident (self, local, package, import, module, qualified, typed)
