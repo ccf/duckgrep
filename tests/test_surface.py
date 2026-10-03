@@ -178,3 +178,9 @@ def test_the_tool_description_documents_every_table_and_macro_within_its_budget(
         assert re.search(rf"(?<![\w.]){name}\(", SCHEMA_DOC), name
     assert "(dst_path, dst_qualname)" in SCHEMA_DOC  # two hops that keep same-named functions apart
     assert len(QUERY_DOC) <= 3100, len(QUERY_DOC)
+
+
+def test_the_tool_description_names_the_typed_tier():
+    from duckgrep.schema import SCHEMA_DOC
+
+    assert "typed" in SCHEMA_DOC

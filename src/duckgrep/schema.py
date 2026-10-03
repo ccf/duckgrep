@@ -649,8 +649,9 @@ TABLES
 
 edges(src_path, src_scope, line, ref_kind, name, receiver, dst_path, dst_qualname, dst_kind, dst_line, resolution, n_candidates)
   reference -> definition (the call graph). resolution:
-    self | local | package | import | module | qualified   confident (scope, import and star-import analysis)
-    name        obj.method() matched by method name only, <= 10 candidates (one row each; n_candidates = how many)
+    self | local | package | import | module | qualified | typed   confident (typed: receiver class from a
+                constructor, annotation or base class)
+    name        obj.method() matched by method name only, <= 10 candidates (one row each)
     ambiguous   > 10 candidates, or a method builtin types also have (get, append, push ...); dst_* NULL
     unresolved  no in-repo target found (stdlib, builtins, third party, or an import duckgrep can't follow); dst_* NULL
   A bare name resolves through its file's scope and imports only (Rust macros and .d.ts declarations excepted).
@@ -659,7 +660,7 @@ TABLE MACROS
   defs('name')          where is it defined          callers('name' | 'Class.method')   who uses it
   callees('qualname')   what it calls                outline('path/or/suffix.py')       symbols in a file
   grep('regex')         text search + enclosing symbol    source('qualname')           the code of a symbol
-  outline, callees and source fill their first column(s) only when the argument matches several files or symbols
+  outline, callees, source fill their first column(s) only when the argument is ambiguous
   callers('Class.method') ends with one row (src_path NULL) counting its calls on receivers of unknown type
 
 EXAMPLES

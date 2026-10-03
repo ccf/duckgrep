@@ -126,6 +126,7 @@ Tree-sitter gives syntax, not types, so every edge says how it was resolved:
   - one hop of re-exports (`__init__.py`, `export … from`, `pub use`).
 
   `qualified` (`Class.method`, `Type::method`) requires the class to be defined or imported in the calling file.
+- **`typed`** (confident, Python for now): `obj.method()` where the receiver's class can be read from syntax: `x = Foo()`, an annotation (`p: Foo`, or `-> Foo` one call away), `self.attr` set or annotated in the class, an imported module-level instance, or `self`/`super()` through base classes in other files. A name bound more than once, or to something untypable, gets no inference. The edge goes to the method on that class or its nearest in-repo base; a subclass that overrides it isn't followed, so `callers('Sub.m')` misses calls typed as the base. A receiver whose class is outside the repo (`io.StringIO()`, a literal) is `unresolved`, not a `name` guess.
 - **`name`:** `obj.method()` on a receiver of unknown type, matched by method name only. Kept as one row per candidate when there are ≤10 candidates.
 - **`ambiguous`:** more than 10 candidates, or a method that builtin types also have (`get`, `append`, `push`, `clone`…). The target is left NULL rather than guessed. `callers('Class.method')` ends with a row counting these calls.
 - **`unresolved`:** no in-repo target found. That covers stdlib, builtins, third-party code, calls on a receiver bound to an external import (`json.dumps`), and imports duckgrep can't follow.

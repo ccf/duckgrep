@@ -68,6 +68,7 @@ Design specs go in `docs/specs/` and implementation plans in `docs/plans/`, name
 - Invariant: incremental edges must equal a full rebuild. Tests assert `snapshot(root) == fresh_snapshot(root, tmp_path)` (from `tests/helpers.py`) after edits. A change to resolution or dirty-marking needs such a case. The known remaining gap is aliased re-export chains (`from pkg import X as Y` through a re-exporting `__init__`, TS barrels).
 - Resolution tiers in `EDGES_COMPUTE`:
   - **Confident:** `self`, `local`, `package` (Go), `import` (including `from m import *` / `use m::*`, Python and Rust only), `module` and `qualified`, plus one hop of re-exports. `qualified` (`Class.m`, `Type::m`) needs the same language, a capitalised receiver, and a class defined or imported in the calling file.
+  - **`typed`** (confident, Python): the receiver's class from `bindings` (per-file facts, `bindings.py`) and `symbols.returns`, walked through in-repo bases up to `INHERIT_DEPTH` = 8. A name with more than one binding, or an untyped one, gets no inference. An external class makes the call `unresolved`. Dirty marking adds the method names of classes a changed file's facts name, and their ancestors (`TYPED_DIRTY`).
   - **`name`:** receiver calls of unknown type, at most `NAME_CAP` = 10 candidates, one row each.
   - **`ambiguous`:** more candidates, or a method name builtin types also have; the target is NULL.
   - **`unresolved`:** no in-repo target, including calls on receivers bound to external imports or builtin globals.
