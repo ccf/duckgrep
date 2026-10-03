@@ -184,3 +184,13 @@ def test_the_tool_description_names_the_typed_tier():
     from duckgrep.schema import SCHEMA_DOC
 
     assert "typed" in SCHEMA_DOC
+
+
+def test_the_module_version_is_the_package_version():
+    from pathlib import Path
+
+    import duckgrep
+
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    (version,) = re.findall(r'(?m)^version = "([^"]+)"$', text)  # tomllib needs 3.11; CI runs 3.10 too
+    assert duckgrep.__version__ == version
