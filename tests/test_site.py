@@ -256,3 +256,14 @@ def test_font_link_matches_tokens_import():
         if "fonts.googleapis.com" in href
     ]
     assert linked == [imported]
+
+
+def test_csp_allows_cloudflare_analytics_only():
+    """Cloudflare injects its Web Analytics beacon at the edge; the CSP allows that and no other third-party script."""
+    csp = next(ln for ln in (ROOT / "site/_headers").read_text().splitlines() if "Content-Security-Policy" in ln)
+    directives = dict(d.strip().split(" ", 1) for d in csp.split(":", 1)[1].split(";") if d.strip())
+    (script,) = parse().scripts
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    # the whole list, so a wildcard, data: or another host can't slip in beside the beacon
+    assert directives["script-src"].split() == ["'self'", f"'sha256-{digest}'", "https://static.cloudflareinsights.com"]
+    assert directives["connect-src"].split() == ["'self'", "https://cloudflareinsights.com"]
