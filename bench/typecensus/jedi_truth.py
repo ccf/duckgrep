@@ -34,7 +34,7 @@ def gap_refs(root):
         FROM edges e JOIN files f ON f.path = e.src_path
         WHERE ref_kind = 'call' AND f.lang = 'python' AND receiver IS NOT NULL
         GROUP BY ALL
-        HAVING NOT list_has_any(list(resolution), ['self','local','package','import','module','qualified'])
+        HAVING NOT list_has_any(list(resolution), ['self','local','package','import','module','qualified','typed'])
         """,
         max_rows=10_000_000,
     ).rows

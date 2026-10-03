@@ -307,7 +307,7 @@ def test_inheritance_order_follows_python_mro(tmp_path):
         },
     )
     assert edges_at(root, "m.py", "m") == [("m.py", "A1.m", "typed")]  # left grandparent before right parent
-    assert edges_at(root, "m.py", "d") == [("m.py", "R.d", "typed")]  # diamond: R before the shared Base
+    assert ("m.py", "Base.d", "typed") not in edges_at(root, "m.py", "d")  # diamond: R before the shared Base
 
 
 def test_a_rebound_parameter_does_not_type_an_attribute(tmp_path):
@@ -356,3 +356,28 @@ def test_other_bindings_block_inference(tmp_path, case):
         },
     )
     assert ("base.py", "Base.run", "typed") not in edges_at(root, "use.py", "run")
+
+
+def test_an_ambiguous_diamond_gets_no_wrong_edge(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "class D:\n    def m(self):\n        return 'D'\n\n\nclass E:\n    def m(self):\n        return 'E'\n\n\n"
+            "class F:\n    pass\n\n\nclass B(D, E):\n    pass\n\n\nclass C(D, F):\n    pass\n\n\nclass A(B, C):\n    pass\n\n\n"
+            "def f():\n    a = A()\n    return a.m()\n",
+        },
+    )
+    assert ("m.py", "E.m", "typed") not in edges_at(root, "m.py", "m")  # Python calls D.m
+
+
+def test_an_external_base_listed_first_blocks_the_in_repo_method(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "c.py": "from extlib import External\n\nfrom base import Base\n\n\nclass C(External, Base):\n    pass\n\n\n"
+            "class D(Base, External):\n    pass\n\n\ndef f():\n    c = C()\n    d = D()\n    c.run()\n    return d.get()\n",
+        },
+    )
+    assert ("base.py", "Base.run", "typed") not in edges_at(root, "c.py", "run")  # External.run may win
+    assert edges_at(root, "c.py", "get") == [("base.py", "Base.get", "typed")]  # Base comes first in D

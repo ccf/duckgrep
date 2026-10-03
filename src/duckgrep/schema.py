@@ -387,18 +387,35 @@ py_type AS (  -- typed receiver -> its class (cpath, cqual) and where the method
 ),
 py_cand AS MATERIALIZED (  -- each typed receiver's classes to search, in resolution order (staged: joining the
                           -- ancestry to every method first was the tier's main cost)
-    SELECT t.path, t.line, t.col, r.name, a.apath, a.aqual, a.ord
+    SELECT t.path, t.line, t.col, t.cpath, t.cqual, r.name, a.apath, a.aqual, a.ord
     FROM py_type t
     JOIN py_r r ON r.path = t.path AND r.line = t.line AND r.col = t.col
     JOIN py_mro a ON a.path = t.cpath AND a.qual = t.cqual AND a.depth >= t.from_depth
     WHERE NOT t.ext
 ),
-py_hit AS (  -- the method on that class or its nearest in-repo ancestor
-    SELECT c.path, c.line, c.col, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind,
-           s.start_line AS dst_line
+py_defs AS (  -- the in-repo ancestors that define the called method
+    SELECT c.path, c.line, c.col, c.cpath, c.cqual, c.ord, s.path AS dst_path, s.qualname AS dst_qualname,
+           s.kind AS dst_kind, s.start_line AS dst_line
     FROM py_cand c
     JOIN symbols s ON s.path = c.apath AND s.parent = c.aqual AND s.name = c.name AND s.kind IN ('method', 'class')
-    QUALIFY row_number() OVER (PARTITION BY c.path, c.line, c.col ORDER BY c.ord, s.start_line) = 1
+),
+py_diamond AS (  -- classes reaching an ancestor by two paths: there the last-occurrence order may not be Python's
+    SELECT DISTINCT path, qual FROM (SELECT path, qual FROM py_anc GROUP BY path, qual, apath, aqual HAVING count(*) > 1)
+),
+py_blocker AS (  -- bases outside the repo or unnameable, at their depth-first position in a class's ancestry
+    SELECT a.path, a.qual, list_append(a.ord, b.pos) AS ord
+    FROM py_anc a JOIN py_base b ON b.path = a.apath AND b.qual = a.aqual
+    WHERE b.ext OR b.opaque
+),
+py_hit AS (  -- the first definer in resolution order, unless the order is uncertain or an unknown base comes first
+    SELECT path, line, col, dst_path, dst_qualname, dst_kind, dst_line FROM (
+        SELECT d.*, count(*) OVER (PARTITION BY d.path, d.line, d.col) AS n_def,
+               row_number() OVER (PARTITION BY d.path, d.line, d.col ORDER BY d.ord, d.dst_line) AS rk
+        FROM py_defs d
+    ) h
+    WHERE rk = 1
+      AND NOT (n_def > 1 AND EXISTS (SELECT 1 FROM py_diamond x WHERE x.path = h.cpath AND x.qual = h.cqual))
+      AND NOT EXISTS (SELECT 1 FROM py_blocker k WHERE k.path = h.cpath AND k.qual = h.cqual AND k.ord < h.ord)
 ),
 py_type_ext AS (  -- receivers whose bound type is outside the repo
     SELECT b.path, b.line, b.col FROM py_bind b
@@ -416,7 +433,7 @@ py_typed_ext AS (  -- typed receivers whose method can only be outside the repo
   UNION
     SELECT t.path, t.line, t.col FROM py_type t
     JOIN py_open o ON o.path = t.cpath AND o.qual = t.cqual AND o.ext AND NOT o.opaque
-    ANTI JOIN py_hit h ON h.path = t.path AND h.line = t.line AND h.col = t.col
+    ANTI JOIN py_defs h ON h.path = t.path AND h.line = t.line AND h.col = t.col  -- an in-repo definer: not external
 ),
 t1 AS (
     SELECT r.*, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind, s.start_line AS dst_line,
