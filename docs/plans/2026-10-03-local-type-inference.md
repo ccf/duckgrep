@@ -1715,3 +1715,14 @@ Inputs and conditions the spec implies but the feature tests below don't obvious
   - that no other language's edges changed.
 
   Wait for Bugbot and Greptile. Fix the valid findings on the branch and reply with evidence to the rest. Merge with `gh pr merge --merge --delete-branch` when clean.
+
+## Corrections from review
+
+Review of this plan found these defects. The implementation on `feat/typed-tier` carries each fix, with the test that pins it. Read the code blocks above with these applied.
+
+- **`Self`** maps to the enclosing class's qualified name, not its short name; otherwise a nested class's `Self` could match a same-named top-level class. Pinned by `test_self_in_a_nested_class_names_that_class`. (The code blocks above are already corrected.)
+- **A capitalised receiver with a binding in scope** is typed only through that binding, never as the class of the same name. `py_type`'s class-receiver branch anti-joins `py_scoped`. Pinned by `test_a_rebound_capitalised_name_is_not_a_class_receiver`. (Already corrected above.)
+- **Method resolution order.** Ranking ancestors by depth picks a right-hand parent's method over one a left-hand grandparent provides. A new CTE, `py_mro`, keeps each ancestor at its last depth-first, left-to-right occurrence: `max(ord)` grouped by class and ancestor, with `min(depth)` for `super()`. `py_hit` and the `self.attr` lookup order by it. Pinned by `test_inheritance_order_follows_python_mro`, which covers a left grandparent and a diamond.
+- **A reassigned parameter** no longer types `self.attr = p`. A parameter's annotation counts only if the function never rebinds the name; see `rebound()` in `bindings.py`. Pinned by `test_a_rebound_parameter_does_not_type_an_attribute`.
+- **`del x`** is recorded as an untyped binding, so it blocks inference, as the spec lists. Pinned by `test_a_deleted_name_is_not_inferred`.
+- **`extractor_version`** also hashes `bindings.py`, so a change to the binding rules forces a re-parse. Pinned by `test_a_change_to_the_binding_rules_forces_a_reparse`.
