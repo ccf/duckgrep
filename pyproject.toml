@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "duckgrep"
-version = "0.1.0"
+version = "0.2.0"
 description = "A DuckDB index of your codebase for coding agents: symbols, references, imports, call edges, text and git history, queryable with SQL."
 readme = "README.md"
 requires-python = ">=3.10"
