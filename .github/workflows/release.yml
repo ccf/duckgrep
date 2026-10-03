@@ -47,6 +47,10 @@ jobs:
             echo "release commit $GITHUB_SHA is not on main" >&2
             exit 1
           fi
+          if ! grep -q "^## \[$version\] - " CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [$version] - YYYY-MM-DD' entry" >&2
+            exit 1
+          fi
           # a GitHub prerelease must carry a PEP 440 prerelease version, or PyPI would get a final release
           if [ "$PRERELEASE" = "true" ] && ! printf '%s' "$version" | grep -Eq '(a|b|rc|\.dev)[0-9]+$'; then
             echo "prerelease $TAG has the final version $version; use e.g. ${version}rc1" >&2

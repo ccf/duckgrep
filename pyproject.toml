@@ -36,6 +36,7 @@ Homepage = "https://duckgrep.dev"
 Repository = "https://github.com/ccf/duckgrep"
 Results = "https://github.com/ccf/duckgrep/blob/main/bench/RESULTS.md"
 Roadmap = "https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md"
+Changelog = "https://github.com/ccf/duckgrep/blob/main/CHANGELOG.md"
 
 [project.scripts]
 duckgrep = "duckgrep.cli:main"

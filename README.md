@@ -211,6 +211,7 @@ The harness, the suites and every number are in the repo: [bench/eval](https://g
 ## Roadmap and contributing
 
 - **[docs/roadmap.md](https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md):** what's next and the known gaps.
+- **[CHANGELOG.md](https://github.com/ccf/duckgrep/blob/main/CHANGELOG.md):** what changed in each release.
 - **[CONTRIBUTING.md](https://github.com/ccf/duckgrep/blob/main/CONTRIBUTING.md):** how to set up, test and benchmark.
 
 ## License
