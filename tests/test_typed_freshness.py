@@ -139,3 +139,19 @@ def test_random_edit_sequences(tmp_path):
         path = rng.choice(sorted(POOL))
         write(root, path, rng.choice(POOL[path]))
         same(root, tmp_path)
+
+
+def test_reexporting_module_switches_its_source(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "grand.py": GRAND,
+            "other.py": OTHER.replace("class Other:", "class Grand:"),
+            "pkg/__init__.py": "from grand import Grand\n",
+            "use.py": "from pkg import Grand\n\n\ndef f():\n    x = Grand()\n    return x.deep()\n",
+        },
+    )
+    same(root, tmp_path)
+    write(root, "pkg/__init__.py", "from other import Grand\n")
+    same(root, tmp_path)
+    assert rows(root, "SELECT dst_path FROM edges WHERE src_path = 'use.py' AND name = 'deep'") == [("other.py",)]

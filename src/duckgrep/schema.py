@@ -140,7 +140,10 @@ UNION SELECT regexp_extract(CASE WHEN starts_with(type_text, 'call:') THEN subst
                             '[^.]*$')
       FROM bindings WHERE path IN ({files}) AND type_text IS NOT NULL AND (kind IN ('base', 'attr') OR scope = '')
 UNION SELECT regexp_extract(returns, '[^.]*$') FROM symbols WHERE path IN ({files}) AND returns IS NOT NULL
-UNION SELECT "local" FROM imports WHERE path IN ({files}) AND family = 'py' AND "local" IS NOT NULL
+UNION SELECT i."local" FROM imports i  -- names the file re-exports: imported by name from it by other files
+      WHERE i.path IN ({files}) AND i.family = 'py' AND i."local" IS NOT NULL
+        AND EXISTS (SELECT 1 FROM imports j JOIN modules m ON m.family = j.family AND m.key = j.key
+                    WHERE m.path = i.path AND j.name = i."local")
 """
 
 TYPED_DIRTY = """
