@@ -461,7 +461,8 @@ def test_a_binding_before_the_class_does_not_hide_it(tmp_path):
             "m.py": "Foo = None\n\n\nclass Foo:\n    def run(self):\n        return 1\n\n\ndef f():\n    x = Foo()\n    return x.run()\n"
         },
     )
-    assert edges_at(root, "m.py", "run") == [("m.py", "Foo.run", "typed")]
+    # bound twice in the file: no guess, but the class's method stays a candidate
+    assert ("m.py", "Foo.run") in {(p, q) for p, q, _ in edges_at(root, "m.py", "run")}
 
 
 def test_a_function_local_class_is_not_its_module_namesake(tmp_path):
@@ -522,3 +523,27 @@ def test_a_nested_namesake_in_another_file_does_not_block(tmp_path):
         },
     )
     assert edges_at(root, "use.py", "run") == [("base.py", "Base.run", "typed")]
+
+
+def test_a_name_imported_after_its_use_does_not_retype_it(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "other.py": "class Foo:\n    def run(self):\n        return 0\n",
+            "m.py": "class Foo:\n    def run(self):\n        return 1\n\n\nx = Foo()\n\nfrom other import Foo  # noqa\n\n\n"
+            "def f():\n    return x.run()\n",
+        },
+    )
+    assert ("other.py", "Foo.run", "typed") not in edges_at(root, "m.py", "run")
+
+
+def test_a_function_level_import_does_not_retype_module_code(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "other.py": "class Foo:\n    def run(self):\n        return 0\n",
+            "m.py": "class Foo:\n    def run(self):\n        return 1\n\n\ndef helper():\n    from other import Foo\n\n"
+            "    return Foo\n\n\nx = Foo()\n\n\ndef f():\n    return x.run()\n",
+        },
+    )
+    assert ("other.py", "Foo.run", "typed") not in edges_at(root, "m.py", "run")

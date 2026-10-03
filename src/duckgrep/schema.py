@@ -252,6 +252,17 @@ py_tx AS (  -- dotted names to resolve, per file: binding types, callees, return
           AND regexp_matches(recv_last, '^[A-Z]')
     )
 ),
+py_multi AS (  -- names bound on more than one line of a file (imports at any depth, module-level definitions and
+              -- assignments, assignments in any scope): which binding a use means depends on where it is, so no guess.
+              -- Plain `import a.b` / `import a.c` lines all bind the same package and don't count.
+    SELECT path, name FROM (
+        SELECT path, "local" AS name, line FROM py_imp WHERE "local" IS NOT NULL AND NOT (name IS NULL AND alias IS NULL)
+      UNION SELECT path, name, start_line FROM symbols
+        WHERE lang = 'python' AND parent IS NULL AND kind IN ('class', 'function', 'variable', 'constant')
+      UNION SELECT path, name, line FROM bindings WHERE kind IN ('assign', 'annot')
+    )
+    GROUP BY ALL HAVING count(DISTINCT line) > 1
+),
 py_def AS (  -- a dotted name in a file -> the definition it names (class, function, Class.method); bline: where
             -- the referencing file binds the name, so of several bindings the latest wins, as in Python
     SELECT * FROM (
@@ -291,6 +302,7 @@ py_def AS (  -- a dotted name in a file -> the definition it names (class, funct
       -- a name a nested def or class in this file also defines may mean that local one: don't guess at all
       AND NOT EXISTS (SELECT 1 FROM symbols n WHERE n.path = c.path AND n.name = c.head AND n.parent IS NOT NULL
                         AND n.kind IN ('class', 'function'))
+      AND NOT EXISTS (SELECT 1 FROM py_multi m WHERE m.path = c.path AND m.name = c.head)
     QUALIFY row_number() OVER (PARTITION BY c.path, c.text ORDER BY c.bline DESC, c.p, c.dpath, c.dqual) = 1
 ),
 py_ext AS (  -- a dotted name in a file that names something outside the repo: an unresolved import, a builtin
