@@ -359,6 +359,7 @@ py_type AS (  -- typed receiver -> its class (cpath, cqual) and where the method
   UNION ALL  -- Foo.m(), mod.Foo.m(): a class receiver (qualified covers Foo's own methods; this adds its bases)
     SELECT r.path, r.line, r.col, d.dpath, d.dqual, 0, FALSE
     FROM py_r r JOIN py_def d ON d.path = r.path AND d.text = r.receiver AND d.dkind = 'class'
+    ANTI JOIN py_scoped s ON s.path = r.path AND s.line = r.line AND s.col = r.col  -- a name bound in scope isn't the class
 ),
 py_hit AS (  -- the method on that class or its nearest in-repo ancestor
     SELECT t.path, t.line, t.col, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind,

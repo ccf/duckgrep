@@ -67,7 +67,7 @@ def _strip_typing(t: str) -> str:
 
 def normalize_type(text: str, cls: str | None = None, generic_head: bool = False) -> str | None:
     """An annotation as one dotted class name, or None: unwraps Optional/X | None/quotes/Annotated/type[...],
-    maps Self to `cls`. With generic_head, Base[T] names Base (for base classes); otherwise a subscript
+    maps Self to `cls` (the enclosing class qualname). With generic_head, Base[T] names Base (for base classes); otherwise a subscript
     (a container or generic) is None."""
     t = " ".join(text.split())
     if len(t) >= 2 and t[0] == t[-1] and t[0] in "'\"":
@@ -158,7 +158,7 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             a = c.named_children[0]
             left, right, ann = (a.child_by_field_name(f) for f in ("left", "right", "type"))
             if left is not None and left.type == "identifier":
-                tt = normalize_type(text(ann), short) if ann is not None else value_type(right, {})
+                tt = normalize_type(text(ann), qual) if ann is not None else value_type(right, {})
                 add(qual, "self." + text(left), "attr", tt, left)
             return
         walk(c, qual, (qual, short), {})
@@ -176,7 +176,7 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             for b in sup.named_children if sup is not None else []:
                 if b.type == "keyword_argument":
                     continue
-                bt = normalize_type(text(b), short, generic_head=True)
+                bt = normalize_type(text(b), qual, generic_head=True)
                 if bt not in _NO_METHODS:
                     add(qual, "", "base", bt, b, pos)
                 pos += 1
@@ -195,7 +195,7 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
                 pname, ann = param(p)
                 if pname is None:
                     continue
-                tt = normalize_type(text(ann), cls[1] if cls else None) if ann is not None else None
+                tt = normalize_type(text(ann), cls[0] if cls else None) if ann is not None else None
                 add(qual, pname, "param", tt, p)
                 if tt:
                     ps[pname] = tt
@@ -205,8 +205,7 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             return
         if t == "assignment":
             left, right, ann = (n.child_by_field_name(f) for f in ("left", "right", "type"))
-            short = cls[1] if cls else None
-            tt = normalize_type(text(ann), short) if ann is not None else value_type(right, params)
+            tt = normalize_type(text(ann), cls[0] if cls else None) if ann is not None else value_type(right, params)
             if left is not None and left.type == "identifier":
                 add(scope, text(left), "annot" if ann is not None else "assign", tt, left)
             elif left is not None and left.type == "attribute":

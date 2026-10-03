@@ -853,7 +853,7 @@ def extract(path: str, lang: str, src: bytes, ctx: dict | None = None) -> dict:
                     rt = node.child_by_field_name("return_type")
                     if rt is not None:
                         cls_q = classes[-1] if classes else None
-                        returns = normalize_type(_text(src, rt), cls_q.rsplit(".", 1)[-1] if cls_q else None)
+                        returns = normalize_type(_text(src, rt), cls_q)  # Self: the class qualname
                 symbols.append(
                     (
                         path,

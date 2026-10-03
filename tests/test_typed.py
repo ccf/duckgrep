@@ -264,3 +264,31 @@ def test_methods_missing_from_a_class_with_an_external_base_are_unresolved(tmp_p
         },
     )
     assert edges_at(root, "t.py", "assertEqual") == [(None, None, "unresolved")]
+
+
+def test_self_in_a_nested_class_names_that_class(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "m.py": "class Inner:\n    def run(self):\n        return 0\n\n\nclass Outer:\n    class Inner:\n"
+            "        def run(self):\n            return 1\n\n        def make(self) -> 'Self':\n            return self\n\n\n"
+            "def f():\n    x = Outer.Inner.make()\n    return x.run()\n",
+        },
+    )
+    assert ("m.py", "Inner.run", "typed") not in edges_at(root, "m.py", "run")
+    assert ("m.py", "Outer.Inner.run", "typed") in edges_at(root, "m.py", "run")
+
+
+def test_a_rebound_capitalised_name_is_not_a_class_receiver(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": "class OtherBase:\n    def run(self):\n        return 3\n\n\nclass Other(OtherBase):\n    pass\n",
+            "use.py": "from base import Base\nfrom other import Other\n\n\ndef f():\n    Base = Other()\n"
+            "    return Base.run()\n",
+        },
+    )
+    # the qualified tier still reads `Base.run()` as the class's method: a pre-existing gap, out of scope here
+    assert ("base.py", "Base.run", "typed") not in edges_at(root, "use.py", "run")
+    assert ("other.py", "OtherBase.run", "typed") in edges_at(root, "use.py", "run")
