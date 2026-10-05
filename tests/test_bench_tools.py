@@ -40,3 +40,9 @@ def test_agreement_needs_every_confident_target_to_be_jedis():
     assert typed_diff.agrees([("a.py", "A.m")], {("a.py", "A.m")})
     assert not typed_diff.agrees([("a.py", "A.m"), ("b.py", "B.m")], {("a.py", "A.m")})
     assert not typed_diff.agrees([], {("a.py", "A.m")})
+
+
+def test_a_call_jedi_resolves_outside_the_repo_is_a_disagreement():
+    assert typed_diff.judge([("a.py", "A.m")], set(), external=True) is False
+    assert typed_diff.judge([("a.py", "A.m")], set(), external=False) is None  # jedi has no answer: not scored
+    assert typed_diff.judge([("a.py", "A.m")], {("a.py", "A.m")}, external=False) is True

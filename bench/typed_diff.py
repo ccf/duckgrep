@@ -1,6 +1,9 @@
 """Per-rule precision gate: Python call refs whose confident targets differ between two indexes of one repo,
 sampled and checked against jedi's goto-definition.
 
+Both indexes must be built from the same checkout (only duckgrep's code differs between them): calls are keyed by
+(path, line, col), so an edit that moves a call would show it as lost at one position and gained at another.
+
 usage: python bench/typed_diff.py <repo> <before.duckdb> <after.duckdb> [n]
 """
 
@@ -38,6 +41,14 @@ def agrees(after, truth):
     return bool(after) and set(after) <= truth
 
 
+def judge(after, truth, external):
+    """True or False for a scored call, None when jedi has no answer. A call jedi resolves only outside the repo
+    disagrees with a confident in-repo target."""
+    if truth:
+        return agrees(after, truth)
+    return False if external else None
+
+
 def main(root, before_db, after_db, n=30, seed=0):
     import jedi
 
@@ -73,19 +84,22 @@ def main(root, before_db, after_db, n=30, seed=0):
             gs = jedi.Script(path=os.path.join(root, path), project=project).goto(line, col, follow_imports=True)
         except Exception:
             continue
-        truth = set()
+        truth, external = set(), False
         for g in gs:
             rel = to_repo_path(g.module_path, root, repo_files)
-            for s, e, qn in ranges.get((rel, g.name), []) if rel and g.line else []:
+            if rel is None or g.line is None:
+                external = True
+                continue
+            for s, e, qn in ranges.get((rel, g.name), []):
                 if s <= g.line <= e:
                     truth.add((rel, qn))
-        if not truth:
+        ok = judge(after, truth, external)
+        if ok is None:
             continue
         scored += 1
-        ok = agrees(after, truth)
         agree += ok
         if not ok:
-            print(f"  DISAGREE {path}:{line} {name}: duckgrep {after} jedi {sorted(truth)}")
+            print(f"  DISAGREE {path}:{line} {name}: duckgrep {after} jedi {sorted(truth) or 'outside the repo'}")
     print(f"agreement: {agree}/{scored}")
 
 
