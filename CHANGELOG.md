@@ -4,6 +4,8 @@ Notable changes to the `duckgrep` package, newest first. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-05
+
 ### Added
 - **Type inference, Phase 2 (Python).** Confident coverage of in-repo calls, measured against jedi, rose from 89.6% to 95.3% on django, from 93.1% to 95.4% on freqtrade and from 92.0% to 95.6% on requests, at 100% precision. The new cases:
   - named and star re-exports, up to three hops (`from django.forms import FileField`, `migrations.CreateModel`);
@@ -56,7 +58,8 @@ Notable changes to the `duckgrep` package, newest first. The format follows [Kee
 - **The first release.** A tree-sitter index of Python, TypeScript/TSX, JavaScript, Go and Rust in one DuckDB file, refreshed before every query. It's served as one read-only `query(sql)` MCP tool (`duckgrep mcp`), with a CLI (`duckgrep q`, `callers`, `callees`, `def`, `outline`, `grep`, `source`).
 - **A call graph with resolution tiers:** `self`, `local`, `package`, `import`, `module`, `qualified`, `name`, `ambiguous` and `unresolved`. Git history comes in as `commits`, `file_changes` and `file_churn`.
 
-[Unreleased]: https://github.com/ccf/duckgrep/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ccf/duckgrep/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ccf/duckgrep/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/ccf/duckgrep/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ccf/duckgrep/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ccf/duckgrep/releases/tag/v0.1.0
