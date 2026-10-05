@@ -1,0 +1,107 @@
+"""Per-rule precision gate: Python call refs whose confident targets differ between two indexes of one repo,
+sampled and checked against jedi's goto-definition.
+
+Both indexes must be built from the same checkout (only duckgrep's code differs between them): calls are keyed by
+(path, line, col), so an edit that moves a call would show it as lost at one position and gained at another.
+
+usage: python bench/typed_diff.py <repo> <before.duckdb> <after.duckdb> [n]
+"""
+
+import os
+import random
+import sys
+
+import duckdb
+
+CONFIDENT = "resolution NOT IN ('name', 'ambiguous', 'unresolved')"
+QUERY = f"""
+    SELECT e.src_path, e.line, e.col, e.name, list((e.dst_path, e.dst_qualname) ORDER BY e.dst_path, e.dst_qualname)
+    FROM edges e JOIN files f ON f.path = e.src_path
+    WHERE e.ref_kind = 'call' AND f.lang = 'python' AND {CONFIDENT}
+    GROUP BY ALL
+"""
+
+
+def _targets(db):
+    con = duckdb.connect(db, read_only=True)
+    try:
+        return {(p, ln, c, n): [tuple(t) for t in ts] for p, ln, c, n, ts in con.execute(QUERY).fetchall()}
+    finally:
+        con.close()
+
+
+def changed_targets(before_db, after_db):
+    """[(path, line, col, name, before targets, after targets)] for refs whose confident targets differ."""
+    b, a = _targets(before_db), _targets(after_db)
+    return [(*k, b.get(k, []), a.get(k, [])) for k in sorted(set(b) | set(a)) if b.get(k, []) != a.get(k, [])]
+
+
+def agrees(after, truth):
+    """Every confident target is one jedi gives: an extra wrong target is a disagreement."""
+    return bool(after) and set(after) <= truth
+
+
+def judge(after, truth, external):
+    """True or False for a scored call, None when jedi has no answer. A call jedi resolves only outside the repo
+    disagrees with a confident in-repo target."""
+    if truth:
+        return agrees(after, truth)
+    return False if external else None
+
+
+def main(root, before_db, after_db, n=30, seed=0):
+    import jedi
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from accuracy import to_repo_path
+
+    root = os.path.abspath(root)
+    diff = changed_targets(before_db, after_db)
+    gained = sum(1 for d in diff if not d[4])
+    lost = sum(1 for d in diff if not d[5])
+    print(f"gained {gained}, changed {len(diff) - gained - lost}, lost {lost}")
+    with_target = [d for d in diff if d[5]]
+    random.Random(seed).shuffle(with_target)
+    con = duckdb.connect(after_db, read_only=True)
+    ranges = {}
+    for p, nm, s, e, qn in con.execute("SELECT path, name, start_line, end_line, qualname FROM symbols").fetchall():
+        ranges.setdefault((p, nm), []).append((s, e, qn))
+    repo_files = {r[0] for r in con.execute("SELECT path FROM files").fetchall()}
+    con.close()
+    # as accuracy.py: the repo's own packages resolve to the repo, and jedi's bundled django stubs are off
+    import pathlib
+
+    import jedi.inference.gradual.typeshed as typeshed
+
+    typeshed.DJANGO_INIT_PATH = pathlib.Path("/nonexistent/django-stubs/__init__.pyi")
+    extra = [os.path.join(root, d) for d in ("src", "lib") if os.path.isdir(os.path.join(root, d))]
+    project = jedi.Project(root, added_sys_path=extra)
+    agree = scored = 0
+    for path, line, col, name, _before, after in with_target:
+        if scored >= n:
+            break
+        try:
+            gs = jedi.Script(path=os.path.join(root, path), project=project).goto(line, col, follow_imports=True)
+        except Exception:
+            continue
+        truth, external = set(), False
+        for g in gs:
+            rel = to_repo_path(g.module_path, root, repo_files)
+            if rel is None or g.line is None:
+                external = True
+                continue
+            for s, e, qn in ranges.get((rel, g.name), []):
+                if s <= g.line <= e:
+                    truth.add((rel, qn))
+        ok = judge(after, truth, external)
+        if ok is None:
+            continue
+        scored += 1
+        agree += ok
+        if not ok:
+            print(f"  DISAGREE {path}:{line} {name}: duckgrep {after} jedi {sorted(truth) or 'outside the repo'}")
+    print(f"agreement: {agree}/{scored}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv) > 4 else 30)

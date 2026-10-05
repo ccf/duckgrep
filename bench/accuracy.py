@@ -43,6 +43,7 @@ def main(root, n=300, seed=0):
         FROM edges e JOIN files f ON f.path = e.src_path
         WHERE ref_kind = 'call' AND f.lang = 'python'
         GROUP BY ALL
+        ORDER BY src_path, line, col, name
     """,
         max_rows=10_000_000,
     ).rows
