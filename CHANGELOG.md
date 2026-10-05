@@ -4,6 +4,9 @@ Notable changes to the `duckgrep` package, newest first. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+- **Indexing large repos on many-core machines no longer runs out of memory.** DuckDB's working memory grows with its thread count, so indexing now uses at most 4 threads (`DUCKGREP_THREADS` overrides it, as `DUCKGREP_MEMORY` does the 2 GB limit). With one thread per core, django's full edge rebuild needed nearly all of the 2 GB on a 16-core machine; at 4 threads it fits in 1 GB at the same speed.
+
 ## [0.2.1] - 2026-10-03
 
 ### Changed

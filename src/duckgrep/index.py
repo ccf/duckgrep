@@ -115,6 +115,17 @@ def db_path(root: str) -> str:
     return os.path.join(d, DB_FILE)
 
 
+def _writer_config() -> dict:
+    """The indexing connection's limits. DuckDB's working memory grows with its thread count, so threads are capped
+    (default 4): with one per core, django's edge rebuild needed nearly the whole 2 GB on a 16-core machine."""
+    threads = int(os.environ.get("DUCKGREP_THREADS", "0")) or min(4, os.cpu_count() or 1)
+    return {
+        "preserve_insertion_order": False,
+        "memory_limit": os.environ.get("DUCKGREP_MEMORY", "2GB"),
+        "threads": threads,
+    }
+
+
 def connect(root: str, read_only: bool = False, retries: int = 40) -> duckdb.DuckDBPyConnection:
     """Open the index. Retries briefly if another duckgrep process holds the write lock."""
     path = db_path(root)
@@ -123,16 +134,13 @@ def connect(root: str, read_only: bool = False, retries: int = 40) -> duckdb.Duc
         try:
             if read_only:
                 return duckdb.connect(path, read_only=True)
-            con = duckdb.connect(
-                path,
-                config={"preserve_insertion_order": False, "memory_limit": os.environ.get("DUCKGREP_MEMORY", "2GB")},
-            )
+            con = duckdb.connect(path, config=_writer_config())
             if not ensure_schema(con):
                 con.close()
                 for suffix in ("", ".wal"):
                     if os.path.exists(path + suffix):
                         os.remove(path + suffix)
-                con = duckdb.connect(path)
+                con = duckdb.connect(path, config=_writer_config())
                 ensure_schema(con)
             return con
         except duckdb.IOException as e:  # lock held by another process
