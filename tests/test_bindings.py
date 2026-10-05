@@ -162,3 +162,59 @@ def test_a_deeply_nested_expression_does_not_stop_indexing(tmp_path):
     )
     assert rows(root, "SELECT count(*) FROM files WHERE path = 'deep.py'") == [(1,)]
     assert ("y", "call:Bar") in rows(root, "SELECT name, type_text FROM bindings WHERE path = 'ok.py'")
+
+
+def test_class_body_alias_of_a_dotted_name():
+    rows = bind("class T:\n    form_class = forms.Base\n    other = Foo\n    n = 3\n    made = Foo()\n")
+    assert ("m.py", "T", "self.form_class", "alias", "forms.Base", 2, 0) in rows
+    assert ("m.py", "T", "self.other", "alias", "Foo", 3, 0) in rows
+    assert ("m.py", "T", "self.form_class", "attr", None, 2, 0) in rows  # today's row stays
+    assert not [r for r in rows if r[3] == "alias" and r[2] in ("self.n", "self.made")]
+
+
+def test_receiver_that_is_one_call():
+    rows = bind(
+        "class C(B):\n"
+        "    def m(self):\n"
+        "        Foo(1, x=2).run()\n"
+        "        mod.Foo('a').run()\n"
+        "        super(C, self).run()\n"
+        "        self.k(1).run()\n"
+        "        Foo()[0].run()\n"
+        "        f()().run()\n"
+    )
+    rc = sorted(r for r in rows if r[3] == "rcall")
+    assert rc == [
+        ("m.py", "C.m", "Foo(1, x=2)", "rcall", "call:Foo", 3, 20),
+        ("m.py", "C.m", "mod.Foo('a')", "rcall", "call:mod.Foo", 4, 21),
+        ("m.py", "C.m", "self.k(1)", "rcall", "call:self.k", 6, 18),
+        ("m.py", "C.m", "super(C, self)", "rcall", "super:C", 5, 23),
+    ]
+
+
+def test_returns_of_unannotated_functions():
+    rows = bind(
+        "def a():\n    return Foo()\n\n"
+        "def b():\n    x = Foo()\n    return x\n\n"
+        "def c():\n    if p:\n        return None\n    return\n\n"
+        "def d() -> Foo:\n    return make()\n\n"
+        "def e():\n    yield Foo()\n    return Foo()\n\n"
+        "def g():\n    def inner():\n        return Bar()\n    return 1 + 2\n"
+    )
+    ret = sorted(r[1:6] for r in rows if r[3] == "return")
+    assert ret == [
+        ("a", "a", "return", "call:Foo", 2),
+        ("b", "b", "return", "var:x", 6),
+        ("e", "e", "return", None, 17),
+        ("g", "g", "return", None, 23),
+        ("g.inner", "inner", "return", "call:Bar", 22),
+    ]
+
+
+def test_classes_defined_in_functions():
+    rows = bind(
+        "def t():\n    class Local(Base):\n        pass\n    if x:\n        class Two:\n            pass\n\n"
+        "class Outer:\n    class Inner:\n        pass\n"
+    )
+    lc = sorted(r[1:5] for r in rows if r[3] == "local_class")
+    assert lc == [("t", "Local", "local_class", "t.Local"), ("t", "Two", "local_class", "t.Two")]

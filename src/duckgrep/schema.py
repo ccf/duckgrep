@@ -55,11 +55,14 @@ CREATE TABLE IF NOT EXISTS refs (
 CREATE TABLE IF NOT EXISTS bindings (  -- Python: what each name is bound to, per scope (see bindings.py)
     path      VARCHAR,
     scope     VARCHAR,            -- def/class qualname ('' = module); base and attr rows: the class
-    name      VARCHAR,            -- the name, self.<attr> for attributes, '' for base rows
-    kind      VARCHAR,            -- assign | annot | param | attr | base | global
-    type_text VARCHAR,            -- dotted class name, call:<callee>, builtin type of a literal, or NULL
+    name      VARCHAR,            -- the name, self.<attr> for attributes and aliases, '' for base rows, the receiver
+                                  -- text for rcall, the function's name for return, the class's name for local_class
+    kind      VARCHAR,            -- assign | annot | param | attr | base | global | import | alias | rcall | return
+                                  -- | local_class
+    type_text VARCHAR,            -- dotted class name, call:<callee>, super:<class>, var:<local>, builtin type of a
+                                  -- literal, or NULL
     line      INTEGER,
-    pos       INTEGER             -- base rows: position in the class's bases
+    pos       INTEGER             -- base rows: position in the class's bases; rcall rows: the call ref's column
 );
 
 CREATE TABLE IF NOT EXISTS imports (
