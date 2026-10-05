@@ -699,3 +699,24 @@ def test_one_attribute_hop(tmp_path):
         root, "SELECT line, dst_qualname FROM edges WHERE src_path = 'use.py' AND resolution = 'typed' ORDER BY line"
     )
     assert got == [(10, "Base.run"), (15, "Base.get"), (16, "Other.run"), (17, "Base.get")]
+
+
+def test_class_body_aliases(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "views.py": "from base import Base\nfrom other import Other\n\n\n"
+            "class View:\n    form_class = Base\n    k_class = Other\n\n"
+            "    def __init__(self):\n        self.k_class = None\n\n"
+            "    def go(self):\n        form = self.form_class()\n        form.run()\n"
+            "        self.form_class().get()\n        self.form_class.get(form)\n"
+            "        return self.k_class().run()\n\n\n"
+            "class Sub(View):\n    def more(self):\n        return self.form_class().run()\n",
+        },
+    )
+    got = rows(
+        root, "SELECT line, dst_qualname FROM edges WHERE src_path = 'views.py' AND resolution = 'typed' ORDER BY line"
+    )
+    assert got == [(14, "Base.run"), (15, "Base.get"), (16, "Base.get"), (22, "Base.run")]

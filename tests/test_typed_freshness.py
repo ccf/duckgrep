@@ -308,6 +308,15 @@ CROSS_FILE = {  # name: (files, edits)
         },
         {"sig.py": "from a import A\nfrom b import B\n\nhook = B()\n"},
     ),
+    "a class alias's target changes in a base class": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "view.py": "from a import A\nfrom b import B\n\n\nclass View:\n    form_class = A\n",
+            "sub.py": "from view import View\n\n\nclass Sub(View):\n    def go(self):\n        return self.form_class().m()\n",
+        },
+        {"view.py": "from a import A\nfrom b import B\n\n\nclass View:\n    form_class = B\n"},
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (

@@ -141,7 +141,7 @@ TYPED_DIRTY_SEED = """
 SELECT name FROM symbols WHERE path IN ({files}) AND lang = 'python' AND kind = 'class'
 UNION SELECT regexp_extract(CASE WHEN starts_with(type_text, 'call:') THEN substr(type_text, 6) ELSE type_text END,
                             '[^.]*$')
-      FROM bindings WHERE path IN ({files}) AND type_text IS NOT NULL AND (kind IN ('base', 'attr') OR scope = '')
+      FROM bindings WHERE path IN ({files}) AND type_text IS NOT NULL AND (kind IN ('base', 'attr', 'alias') OR scope = '')
 UNION SELECT regexp_extract(returns, '[^.]*$') FROM symbols WHERE path IN ({files}) AND returns IS NOT NULL
 UNION SELECT name FROM imports WHERE path IN ({files}) AND family = 'py' AND name IS NOT NULL AND "local" <> name
 UNION SELECT unnest([i."local", i.name]) FROM imports i  -- names the file re-exports, under both names
@@ -303,6 +303,20 @@ py_type@N@ AS (  -- typed subject -> its class (cpath, cqual) and where the meth
              AND (lc.scope = r.scope OR starts_with(r.scope, lc.scope || '.')) AND lc.line < r.line
         ANTI JOIN py_scoped@N@ s ON s.path = r.path AND s.line = r.line AND s.col = r.col
     ) WHERE rk = 1
+  UNION ALL  -- form = self.form_class(...) / self.form_class(...).m(): an instance of the alias's class
+    SELECT b.path, b.line, b.col, c.cpath, c.cqual, 0, FALSE
+    FROM py_bind@N@ b
+    JOIN py_subj@N@ r ON r.path = b.path AND r.line = b.line AND r.col = b.col
+    JOIN py_alias al ON al.path = r.path AND al.qual = r.scope_class
+         AND al.x = regexp_extract(b.type_text, '^call:(?:self|cls)[.]([A-Za-z_][A-Za-z0-9_]*)$', 1)
+    JOIN py_tclass c ON c.path = al.apath AND c.text = al.alias AND c.hop = 0
+    WHERE b.tpath = b.path
+  UNION ALL  -- self.form_class.m(): the alias's class itself as the receiver
+    SELECT r.path, r.line, r.col, c.cpath, c.cqual, 0, FALSE
+    FROM py_subj@N@ r
+    JOIN py_alias al ON al.path = r.path AND al.qual = r.scope_class
+         AND al.x = regexp_extract(r.subj, '^(?:self|cls)[.]([A-Za-z_][A-Za-z0-9_]*)$', 1)
+    JOIN py_tclass c ON c.path = al.apath AND c.text = al.alias AND c.hop = 0
 ),
 """
 
@@ -542,6 +556,25 @@ py_lcls AS (  -- classes defined in a function: once there, and no other binding
                         AND (o.scope = l.scope OR starts_with(o.scope, l.scope || '.')))
     GROUP BY l.path, l.scope, l.name
     HAVING count(*) = 1
+),
+py_alias_need AS (  -- attribute names called as self.X(...) / cls.X(...) or used as self.X.m()
+    SELECT DISTINCT regexp_extract(type_text, '^call:(?:self|cls)[.]([A-Za-z_][A-Za-z0-9_]*)$', 1) AS x FROM bindings
+    WHERE regexp_matches(type_text, '^call:(self|cls)[.][A-Za-z_][A-Za-z0-9_]*$')
+  UNION SELECT regexp_extract(receiver, '^(?:self|cls)[.]([A-Za-z_][A-Za-z0-9_]*)$', 1) FROM py_r
+    WHERE regexp_matches(receiver, '^(self|cls)[.][A-Za-z_][A-Za-z0-9_]*$')
+),
+py_alias AS (  -- class -> the alias X = Foo nearest in its ancestry, when that body binds self.X only there
+    SELECT path, qual, x, apath, alias FROM (
+        SELECT m.path, m.qual, substr(b.name, 6) AS x, m.apath,
+               count(*) FILTER (WHERE b.kind = 'alias') AS n_alias,
+               count(*) FILTER (WHERE b.kind = 'attr') AS n_attr,
+               count(DISTINCT b.line) AS n_lines, min(b.type_text) FILTER (WHERE b.kind = 'alias') AS alias
+        FROM py_mro m
+        JOIN bindings b ON b.path = m.apath AND b.scope = m.aqual AND b.kind IN ('attr', 'alias')
+             AND substr(b.name, 6) IN (SELECT x FROM py_alias_need)
+        GROUP BY m.path, m.qual, b.name, m.apath, m.ord
+        QUALIFY row_number() OVER (PARTITION BY m.path, m.qual, b.name ORDER BY m.ord) = 1
+    ) WHERE n_alias = 1 AND n_attr = 1 AND n_lines = 1
 ),
 py_subj1 AS (SELECT path, line, col, scope, scope_class, receiver AS subj FROM py_r),
 @PY_TYPING_1@
