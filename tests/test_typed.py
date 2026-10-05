@@ -812,3 +812,28 @@ def test_an_attribute_bound_through_a_class_alias(tmp_path):
         },
     )
     assert edges_at(root, "t.py", "run") == [("base.py", "Base.run", "typed")]
+
+
+def test_a_class_body_assignment_overrides_an_inherited_method(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "eng.py": "from base import Base\n\n\ndef other_make():\n    return None\n\n\nclass Root:\n    def make(self):\n"
+            "        return Base()\n\n\nclass Child(Root):\n    make = other_make\n",
+            "use.py": "from eng import Child\n\n\ndef f():\n    c = Child()\n    c.make()\n    x = c.make()\n    return x.run()\n",
+        },
+    )
+    assert "typed" not in {r[2] for n in ("make", "run") for r in edges_at(root, "use.py", n)}
+
+
+def test_a_class_rewrapping_its_own_method_keeps_it(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "qs.py": "class QuerySet:\n    def as_manager(cls):\n        return 1\n\n    as_manager = classmethod(as_manager)\n",
+            "use.py": "from qs import QuerySet\n\n\nclass Mine(QuerySet):\n    pass\n\n\ndef f():\n    return Mine.as_manager()\n",
+        },
+    )
+    assert ("qs.py", "QuerySet.as_manager", "typed") in edges_at(root, "use.py", "as_manager")

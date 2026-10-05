@@ -361,3 +361,40 @@ def test_qualified_keeps_a_class_imported_inside_the_function(tmp_path):
     )
     got = rows(root, "SELECT line, resolution FROM edges WHERE src_path = 'use.py' AND name = 'run' ORDER BY ALL")
     assert (4, "qualified") in got
+
+
+def test_star_reexport_refusals_hold_in_every_tier(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a.py": "def Foo():\n    return 1\n",
+            "b.py": "def Foo():\n    return 2\n",
+            "two/__init__.py": "from a import *\nfrom b import *\n",
+            "p.py": "def _helper():\n    return 1\n",
+            "q/__init__.py": "from p import *\n",
+            "use.py": "import q\nfrom two import Foo\nfrom q import _helper\n\n\n"
+            "def f():\n    Foo()\n    _helper()\n    return q._helper()\n",
+        },
+    )
+    got = rows(
+        root,
+        "SELECT name, resolution FROM edges WHERE src_path = 'use.py' AND ref_kind = 'call' "
+        "AND resolution IN ('import', 'module') ORDER BY ALL",
+    )
+    assert got == []
+
+
+def test_qualified_sees_a_rebinding_on_the_import_line(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": "class Base:\n    def run(self):\n        return 1\n",
+            "use.py": "def f(other):\n    from base import Base; Base = other\n    return Base.run()\n",
+        },
+    )
+    got = rows(root, "SELECT resolution FROM edges WHERE src_path = 'use.py' AND name = 'run'")
+    assert ("qualified",) not in got

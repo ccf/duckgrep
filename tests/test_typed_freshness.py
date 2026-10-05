@@ -338,6 +338,17 @@ CROSS_FILE = {  # name: (files, edits)
             "eng.py": "from base import Base\nfrom b import B\n\n\nclass Engine(Base):\n    def make(self):\n        return B()\n"
         },
     ),
+    "a subclass shadows an inherited method with a class-body assignment": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "root.py": "from a import A\n\n\nclass Root:\n    def make(self):\n        return A()\n",
+            "child.py": "from root import Root\n\n\nclass Child(Root):\n    pass\n",
+            "use.py": "from child import Child\n\n\ndef f():\n    c = Child()\n    c.make()\n    x = c.make()\n    return x.m()\n",
+        },
+        {
+            "child.py": "from root import Root\n\n\ndef other():\n    return None\n\n\nclass Child(Root):\n    make = other\n"
+        },
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (

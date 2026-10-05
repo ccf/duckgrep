@@ -380,7 +380,8 @@ rx AS (  -- one hop of re-exports: names that imported modules themselves import
     FROM imports_resolved j
     WHERE j.target_path IS NOT NULL AND NOT j.target_is_module
       AND j.path IN (SELECT target_path FROM imp)
-      AND (j."local" IS NOT NULL OR j.name = '*')
+      -- a Python star re-export goes through py_exp1, which refuses two sources and _names
+      AND (j."local" IS NOT NULL OR (j.name = '*' AND j.family <> 'py'))
 ),
 ext AS (  -- local names bound by imports that don't resolve inside the repo (stdlib, third party)
     SELECT DISTINCT i.path, i."local" FROM imps i
@@ -686,7 +687,7 @@ py_attr2 AS (  -- h.a: a's type text and the file it's written in
 ),
 py_ret2 AS (  -- x = h.m(...): the first definer of m in h's class, unless the order is uncertain
     SELECT path, line, col, dst_path, dst_qual FROM (
-        SELECT t.path, t.line, t.col, t.cpath, t.cqual, a.ord, s.path AS dst_path, s.qualname AS dst_qual,
+        SELECT t.path, t.line, t.col, t.cpath, t.cqual, a.ord, s.path AS dst_path, s.qualname AS dst_qual, j.attr,
                count(*) OVER (PARTITION BY t.path, t.line, t.col) AS n_def,
                row_number() OVER (PARTITION BY t.path, t.line, t.col ORDER BY a.ord, s.start_line) AS rk
         FROM py_type2 t
@@ -699,6 +700,11 @@ py_ret2 AS (  -- x = h.m(...): the first definer of m in h's class, unless the o
       AND NOT (n_def > 1 AND len(h.ord) > 0
                AND EXISTS (SELECT 1 FROM py_diamond x WHERE x.path = h.cpath AND x.qual = h.cqual))
       AND NOT EXISTS (SELECT 1 FROM py_blocker k WHERE k.path = h.cpath AND k.qual = h.cqual AND k.ord < h.ord)
+      -- a binding of self.<method> (class body or instance) in a class before the definer hides the method;
+      -- the definer's own class rebinding it (`m = classmethod(m)`) doesn't
+      AND NOT EXISTS (SELECT 1 FROM py_mro a JOIN bindings b ON b.path = a.apath AND b.scope = a.aqual
+                        AND b.kind IN ('attr', 'alias') AND b.name = 'self.' || h.attr
+                      WHERE a.path = h.cpath AND a.qual = h.cqual AND a.ord < h.ord)
 ),
 py_type2x AS (  -- stage 2 types: the attribute's type text, read in the file that binds it (no return hop)
     SELECT a.path, a.line, a.col, c.cpath, c.cqual, 0 AS from_depth, FALSE AS ext
@@ -728,6 +734,11 @@ py_defs AS (  -- the in-repo ancestors that define the called method
     FROM py_cand c
     JOIN symbols s ON s.path = c.apath AND s.parent = c.aqual AND s.name = c.name AND s.kind IN ('method', 'class')
 ),
+py_shadow AS (  -- a binding of self.<method> (class body or instance) in a class to search: it hides the method
+               -- defined further along the resolution order
+    SELECT DISTINCT c.path, c.line, c.col, c.ord FROM py_cand c
+    JOIN bindings b ON b.path = c.apath AND b.scope = c.aqual AND b.kind IN ('attr', 'alias') AND b.name = 'self.' || c.name
+),
 py_hit AS (  -- the first definer in resolution order, unless the order is uncertain or an unknown base comes first
     SELECT path, line, col, dst_path, dst_qualname, dst_kind, dst_line FROM (
         SELECT d.*, count(*) OVER (PARTITION BY d.path, d.line, d.col) AS n_def,
@@ -738,6 +749,8 @@ py_hit AS (  -- the first definer in resolution order, unless the order is uncer
       AND NOT (n_def > 1 AND len(h.ord) > 0
                AND EXISTS (SELECT 1 FROM py_diamond x WHERE x.path = h.cpath AND x.qual = h.cqual))
       AND NOT EXISTS (SELECT 1 FROM py_blocker k WHERE k.path = h.cpath AND k.qual = h.cqual AND k.ord < h.ord)
+      AND NOT EXISTS (SELECT 1 FROM py_shadow x WHERE x.path = h.path AND x.line = h.line AND x.col = h.col
+                        AND x.ord < h.ord)
 ),
 py_type_ext AS (  -- receivers whose bound type is outside the repo
     SELECT b.path, b.line, b.col FROM py_bind1 b
@@ -760,10 +773,16 @@ py_typed_ext AS (  -- typed receivers whose method can only be outside the repo
     ANTI JOIN py_defs h ON h.path = t.path AND h.line = t.line AND h.col = t.col  -- an in-repo definer: not external
 ),
 py_rebound AS (  -- capitalised names a function assigns or takes as a parameter: there they aren't the class
-    -- (an import inside a function is recorded as an assignment: it binds the class, so it doesn't count)
-    SELECT DISTINCT b.path, b.scope, b.name FROM bindings b
-    ANTI JOIN imports i ON i.path = b.path AND i."local" = b.name AND i.line = b.line
-    WHERE b.kind IN ('assign', 'annot', 'param') AND b.scope <> '' AND regexp_matches(b.name, '^[A-Z]')
+    -- (an import inside a function is recorded as an assignment: it binds the class, so it doesn't count; a line
+    -- with more bindings of the name than imports of it also assigns it: `from m import A; A = other`)
+    SELECT DISTINCT b.path, b.scope, b.name FROM (
+        SELECT path, scope, name, line, count(*) AS n FROM bindings
+        WHERE kind IN ('assign', 'annot', 'param') AND scope <> '' AND regexp_matches(name, '^[A-Z]')
+        GROUP BY ALL
+    ) b
+    LEFT JOIN (SELECT path, "local", line, count(*) AS n FROM imports GROUP BY ALL) i
+         ON i.path = b.path AND i."local" = b.name AND i.line = b.line
+    WHERE b.n > coalesce(i.n, 0)
 ),
 t1 AS (
     SELECT r.*, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind, s.start_line AS dst_line,
@@ -820,7 +839,7 @@ t1 AS (
     FROM r
     JOIN imp i ON i.path = r.path AND i.name = '*' AND i."local" IS NULL
     JOIN sym s ON s.path = i.target_path AND s.name = r.name AND s.parent IS NULL
-    WHERE r.receiver IS NULL AND r.family IN ('py', 'rs')
+    WHERE r.receiver IS NULL AND r.family IN ('py', 'rs') AND NOT (r.family = 'py' AND starts_with(r.name, '_'))
   UNION ALL
     -- ... or re-exported by it
     SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'import'
@@ -848,6 +867,14 @@ t1 AS (
     JOIN py_exp1 x ON x.mod_path = i.target_path AND x.name = r.name
     JOIN symbols s ON s.path = x.dpath AND s.qualname = x.dqual
     WHERE r.receiver IS NOT NULL AND r.family = 'py'
+  UNION ALL
+    -- Python: `from m import *`, then a bare call to a name m re-exports (named or star, up to 3 hops)
+    SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'import'
+    FROM r
+    JOIN imp i ON i.path = r.path AND i.name = '*' AND i."local" IS NULL
+    JOIN py_exp1 x ON x.mod_path = i.target_path AND x.name = r.name
+    JOIN symbols s ON s.path = x.dpath AND s.qualname = x.dqual
+    WHERE r.receiver IS NULL AND r.family = 'py' AND NOT starts_with(r.name, '_')
   UNION ALL
     -- Class.method / Type::method, with the class bound in this file: defined here, imported by name
     -- (directly or through one re-export), or reached through an imported module (mod.Class.method)
