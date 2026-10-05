@@ -33,6 +33,11 @@ def changed_targets(before_db, after_db):
     return [(*k, b.get(k, []), a.get(k, [])) for k in sorted(set(b) | set(a)) if b.get(k, []) != a.get(k, [])]
 
 
+def agrees(after, truth):
+    """Every confident target is one jedi gives: an extra wrong target is a disagreement."""
+    return bool(after) and set(after) <= truth
+
+
 def main(root, before_db, after_db, n=30, seed=0):
     import jedi
 
@@ -77,7 +82,7 @@ def main(root, before_db, after_db, n=30, seed=0):
         if not truth:
             continue
         scored += 1
-        ok = bool(truth & set(after))
+        ok = agrees(after, truth)
         agree += ok
         if not ok:
             print(f"  DISAGREE {path}:{line} {name}: duckgrep {after} jedi {sorted(truth)}")

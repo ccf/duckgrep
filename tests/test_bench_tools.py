@@ -34,3 +34,9 @@ def test_accuracy_query_is_ordered():
     with open(os.path.join(os.path.dirname(__file__), "..", "bench", "accuracy.py")) as f:
         src = f.read()
     assert "ORDER BY src_path, line, col" in src
+
+
+def test_agreement_needs_every_confident_target_to_be_jedis():
+    assert typed_diff.agrees([("a.py", "A.m")], {("a.py", "A.m")})
+    assert not typed_diff.agrees([("a.py", "A.m"), ("b.py", "B.m")], {("a.py", "A.m")})
+    assert not typed_diff.agrees([], {("a.py", "A.m")})
