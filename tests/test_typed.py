@@ -658,3 +658,22 @@ def test_inferred_returns(tmp_path):
     assert typed == {("base.py", "Base.run"), ("base.py", "Base.get")}
     lines = rows(root, "SELECT line FROM edges WHERE src_path = 'use.py' AND resolution = 'typed' ORDER BY line")
     assert lines == [(6,), (8,)]
+
+
+def test_classes_defined_in_the_calling_function(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "t.py": "from base import Base\n\n\n"
+            "def test_a():\n    class Admin(Base):\n        pass\n\n    ma = Admin()\n    ma.run()\n    return Admin.get(ma)\n\n\n"
+            "def test_b():\n    class Admin(Base):\n        pass\n\n    return Admin().get()\n\n\n"
+            "def test_twice(c):\n    if c:\n        class Two(Base):\n            pass\n    else:\n"
+            "        class Two(Base):\n            pass\n    return Two().run()\n\n\n"
+            "def test_early():\n    x = Late()\n    x.run()\n\n    class Late(Base):\n        pass\n",
+        },
+    )
+    got = rows(
+        root, "SELECT line, dst_qualname FROM edges WHERE src_path = 't.py' AND resolution = 'typed' ORDER BY line"
+    )
+    assert got == [(9, "Base.run"), (10, "Base.get"), (17, "Base.get")]

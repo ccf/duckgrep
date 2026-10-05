@@ -286,6 +286,23 @@ py_type@N@ AS (  -- typed subject -> its class (cpath, cqual) and where the meth
     FROM py_subj@N@ r
     JOIN bindings b ON b.path = r.path AND b.kind = 'rcall' AND b.line = r.line AND b.pos = r.col
     WHERE r.scope_class IS NOT NULL AND b.type_text = 'super:' || regexp_extract(r.scope_class, '[^.]*$')
+  UNION ALL  -- x = Local(...): a class defined in this function or an enclosing one, before the use
+    SELECT path, line, col, path, qual, 0, FALSE FROM (
+        SELECT b.path, b.line, b.col, lc.qual,
+               row_number() OVER (PARTITION BY b.path, b.line, b.col ORDER BY length(lc.scope) DESC) AS rk
+        FROM py_bind@N@ b
+        JOIN py_lcls lc ON lc.path = b.path AND b.tpath = b.path AND lc.name = regexp_replace(b.type_text, '^call:', '')
+             AND (lc.scope = b.bscope OR starts_with(b.bscope, lc.scope || '.')) AND lc.line < b.line
+    ) WHERE rk = 1
+  UNION ALL  -- Local.m(): the local class itself as the receiver
+    SELECT path, line, col, path, qual, 0, FALSE FROM (
+        SELECT r.path, r.line, r.col, lc.qual,
+               row_number() OVER (PARTITION BY r.path, r.line, r.col ORDER BY length(lc.scope) DESC) AS rk
+        FROM py_subj@N@ r
+        JOIN py_lcls lc ON lc.path = r.path AND lc.name = r.subj
+             AND (lc.scope = r.scope OR starts_with(r.scope, lc.scope || '.')) AND lc.line < r.line
+        ANTI JOIN py_scoped@N@ s ON s.path = r.path AND s.line = r.line AND s.col = r.col
+    ) WHERE rk = 1
 ),
 """
 
@@ -512,6 +529,16 @@ py_tclass AS (  -- a type text as written in a file -> the class it means; hop 1
     JOIN py_def c ON c.path = d.dpath AND c.dkind = 'class'
          AND c.text = CASE WHEN starts_with(pr.text, 'call:') THEN substr(pr.text, 6) ELSE pr.text END
     WHERE d.dkind IN ('function', 'method')
+),
+py_lcls AS (  -- classes defined in a function: once there, and no other binding of the name there or below
+    SELECT l.path, l.scope, l.name, min(l.type_text) AS qual, min(l.line) AS line
+    FROM bindings l
+    WHERE l.kind = 'local_class'
+      AND NOT EXISTS (SELECT 1 FROM bindings o WHERE o.path = l.path AND o.name = l.name
+                        AND o.kind IN ('assign', 'annot', 'param', 'global', 'import')
+                        AND (o.scope = l.scope OR starts_with(o.scope, l.scope || '.')))
+    GROUP BY l.path, l.scope, l.name
+    HAVING count(*) = 1
 ),
 py_subj1 AS (SELECT path, line, col, scope, scope_class, receiver AS subj FROM py_r),
 @PY_TYPING_1@

@@ -281,6 +281,15 @@ CROSS_FILE = {  # name: (files, edits)
             "mk.py": "from a import A\nfrom b import B\n\n\ndef make(c):\n    if c:\n        return B()\n    return A()\n"
         },
     ),
+    "a local class's base changes in another file": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "base.py": "from a import A\n\n\nclass Base(A):\n    pass\n",
+            "t.py": "from base import Base\n\n\ndef t():\n    class L(Base):\n        pass\n\n    return L().m()\n",
+        },
+        {"base.py": "from b import B\n\n\nclass Base(B):\n    pass\n"},
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (
