@@ -152,6 +152,11 @@ UNION SELECT unnest([i."local", i.name]) FROM imports i  -- names the file re-ex
           WHERE m.path IN ({files})
       ) x ON x.path = i.path AND (x.name IS NULL OR x.name = i."local")
       WHERE i.path IN ({files}) AND i.family = 'py' AND i."local" IS NOT NULL
+UNION SELECT regexp_extract(substr(b.type_text, 6), '[^.]*$') FROM bindings b
+      WHERE b.path IN ({files}) AND b.kind = 'return' AND starts_with(b.type_text, 'call:')
+UNION SELECT regexp_extract(substr(a.type_text, 6), '[^.]*$') FROM bindings a
+      JOIN bindings b ON b.path = a.path AND b.scope = a.scope AND b.kind = 'return' AND b.type_text = 'var:' || a.name
+      WHERE a.path IN ({files}) AND a.kind = 'assign' AND starts_with(a.type_text, 'call:')
 UNION SELECT name FROM ({star_names})
 """
 
@@ -181,6 +186,9 @@ start(name) AS (
     SELECT name FROM seed
     UNION SELECT regexp_extract(s.returns, '[^.]*$') FROM symbols s SEMI JOIN seed ON seed.name = s.name
     WHERE s.returns IS NOT NULL
+    UNION SELECT regexp_extract(substr(b.type_text, 6), '[^.]*$') FROM bindings b
+          SEMI JOIN seed ON seed.name = regexp_extract(b.scope, '[^.]*$')
+          WHERE b.kind = 'return' AND starts_with(b.type_text, 'call:')
 ),
 cls(name, depth) AS (
     SELECT name, 0 FROM start
@@ -468,13 +476,41 @@ py_r AS (SELECT * FROM r WHERE family = 'py' AND kind = 'call' AND receiver IS N
 py_global AS (  -- names a global/nonlocal statement rebinds somewhere in the file: never inferred there
     SELECT DISTINCT path, name FROM bindings WHERE kind = 'global'
 ),
+py_retvar AS (  -- `return v`: v bound exactly once in the function, by an assignment of a call
+    SELECT path, scope, name, min(type_text) AS type_text FROM bindings
+    WHERE kind IN ('assign', 'annot', 'param', 'global', 'import')
+    GROUP BY path, scope, name
+    HAVING count(*) = 1 AND min(kind) = 'assign' AND starts_with(min(type_text), 'call:')
+),
+py_nonlocal AS (SELECT DISTINCT path, scope, name FROM bindings WHERE kind = 'global'),
+py_ret AS (  -- a function's return type text: its annotation, else what every value-returning `return` agrees on
+    SELECT path, qualname AS qual, returns AS text FROM symbols WHERE lang = 'python' AND returns IS NOT NULL
+  UNION ALL
+    SELECT path, scope, min(t) FROM (
+        SELECT b.path, b.scope,
+               CASE WHEN starts_with(b.type_text, 'call:') THEN b.type_text
+                    WHEN starts_with(b.type_text, 'var:') AND g.name IS NULL THEN v.type_text END AS t
+        FROM bindings b
+        LEFT JOIN py_retvar v ON v.path = b.path AND v.scope = b.scope AND 'var:' || v.name = b.type_text
+        LEFT JOIN py_nonlocal g ON g.path = b.path AND 'var:' || g.name = b.type_text
+             AND starts_with(g.scope, b.scope || '.')  -- nonlocal v in a nested def rebinds it
+        WHERE b.kind = 'return'
+        -- one row per return statement; a nonlocal match (g.name not NULL) sorts first, so it makes t NULL
+        QUALIFY row_number() OVER (PARTITION BY b.path, b.scope, b.line, b.type_text ORDER BY (g.name IS NULL)) = 1
+    )
+    GROUP BY path, scope
+    HAVING count(*) = count(t) AND count(DISTINCT t) = 1
+),
 py_tclass AS (  -- a type text as written in a file -> the class it means; hop 1: through a callee's return
     SELECT d.path, d.text, d.dpath AS cpath, d.dqual AS cqual, 0 AS hop FROM py_def d WHERE d.dkind = 'class'
   UNION ALL
     SELECT d.path, 'call:' || d.text, d.dpath, d.dqual, 0 FROM py_def d WHERE d.dkind = 'class'
-  UNION ALL  -- x = make(...) / Foo.create(...): one hop of the callee's return annotation, in the callee's file
+  UNION ALL  -- x = make(...) / Foo.create(...): one hop of the callee's return (annotated or inferred)
     SELECT d.path, 'call:' || d.text, c.dpath, c.dqual, 1
-    FROM py_def d JOIN py_def c ON c.path = d.dpath AND c.text = d.returns AND c.dkind = 'class'
+    FROM py_def d
+    JOIN py_ret pr ON pr.path = d.dpath AND pr.qual = d.dqual
+    JOIN py_def c ON c.path = d.dpath AND c.dkind = 'class'
+         AND c.text = CASE WHEN starts_with(pr.text, 'call:') THEN substr(pr.text, 6) ELSE pr.text END
     WHERE d.dkind IN ('function', 'method')
 ),
 py_subj1 AS (SELECT path, line, col, scope, scope_class, receiver AS subj FROM py_r),
@@ -521,7 +557,9 @@ py_type_ext AS (  -- receivers whose bound type is outside the repo
   UNION
     SELECT b.path, b.line, b.col FROM py_bind1 b
     JOIN py_def d ON d.path = b.tpath AND d.text = substr(b.type_text, 6) AND d.dkind IN ('function', 'method')
-    JOIN py_ext x ON x.path = d.dpath AND x.text = d.returns
+    JOIN py_ret pr ON pr.path = d.dpath AND pr.qual = d.dqual
+    JOIN py_ext x ON x.path = d.dpath
+         AND x.text = CASE WHEN starts_with(pr.text, 'call:') THEN substr(pr.text, 6) ELSE pr.text END
     WHERE starts_with(b.type_text, 'call:')
 ),
 py_typed_ext AS (  -- typed receivers whose method can only be outside the repo

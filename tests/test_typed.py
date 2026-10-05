@@ -633,3 +633,28 @@ def test_call_result_receivers_and_two_argument_super(tmp_path):
     assert edges_at(root, "use.py", "run") == [("base.py", "Base.run", "typed")]
     assert edges_at(root, "use.py", "get") == [("base.py", "Base.get", "typed"), ("other.py", "Other.get", "typed")]
     assert [r[2] for r in edges_at(root, "ext_use.py", "run")] == ["unresolved"]
+
+
+def test_inferred_returns(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "mk.py": "from base import Base\nfrom other import Other\n\n\n"
+            "def make():\n    return Base()\n\n\n"
+            "def via_local(c):\n    dk = Base()\n    if c:\n        return None\n    return dk\n\n\n"
+            "def mixed(c):\n    if c:\n        return Base()\n    return Other()\n\n\n"
+            "def gen():\n    yield Base()\n\n\n"
+            "def rec():\n    return rec()\n\n\n"
+            "def rebound():\n    x = Base()\n    x = Other()\n    return x\n",
+            "use.py": "from mk import make, via_local, mixed, gen, rec, rebound\n\n\n"
+            "def f():\n    a = make()\n    a.run()\n    b = via_local(1)\n    b.get()\n"
+            "    c = mixed(1)\n    c.run()\n    d = gen()\n    d.get()\n    e = rec()\n    e.run()\n"
+            "    g = rebound()\n    return g.get()\n",
+        },
+    )
+    typed = {(r[0], r[1]) for n in ("run", "get") for r in edges_at(root, "use.py", n) if r[2] == "typed"}
+    assert typed == {("base.py", "Base.run"), ("base.py", "Base.get")}
+    lines = rows(root, "SELECT line FROM edges WHERE src_path = 'use.py' AND resolution = 'typed' ORDER BY line")
+    assert lines == [(6,), (8,)]

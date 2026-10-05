@@ -261,6 +261,26 @@ CROSS_FILE = {  # name: (files, edits)
         },
         {"src.py": "class Foo:\n    def n(self):\n        return 1\n"},
     ),
+    "an unannotated function's return changes": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "mk.py": "from a import A\nfrom b import B\n\n\ndef make():\n    return A()\n",
+            "use.py": "from mk import make\n\n\ndef f():\n    x = make()\n    return x.m()\n",
+        },
+        {"mk.py": "from a import A\nfrom b import B\n\n\ndef make():\n    return B()\n"},
+    ),
+    "an unannotated function's returns stop agreeing": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "mk.py": "from a import A\nfrom b import B\n\n\ndef make(c):\n    return A()\n",
+            "use.py": "from mk import make\n\n\ndef f():\n    x = make(1)\n    return x.m()\n",
+        },
+        {
+            "mk.py": "from a import A\nfrom b import B\n\n\ndef make(c):\n    if c:\n        return B()\n    return A()\n"
+        },
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (
