@@ -193,6 +193,67 @@ STDLIB_GUARD = (
 #        2 = name match only, kept when <= NAME_CAP candidates ('name'),
 #            otherwise one row with no target ('ambiguous')
 #        calls with no candidate at all -> 'unresolved' (external / builtin)
+_PY_TYPING = """
+py_scoped@N@ AS (  -- bare-name subjects: the bindings of each enclosing scope that binds the name
+    SELECT r.path, r.line, r.col, b.scope,
+           count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') AS n_untyped,
+           count(DISTINCT b.type_text) AS n_types, min(b.type_text) AS type_text
+    FROM py_subj@N@ r
+    JOIN bindings b ON b.path = r.path AND b.name = r.subj
+         AND b.kind IN ('assign', 'annot', 'param', 'global', 'import')
+         AND (b.scope = r.scope OR b.scope = '' OR starts_with(r.scope, b.scope || '.'))
+    WHERE r.subj NOT IN ('self', 'cls')
+      -- a class body's names aren't visible inside its methods (only in the class body itself)
+      AND NOT (b.scope <> r.scope AND b.scope <> ''
+               AND EXISTS (SELECT 1 FROM symbols c WHERE c.path = b.path AND c.qualname = b.scope AND c.kind = 'class'))
+      AND regexp_matches(r.subj, '^[A-Za-z_][A-Za-z0-9_]*$')
+    GROUP BY ALL
+    HAVING count(*) FILTER (WHERE b.kind <> 'import') > 0  -- a name only imported is resolved through the import
+),
+py_bind@N@ AS (  -- subject -> (file to resolve its type in, type text, binding scope), when every binding agrees
+    SELECT path, line, col, path AS tpath, type_text, scope AS bscope FROM (
+        SELECT s.* FROM py_scoped@N@ s
+        JOIN py_subj@N@ r ON r.path = s.path AND r.line = s.line AND r.col = s.col
+        ANTI JOIN py_global g ON g.path = r.path AND g.name = r.subj
+        QUALIFY row_number() OVER (PARTITION BY s.path, s.line, s.col ORDER BY length(s.scope) DESC) = 1
+    ) WHERE n_untyped = 0 AND n_types = 1
+  UNION ALL  -- `from m import cache`, with cache bound once at the top of m
+    SELECT r.path, r.line, r.col, i.target_path, min(b.type_text), ''
+    FROM py_subj@N@ r
+    JOIN py_imp i ON i.path = r.path AND i."local" = r.subj AND i.name IS NOT NULL AND NOT i.target_is_module
+    JOIN bindings b ON b.path = i.target_path AND b.scope = '' AND b.name = i.name
+         AND b.kind IN ('assign', 'annot', 'global', 'import')
+    ANTI JOIN py_scoped@N@ s ON s.path = r.path AND s.line = r.line AND s.col = r.col
+    ANTI JOIN py_global g ON g.path = i.target_path AND g.name = i.name
+    GROUP BY ALL
+    HAVING count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') = 0 AND count(DISTINCT b.type_text) = 1
+  UNION ALL  -- self.attr / cls.attr: the nearest class in the ancestry that binds the attribute
+    SELECT path, line, col, apath, type_text, NULL FROM (
+        SELECT r.path, r.line, r.col, a.apath,
+               count(*) FILTER (WHERE b.type_text IS NULL) AS n_untyped,
+               count(DISTINCT b.type_text) AS n_types, min(b.type_text) AS type_text
+        FROM py_subj@N@ r
+        JOIN py_mro a ON a.path = r.path AND a.qual = r.scope_class
+        JOIN bindings b ON b.path = a.apath AND b.scope = a.aqual AND b.kind = 'attr'
+             AND b.name = 'self.' || regexp_extract(r.subj, '^(?:self|cls)[.]([A-Za-z_][A-Za-z0-9_]*)$', 1)
+        WHERE regexp_matches(r.subj, '^(self|cls)[.][A-Za-z_][A-Za-z0-9_]*$')
+        GROUP BY r.path, r.line, r.col, a.apath, a.ord
+        QUALIFY row_number() OVER (PARTITION BY r.path, r.line, r.col ORDER BY a.ord) = 1
+    ) WHERE n_untyped = 0 AND n_types = 1
+),
+py_type@N@ AS (  -- typed subject -> its class (cpath, cqual) and where the method search starts
+    SELECT b.path, b.line, b.col, c.cpath, c.cqual, 0 AS from_depth, FALSE AS ext
+    FROM py_bind@N@ b JOIN py_tclass c ON c.path = b.tpath AND c.text = b.type_text
+  UNION ALL  -- self / cls: the enclosing class; super(): its bases
+    SELECT path, line, col, path, scope_class, CASE WHEN subj = 'super()' THEN 1 ELSE 0 END, FALSE
+    FROM py_subj@N@ WHERE subj IN ('self', 'cls', 'super()') AND scope_class IS NOT NULL
+  UNION ALL  -- Foo.m(), mod.Foo.m(): a class subject (qualified covers Foo's own methods; this adds its bases)
+    SELECT r.path, r.line, r.col, d.dpath, d.dqual, 0, FALSE
+    FROM py_subj@N@ r JOIN py_def d ON d.path = r.path AND d.text = r.subj AND d.dkind = 'class'
+    ANTI JOIN py_scoped@N@ s ON s.path = r.path AND s.line = r.line AND s.col = r.col
+),
+"""
+
 _EDGES_TEMPLATE = """
 INSERT INTO edges
 WITH RECURSIVE r AS (
@@ -252,7 +313,8 @@ py_tx AS (  -- dotted names to resolve, per file: binding types, callees, return
            regexp_extract(text, '[^.]*$') AS tail
     FROM (
         SELECT path, CASE WHEN starts_with(type_text, 'call:') THEN substr(type_text, 6) ELSE type_text END AS text
-        FROM bindings WHERE type_text IS NOT NULL
+        FROM bindings WHERE type_text IS NOT NULL AND NOT regexp_matches(type_text, '^(super|var):')
+          AND kind <> 'local_class'
       UNION SELECT path, returns FROM symbols WHERE returns IS NOT NULL
       UNION SELECT path, receiver FROM r
         WHERE family = 'py' AND regexp_matches(receiver, '^[A-Za-z_][A-Za-z0-9_]*([.][A-Za-z_][A-Za-z0-9_]*)*$')
@@ -353,76 +415,21 @@ py_open AS (  -- classes with a base outside the repo, or one that can't be name
     GROUP BY ALL
 ),
 py_r AS (SELECT * FROM r WHERE family = 'py' AND kind = 'call' AND receiver IS NOT NULL),
-py_scoped AS (  -- bare-name receivers: the bindings of each enclosing scope that binds the name
-    SELECT r.path, r.line, r.col, b.scope,
-           count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') AS n_untyped,
-           count(DISTINCT b.type_text) AS n_types, min(b.type_text) AS type_text
-    FROM py_r r
-    JOIN bindings b ON b.path = r.path AND b.name = r.receiver
-         AND b.kind IN ('assign', 'annot', 'param', 'global', 'import')
-         AND (b.scope = r.scope OR b.scope = '' OR starts_with(r.scope, b.scope || '.'))
-    WHERE r.receiver NOT IN ('self', 'cls')
-      -- a class body's names aren't visible inside its methods (only in the class body itself)
-      AND NOT (b.scope <> r.scope AND b.scope <> ''
-               AND EXISTS (SELECT 1 FROM symbols c WHERE c.path = b.path AND c.qualname = b.scope AND c.kind = 'class')) AND regexp_matches(r.receiver, '^[A-Za-z_][A-Za-z0-9_]*$')
-    GROUP BY ALL
-    HAVING count(*) FILTER (WHERE b.kind <> 'import') > 0  -- a name only imported is resolved through the import
-),
 py_global AS (  -- names a global/nonlocal statement rebinds somewhere in the file: never inferred there
     SELECT DISTINCT path, name FROM bindings WHERE kind = 'global'
 ),
-py_bind AS (  -- receiver -> (file to resolve its type in, type text), when every binding agrees
-    SELECT path, line, col, path AS tpath, type_text FROM (
-        SELECT s.* FROM py_scoped s
-        JOIN py_r r ON r.path = s.path AND r.line = s.line AND r.col = s.col
-        ANTI JOIN py_global g ON g.path = r.path AND g.name = r.receiver
-        QUALIFY row_number() OVER (PARTITION BY s.path, s.line, s.col ORDER BY length(s.scope) DESC) = 1
-    ) WHERE n_untyped = 0 AND n_types = 1
-  UNION ALL  -- `from m import cache`, with cache bound once at the top of m
-    SELECT r.path, r.line, r.col, i.target_path, min(b.type_text)
-    FROM py_r r
-    JOIN py_imp i ON i.path = r.path AND i."local" = r.receiver AND i.name IS NOT NULL AND NOT i.target_is_module
-    JOIN bindings b ON b.path = i.target_path AND b.scope = '' AND b.name = i.name
-         AND b.kind IN ('assign', 'annot', 'global', 'import')
-    ANTI JOIN py_scoped s ON s.path = r.path AND s.line = r.line AND s.col = r.col
-    ANTI JOIN py_global g ON g.path = i.target_path AND g.name = i.name
-    GROUP BY ALL
-    HAVING count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') = 0 AND count(DISTINCT b.type_text) = 1
-  UNION ALL  -- self.attr / cls.attr: the nearest class in the ancestry that binds the attribute
-    SELECT path, line, col, apath, type_text FROM (
-        SELECT r.path, r.line, r.col, a.apath,
-               count(*) FILTER (WHERE b.type_text IS NULL) AS n_untyped,
-               count(DISTINCT b.type_text) AS n_types, min(b.type_text) AS type_text
-        FROM py_r r
-        JOIN py_mro a ON a.path = r.path AND a.qual = r.scope_class
-        JOIN bindings b ON b.path = a.apath AND b.scope = a.aqual AND b.kind = 'attr'
-             AND b.name = 'self.' || regexp_extract(r.receiver, '^(?:self|cls)[.]([A-Za-z_][A-Za-z0-9_]*)$', 1)
-        WHERE regexp_matches(r.receiver, '^(self|cls)[.][A-Za-z_][A-Za-z0-9_]*$')
-        GROUP BY r.path, r.line, r.col, a.apath, a.ord
-        QUALIFY row_number() OVER (PARTITION BY r.path, r.line, r.col ORDER BY a.ord) = 1
-    ) WHERE n_untyped = 0 AND n_types = 1
-),
-py_type AS (  -- typed receiver -> its class (cpath, cqual) and where the method search starts, or ext
-    SELECT b.path, b.line, b.col, d.dpath AS cpath, d.dqual AS cqual, 0 AS from_depth, FALSE AS ext
-    FROM py_bind b JOIN py_def d ON d.path = b.tpath AND d.text = b.type_text AND d.dkind = 'class'
-  UNION ALL  -- x = Foo(...)
-    SELECT b.path, b.line, b.col, d.dpath, d.dqual, 0, FALSE
-    FROM py_bind b JOIN py_def d ON d.path = b.tpath AND d.text = substr(b.type_text, 6) AND d.dkind = 'class'
-    WHERE starts_with(b.type_text, 'call:')
+py_tclass AS (  -- a type text as written in a file -> the class it means; hop 1: through a callee's return
+    SELECT d.path, d.text, d.dpath AS cpath, d.dqual AS cqual, 0 AS hop FROM py_def d WHERE d.dkind = 'class'
+  UNION ALL
+    SELECT d.path, 'call:' || d.text, d.dpath, d.dqual, 0 FROM py_def d WHERE d.dkind = 'class'
   UNION ALL  -- x = make(...) / Foo.create(...): one hop of the callee's return annotation, in the callee's file
-    SELECT b.path, b.line, b.col, c.dpath, c.dqual, 0, FALSE
-    FROM py_bind b
-    JOIN py_def d ON d.path = b.tpath AND d.text = substr(b.type_text, 6) AND d.dkind IN ('function', 'method')
-    JOIN py_def c ON c.path = d.dpath AND c.text = d.returns AND c.dkind = 'class'
-    WHERE starts_with(b.type_text, 'call:')
-  UNION ALL  -- self / cls: the enclosing class; super(): its bases
-    SELECT path, line, col, path, scope_class, CASE WHEN receiver = 'super()' THEN 1 ELSE 0 END, FALSE
-    FROM py_r WHERE receiver IN ('self', 'cls', 'super()') AND scope_class IS NOT NULL
-  UNION ALL  -- Foo.m(), mod.Foo.m(): a class receiver (qualified covers Foo's own methods; this adds its bases)
-    SELECT r.path, r.line, r.col, d.dpath, d.dqual, 0, FALSE
-    FROM py_r r JOIN py_def d ON d.path = r.path AND d.text = r.receiver AND d.dkind = 'class'
-    ANTI JOIN py_scoped s ON s.path = r.path AND s.line = r.line AND s.col = r.col  -- a name bound in scope isn't the class
+    SELECT d.path, 'call:' || d.text, c.dpath, c.dqual, 1
+    FROM py_def d JOIN py_def c ON c.path = d.dpath AND c.text = d.returns AND c.dkind = 'class'
+    WHERE d.dkind IN ('function', 'method')
 ),
+py_subj1 AS (SELECT path, line, col, scope, scope_class, receiver AS subj FROM py_r),
+@PY_TYPING_1@
+py_type AS (SELECT * FROM py_type1),
 py_cand AS MATERIALIZED (  -- each typed receiver's classes to search, in resolution order (staged: joining the
                           -- ancestry to every method first was the tier's main cost)
     SELECT t.path, t.line, t.col, t.cpath, t.cqual, r.name, a.apath, a.aqual, a.ord
@@ -458,11 +465,11 @@ py_hit AS (  -- the first definer in resolution order, unless the order is uncer
       AND NOT EXISTS (SELECT 1 FROM py_blocker k WHERE k.path = h.cpath AND k.qual = h.cqual AND k.ord < h.ord)
 ),
 py_type_ext AS (  -- receivers whose bound type is outside the repo
-    SELECT b.path, b.line, b.col FROM py_bind b
+    SELECT b.path, b.line, b.col FROM py_bind1 b
     JOIN py_ext x ON x.path = b.tpath
          AND x.text = CASE WHEN starts_with(b.type_text, 'call:') THEN substr(b.type_text, 6) ELSE b.type_text END
   UNION
-    SELECT b.path, b.line, b.col FROM py_bind b
+    SELECT b.path, b.line, b.col FROM py_bind1 b
     JOIN py_def d ON d.path = b.tpath AND d.text = substr(b.type_text, 6) AND d.dkind IN ('function', 'method')
     JOIN py_ext x ON x.path = d.dpath AND x.text = d.returns
     WHERE starts_with(b.type_text, 'call:')
@@ -618,7 +625,8 @@ def _names(words) -> str:
 
 _GUARD = STDLIB_GUARD.replace("@PY_STDLIB@", _names(builtin_names.PY_STDLIB))
 EDGES_COMPUTE = (
-    _EDGES_TEMPLATE.replace("@BUILTIN_METHODS@", _values(builtin_names.METHODS))
+    _EDGES_TEMPLATE.replace("@PY_TYPING_1@", _PY_TYPING.replace("@N@", "1"))
+    .replace("@BUILTIN_METHODS@", _values(builtin_names.METHODS))
     .replace("@BUILTIN_GLOBALS@", _values(builtin_names.GLOBALS))
     .replace("@STDLIB_GUARD@", _GUARD)
 )

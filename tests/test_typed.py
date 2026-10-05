@@ -558,3 +558,10 @@ def test_a_refused_name_is_not_called_external(tmp_path):
         },
     )
     assert edges_at(root, "m.py", "run") == [("m.py", "Foo.run", "name")]  # unknown, not unresolved
+
+
+def test_template_generates_both_stages():
+    from duckgrep import schema
+
+    assert "py_scoped1 AS" in schema.EDGES_COMPUTE and "py_bind1 AS" in schema.EDGES_COMPUTE
+    assert "@N@" not in schema.EDGES_COMPUTE
