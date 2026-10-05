@@ -720,3 +720,37 @@ def test_class_body_aliases(tmp_path):
         root, "SELECT line, dst_qualname FROM edges WHERE src_path = 'views.py' AND resolution = 'typed' ORDER BY line"
     )
     assert got == [(14, "Base.run"), (15, "Base.get"), (16, "Base.get"), (22, "Base.run")]
+
+
+def test_method_return_through_a_typed_receiver(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "eng.py": "from other import Other\n\n\nclass Engine:\n    def make(self) -> Other:\n        return Other()\n\n"
+            "    def plain(self):\n        return Other()\n",
+            "use.py": "from eng import Engine\n\n\nclass T:\n    def go(self):\n        e = Engine()\n"
+            "        t = e.make()\n        t.run()\n        p = e.plain()\n        return p.get()\n",
+        },
+    )
+    got = rows(
+        root, "SELECT line, dst_qualname FROM edges WHERE src_path = 'use.py' AND resolution = 'typed' ORDER BY line"
+    )
+    assert (8, "Other.run") in got and (10, "Other.get") in got
+
+
+def test_self_method_return_and_the_stage_cap(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "eng.py": "from base import Base\n\n\nclass Engine:\n    def make(self):\n        return Base()\n",
+            "use.py": "from eng import Engine\n\n\nclass T:\n    def _engine(self):\n        return Engine()\n\n"
+            "    def go(self):\n        e = self._engine()\n        e.make()\n        t = e.make()\n        return t.run()\n",
+        },
+    )
+    got = rows(
+        root, "SELECT line, dst_qualname FROM edges WHERE src_path = 'use.py' AND resolution = 'typed' ORDER BY line"
+    )
+    assert got == [(10, "Engine.make"), (11, "Engine.make")]  # t.run() would need a third stage: none

@@ -317,6 +317,27 @@ CROSS_FILE = {  # name: (files, edits)
         },
         {"view.py": "from a import A\nfrom b import B\n\n\nclass View:\n    form_class = B\n"},
     ),
+    "a method behind x = h.m() changes its return": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "eng.py": "from a import A\nfrom b import B\n\n\nclass Engine:\n    def make(self):\n        return A()\n",
+            "use.py": "from eng import Engine\n\n\ndef f():\n    e = Engine()\n    t = e.make()\n    return t.m()\n",
+        },
+        {"eng.py": "from a import A\nfrom b import B\n\n\nclass Engine:\n    def make(self):\n        return B()\n"},
+    ),
+    "a subclass starts overriding the method behind x = h.m()": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "base.py": "from a import A\n\n\nclass Base:\n    def make(self):\n        return A()\n",
+            "eng.py": "from base import Base\n\n\nclass Engine(Base):\n    pass\n",
+            "use.py": "from eng import Engine\n\n\ndef f():\n    e = Engine()\n    t = e.make()\n    return t.m()\n",
+        },
+        {
+            "eng.py": "from base import Base\nfrom b import B\n\n\nclass Engine(Base):\n    def make(self):\n        return B()\n"
+        },
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (

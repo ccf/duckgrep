@@ -506,6 +506,15 @@ py_open AS (  -- classes with a base outside the repo, or one that can't be name
     FROM py_anc a JOIN py_base b ON b.path = a.apath AND b.qual = a.aqual
     GROUP BY ALL
 ),
+py_diamond AS (  -- classes reaching an ancestor by two paths: there the last-occurrence order may not be Python's
+    SELECT DISTINCT path, qual FROM (SELECT path, qual FROM py_anc GROUP BY path, qual, apath, aqual HAVING count(*) > 1)
+),
+py_blocker AS (  -- bases outside the repo or unnameable, each at its last depth-first position in a class's ancestry
+    SELECT a.path, a.qual, max(list_append(a.ord, b.pos)) AS ord
+    FROM py_anc a JOIN py_base b ON b.path = a.apath AND b.qual = a.aqual
+    WHERE b.ext OR b.opaque
+    GROUP BY a.path, a.qual, coalesce(b.btext, b.path || ':' || b.qual || ':' || b.pos)
+),
 py_r AS (SELECT * FROM r WHERE family = 'py' AND kind = 'call' AND receiver IS NOT NULL),
 py_global AS (  -- names a global/nonlocal statement rebinds somewhere in the file: never inferred there
     SELECT DISTINCT path, name FROM bindings WHERE kind = 'global'
@@ -586,6 +595,15 @@ py_subj2 AS (  -- stage 2 subjects: the head of `h.a.m()` (h a name or self.x), 
     ANTI JOIN py_type1 t ON t.path = r.path AND t.line = r.line AND t.col = r.col
     WHERE regexp_matches(r.receiver, '^[A-Za-z_][A-Za-z0-9_]*([.][A-Za-z_][A-Za-z0-9_]*)?[.][A-Za-z_][A-Za-z0-9_]*$')
       AND NOT regexp_matches(r.receiver, '^(self|cls)[.][A-Za-z_][A-Za-z0-9_]*$')
+  UNION ALL  -- x = h.m(...): the head h, in the scope that binds x, for the method's return
+    SELECT b.path, b.line, b.col, b.bscope, r.scope_class,
+           regexp_extract(b.type_text, '^call:([A-Za-z_][A-Za-z0-9_]*)[.]', 1),
+           regexp_extract(b.type_text, '[A-Za-z_][A-Za-z0-9_]*$'), 'ret'
+    FROM py_bind1 b
+    JOIN py_r r ON r.path = b.path AND r.line = b.line AND r.col = b.col
+    ANTI JOIN py_type1 t ON t.path = b.path AND t.line = b.line AND t.col = b.col
+    WHERE b.tpath = b.path AND b.bscope IS NOT NULL
+      AND regexp_matches(b.type_text, '^call:[A-Za-z_][A-Za-z0-9_]*[.][A-Za-z_][A-Za-z0-9_]*$')
 ),
 @PY_TYPING_2@
 py_attr2 AS (  -- h.a: a's type text and the file it's written in
@@ -616,9 +634,30 @@ py_attr2 AS (  -- h.a: a's type text and the file it's written in
     GROUP BY ALL
     HAVING count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') = 0 AND count(DISTINCT b.type_text) = 1
 ),
+py_ret2 AS (  -- x = h.m(...): the first definer of m in h's class, unless the order is uncertain
+    SELECT path, line, col, dst_path, dst_qual FROM (
+        SELECT t.path, t.line, t.col, t.cpath, t.cqual, a.ord, s.path AS dst_path, s.qualname AS dst_qual,
+               count(*) OVER (PARTITION BY t.path, t.line, t.col) AS n_def,
+               row_number() OVER (PARTITION BY t.path, t.line, t.col ORDER BY a.ord, s.start_line) AS rk
+        FROM py_type2 t
+        JOIN py_subj2 j ON j.path = t.path AND j.line = t.line AND j.col = t.col AND j.how = 'ret'
+        JOIN py_mro a ON a.path = t.cpath AND a.qual = t.cqual AND a.depth >= t.from_depth
+        JOIN symbols s ON s.path = a.apath AND s.parent = a.aqual AND s.name = j.attr AND s.kind = 'method'
+        WHERE NOT t.ext
+    ) h
+    WHERE rk = 1
+      AND NOT (n_def > 1 AND len(h.ord) > 0
+               AND EXISTS (SELECT 1 FROM py_diamond x WHERE x.path = h.cpath AND x.qual = h.cqual))
+      AND NOT EXISTS (SELECT 1 FROM py_blocker k WHERE k.path = h.cpath AND k.qual = h.cqual AND k.ord < h.ord)
+),
 py_type2x AS (  -- stage 2 types: the attribute's type text, read in the file that binds it (no return hop)
     SELECT a.path, a.line, a.col, c.cpath, c.cqual, 0 AS from_depth, FALSE AS ext
     FROM py_attr2 a JOIN py_tclass c ON c.path = a.apath AND c.text = a.type_text AND c.hop = 0
+  UNION ALL  -- ... and the class that method returns (annotated or inferred), in the method's file
+    SELECT r.path, r.line, r.col, c.cpath, c.cqual, 0, FALSE
+    FROM py_ret2 r
+    JOIN py_ret pr ON pr.path = r.dst_path AND pr.qual = r.dst_qual
+    JOIN py_tclass c ON c.path = r.dst_path AND c.hop = 0 AND c.text = pr.text  -- Foo and call:Foo are both keys
 ),
 py_type AS (
     SELECT * FROM py_type1
@@ -638,15 +677,6 @@ py_defs AS (  -- the in-repo ancestors that define the called method
            s.kind AS dst_kind, s.start_line AS dst_line
     FROM py_cand c
     JOIN symbols s ON s.path = c.apath AND s.parent = c.aqual AND s.name = c.name AND s.kind IN ('method', 'class')
-),
-py_diamond AS (  -- classes reaching an ancestor by two paths: there the last-occurrence order may not be Python's
-    SELECT DISTINCT path, qual FROM (SELECT path, qual FROM py_anc GROUP BY path, qual, apath, aqual HAVING count(*) > 1)
-),
-py_blocker AS (  -- bases outside the repo or unnameable, each at its last depth-first position in a class's ancestry
-    SELECT a.path, a.qual, max(list_append(a.ord, b.pos)) AS ord
-    FROM py_anc a JOIN py_base b ON b.path = a.apath AND b.qual = a.aqual
-    WHERE b.ext OR b.opaque
-    GROUP BY a.path, a.qual, coalesce(b.btext, b.path || ':' || b.qual || ':' || b.pos)
 ),
 py_hit AS (  -- the first definer in resolution order, unless the order is uncertain or an unknown base comes first
     SELECT path, line, col, dst_path, dst_qualname, dst_kind, dst_line FROM (
