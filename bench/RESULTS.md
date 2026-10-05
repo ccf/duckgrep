@@ -128,6 +128,18 @@ The `typed` tier infers a Python receiver's class from syntax, resolves it throu
   - The dirty marking takes only re-exported imports, where it had marked the methods of 101 classes imported by `query.py`.
   - Edge sync reads dirty refs through `refs` by rowid, in batches, and falls back to a batched rebuild if it runs out of memory. A one-line edit to `django/db/models/fields/__init__.py` had exhausted the default 2 GB and left the index stuck; it now syncs in about a second.
 
+### Deterministic baseline (main at cf0ba66, 2026-10-04)
+
+`bench/accuracy.py` now orders its query before sampling, so a rerun on one index scores the same calls. Two django runs differed by one call: jedi placed it in the repo once and outside once. Coverage and precision were identical.
+
+| repo | sample | in-repo calls | confident coverage of in-repo calls | precision |
+|---|---:|---:|---:|---:|
+| django (0ae93a0) | 3,000 | 1,554 | 89.6% | 100.0% |
+| freqtrade (f2ec745) | 3,000 | 1,598 | 93.1% | 100.0% |
+| requests (611c616) | 300 | 137 | 92.0% | 100.0% |
+
+`bench/typed_diff.py <repo> <before.duckdb> <after.duckdb> [n]` lists the Python calls whose confident targets differ between two indexes, and checks a sample against jedi. It is the per-rule gate of type inference Phase 2.
+
 ## A/B evaluation: full run, repetition 1 (2026-10-02)
 
 The pilot's question, asked at scale: does a Claude Code agent find code with fewer tool calls, tokens and round trips when it has duckgrep, without losing accuracy? The design is in `docs/specs/2026-09-30-ab-eval-full-run.md`. The tables are in the next section but one, "A/B evaluation: full".
