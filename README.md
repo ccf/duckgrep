@@ -123,10 +123,17 @@ Tree-sitter gives syntax, not types, so every edge says how it was resolved:
 - **Confident:** `self`, `local`, `package` (Go), `import`, `module` and `qualified`. These come from scope and import analysis:
   - aliases, relative imports, and star imports (Python and Rust);
   - `go.mod` prefixes and Cargo crate names;
-  - one hop of re-exports (`__init__.py`, `export … from`, `pub use`).
+  - re-exports: one hop in every language (`__init__.py`, `export … from`, `pub use`), and up to three named or star (`from .x import *`) hops in Python.
 
   `qualified` (`Class.method`, `Type::method`) requires the class to be defined or imported in the calling file.
-- **`typed`** (confident, Python for now): `obj.method()` where the receiver's class can be read from syntax: `x = Foo()`, an annotation (`p: Foo`, or `-> Foo` one call away), `self.attr` set or annotated in the class, an imported module-level instance, or `self`/`super()` through base classes in other files. A name bound more than once, or to something untypable, gets no inference. The edge goes to the method on that class or its nearest in-repo base; a subclass that overrides it isn't followed, so `callers('Sub.m')` misses calls typed as the base. A receiver whose class is outside the repo (`io.StringIO()`, a literal) is `unresolved`, not a `name` guess.
+- **`typed`** (confident, Python for now): `obj.method()` where the receiver's class can be read from syntax. That covers:
+  - `x = Foo()` and `Foo(...).m()`;
+  - an annotation (`p: Foo`, or `-> Foo` one call away), or an unannotated function whose every `return` gives the same class;
+  - `self.attr` set or annotated in the class, one more attribute hop (`bot.exchange.m()`, `User.objects.m()`, `mod.hook.m()`), and class-body aliases (`form_class = Foo`, then `self.form_class()`);
+  - an imported module-level instance, a class defined in the calling function, and `x = h.m()` on a typed `h`;
+  - `self`, `super()` and `super(C, self)` through base classes in other files.
+
+  A name bound more than once, or to something untypable, gets no inference. The edge goes to the method on that class or its nearest in-repo base; a subclass that overrides it isn't followed, so `callers('Sub.m')` misses calls typed as the base. A receiver whose class is outside the repo (`io.StringIO()`, a literal) is `unresolved`, not a `name` guess.
 - **`name`:** `obj.method()` on a receiver of unknown type, matched by method name only. Kept as one row per candidate when there are ≤10 candidates.
 - **`ambiguous`:** more than 10 candidates, or a method that builtin types also have (`get`, `append`, `push`, `clone`…). The target is left NULL rather than guessed. `callers('Class.method')` ends with a row counting these calls.
 - **`unresolved`:** no in-repo target found. That covers stdlib, builtins, third-party code, calls on a receiver bound to an external import (`json.dumps`), and imports duckgrep can't follow.
@@ -141,11 +148,11 @@ Measured against jedi's goto-definition on sampled calls in Python repos ([bench
 
 | repo | calls with an in-repo target | resolved confidently | precision |
 |---|---:|---:|---:|
-| django | 1,569 | 87.8% | 99.9% |
-| freqtrade | 1,647 | 90.9% | 100% |
-| requests | 161 | 90.1% | 100% |
+| django | 1,554 | 95.3% | 100% |
+| freqtrade | 1,598 | 95.4% | 100% |
+| requests | 137 | 95.6% | 100% |
 
-The rest fall to `name`, `ambiguous` or `unresolved`, which say so rather than guess. What remains are receivers syntax can't type (unannotated parameters, loop variables, chained calls, and runtime-built APIs such as Django's managers); see the [roadmap](https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md).
+The rest fall to `name`, `ambiguous` or `unresolved`, which say so rather than guess. What remains are receivers syntax can't type (unannotated parameters, loop variables, longer chains, and runtime-built APIs such as Django's managers); see the [roadmap](https://github.com/ccf/duckgrep/blob/main/docs/roadmap.md).
 </details>
 
 <details>
