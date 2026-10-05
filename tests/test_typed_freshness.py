@@ -227,6 +227,33 @@ CROSS_FILE = {  # name: (files, edits)
         },
         {"pkg/__init__.py": "from b import Thing\n"},
     ),
+    "star source gains, loses or renames the name": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "other.py": "class Foo:\n    def m(self):\n        return 2\n",
+            "pkg/__init__.py": "from src import *\n",
+            "use.py": "from pkg import Foo\n\n\ndef f():\n    x = Foo()\n    return x.m()\n",
+        },
+        {"src.py": "class Bar:\n    def m(self):\n        return 1\n"},
+    ),
+    "a second star source starts defining the name": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "two.py": "class Two:\n    def m(self):\n        return 2\n",
+            "pkg/__init__.py": "from src import *\nfrom two import *\n",
+            "use.py": "from pkg import Foo\n\n\ndef f():\n    x = Foo()\n    return x.m()\n",
+        },
+        {"two.py": "class Foo:\n    def m(self):\n        return 2\n"},
+    ),
+    "a re-export hop is inserted": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "mid/__init__.py": "",
+            "pkg/__init__.py": "from mid import *\n",
+            "use.py": "from pkg import Foo\n\n\ndef f():\n    x = Foo()\n    return x.m()\n",
+        },
+        {"mid/__init__.py": "from src import Foo\n"},
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (

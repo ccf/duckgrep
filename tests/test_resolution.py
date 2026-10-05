@@ -312,3 +312,23 @@ def test_private_stdlib_modules_and_the_resolved_imports_view(tmp_path):
     assert got["proj/app.py:json"] is None
     assert got["proj/app.py:proj.utils"] is not None  # an ordinary package import still resolves
     assert got["src/use.py:math"] == "src/math.py"
+
+
+def test_bare_and_module_calls_through_star_chains(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "ops/models.py": "def make():\n    return 1\n",
+            "ops/__init__.py": "from ops.models import make\n",
+            "mig/__init__.py": "from ops import *\n",
+            "use.py": "import mig\nfrom mig import make\n\n\ndef f():\n    make()\n    return mig.make()\n",
+        },
+    )
+    got = rows(
+        root,
+        "SELECT line, dst_path, dst_qualname, resolution FROM edges WHERE src_path = 'use.py' "
+        "AND name = 'make' AND ref_kind = 'call' ORDER BY ALL",
+    )
+    assert got == [(6, "ops/models.py", "make", "import"), (7, "ops/models.py", "make", "module")]

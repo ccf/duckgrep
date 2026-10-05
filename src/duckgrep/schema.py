@@ -152,6 +152,23 @@ UNION SELECT unnest([i."local", i.name]) FROM imports i  -- names the file re-ex
           WHERE m.path IN ({files})
       ) x ON x.path = i.path AND (x.name IS NULL OR x.name = i."local")
       WHERE i.path IN ({files}) AND i.family = 'py' AND i."local" IS NOT NULL
+UNION SELECT name FROM ({star_names})
+"""
+
+# Names reachable through the star imports of {files}, up to 3 hops (with named re-exports along the way): a change
+# to any of those modules can change what a star-importer exposes under these names.
+STAR_NAMES = """
+SELECT name FROM (
+    WITH RECURSIVE st(tgt, d) AS (
+        SELECT target_path, 1 FROM imports_resolved
+        WHERE path IN ({files}) AND family = 'py' AND name = '*' AND target_path IS NOT NULL
+      UNION
+        SELECT i.target_path, st.d + 1 FROM st JOIN imports_resolved i ON i.path = st.tgt
+        WHERE i.family = 'py' AND i.target_path IS NOT NULL AND (i.name = '*' OR i."local" = i.name) AND st.d < 3
+    )
+    SELECT s.name FROM st JOIN symbols s ON s.path = st.tgt AND s.parent IS NULL
+    UNION SELECT i."local" FROM st JOIN imports i ON i.path = st.tgt AND i."local" IS NOT NULL
+)
 """
 
 TYPED_DIRTY = """
@@ -303,9 +320,32 @@ sym AS (
 ),
 -- ---- typed tier (Python): the receiver's class, inferred from per-file facts (bindings, symbols.returns)
 py_imp AS (SELECT * FROM imports_resolved WHERE family = 'py'),
-py_rx AS (  -- names a module imports from another: one re-export hop
-    SELECT path AS mod_path, "local", name, target_path FROM py_imp
-    WHERE target_path IS NOT NULL AND NOT target_is_module AND "local" IS NOT NULL AND name IS NOT NULL
+py_own AS (  -- names a module binds itself at the top (a definition, assignment or named import): a star never
+             -- overrides them there
+    SELECT path, name FROM symbols WHERE lang = 'python' AND parent IS NULL
+  UNION SELECT path, name FROM bindings WHERE scope = '' AND kind IN ('assign', 'annot', 'import', 'global')
+),
+py_hop AS (  -- one re-export step: module mod_path exposes, from file src, the name name_in (NULL: every name, a star)
+    SELECT path AS mod_path, target_path AS src, name AS name_in FROM py_imp
+    WHERE name IS NOT NULL AND name <> '*' AND "local" = name AND target_path IS NOT NULL AND NOT target_is_module
+  UNION ALL
+    SELECT path, target_path, NULL FROM py_imp
+    WHERE name = '*' AND "local" IS NULL AND target_path IS NOT NULL AND NOT target_is_module
+),
+py_exp AS (  -- (module, name) -> the top-level definition it exposes, through at most 3 named or star hops
+    SELECT path AS mod_path, name, path AS dpath, qualname AS dqual, 0 AS hops
+    FROM symbols WHERE lang = 'python' AND parent IS NULL
+  UNION
+    SELECT h.mod_path, e.name, e.dpath, e.dqual, e.hops + 1
+    FROM py_exp e JOIN py_hop h ON h.src = e.mod_path AND coalesce(h.name_in, e.name) = e.name
+    WHERE e.hops < 3
+      AND (h.name_in IS NOT NULL
+           OR (NOT starts_with(e.name, '_')
+               AND NOT EXISTS (SELECT 1 FROM py_own o WHERE o.path = h.mod_path AND o.name = e.name)))
+),
+py_exp1 AS (  -- ... when every path agrees on one definition (two star sources of one name: refuse)
+    SELECT mod_path, name, min(dpath) AS dpath, min(dqual) AS dqual FROM py_exp
+    GROUP BY mod_path, name HAVING count(DISTINCT (dpath, dqual)) = 1
 ),
 py_tx AS (  -- dotted names to resolve, per file: binding types, callees, return annotations, class receivers
     SELECT DISTINCT path, text, split_part(text, '.', 1) AS head,
@@ -343,12 +383,12 @@ py_def AS (  -- a dotted name in a file -> the definition it names (class, funct
         FROM py_tx t
         JOIN py_imp i ON i.path = t.path AND i."local" = t.head AND i.name IS NOT NULL AND NOT i.target_is_module
         JOIN symbols s ON s.path = i.target_path AND s.qualname = i.name || substr(t.text, length(t.head) + 1)
-      UNION ALL  -- ... re-exported by m
+      UNION ALL  -- ... re-exported by m (named or star hops, at most 3)
         SELECT t.path, t.text, t.head, s.path, s.qualname, s.kind, s.returns, s.start_line, i.line, 2
         FROM py_tx t
         JOIN py_imp i ON i.path = t.path AND i."local" = t.head AND i.name IS NOT NULL AND NOT i.target_is_module
-        JOIN py_rx x ON x.mod_path = i.target_path AND x."local" = i.name
-        JOIN symbols s ON s.path = x.target_path AND s.qualname = x.name || substr(t.text, length(t.head) + 1)
+        JOIN py_exp1 x ON x.mod_path = i.target_path AND x.name = i.name
+        JOIN symbols s ON s.path = x.dpath AND s.qualname = x.dqual || substr(t.text, length(t.head) + 1)
       UNION ALL  -- mod.Foo, a.b.Foo through a module import
         SELECT t.path, t.text, t.head, s.path, s.qualname, s.kind, s.returns, s.start_line, i.line, 3
         FROM py_tx t
@@ -356,14 +396,14 @@ py_def AS (  -- a dotted name in a file -> the definition it names (class, funct
              AND ((i."local" = t.prefix AND (i.name IS NULL OR i.target_is_module))
                   OR (i.name IS NULL AND i.alias IS NULL AND i.module = t.prefix))
         JOIN symbols s ON s.path = i.target_path AND s.parent IS NULL AND s.name = t.tail
-      UNION ALL  -- ... re-exported by that module
+      UNION ALL  -- ... re-exported by that module (named or star hops, at most 3)
         SELECT t.path, t.text, t.head, s.path, s.qualname, s.kind, s.returns, s.start_line, i.line, 4
         FROM py_tx t
         JOIN py_imp i ON i.path = t.path AND t.prefix IS NOT NULL AND i.target_path IS NOT NULL
              AND ((i."local" = t.prefix AND (i.name IS NULL OR i.target_is_module))
                   OR (i.name IS NULL AND i.alias IS NULL AND i.module = t.prefix))
-        JOIN py_rx x ON x.mod_path = i.target_path AND x."local" = t.tail
-        JOIN symbols s ON s.path = x.target_path AND s.parent IS NULL AND s.name = x.name
+        JOIN py_exp1 x ON x.mod_path = i.target_path AND x.name = t.tail
+        JOIN symbols s ON s.path = x.dpath AND s.qualname = x.dqual
     ) c
     WHERE NOT EXISTS (  -- `class Foo` then `Foo = Other` (or an import of Foo): the name no longer means the class
         SELECT 1 FROM bindings bb WHERE bb.path = c.dpath AND bb.scope = '' AND bb.name = split_part(c.dqual, '.', 1)
@@ -547,6 +587,24 @@ t1 AS (
     JOIN sym s ON s.path = rx.target_path AND s.parent IS NULL
            AND s.name = CASE WHEN rx.name = '*' THEN r.name ELSE coalesce(nullif(rx.name, 'default'), rx."local") END
     WHERE r.receiver IS NULL AND r.family IN ('py', 'rs')
+  UNION ALL
+    -- Python: `from pkg import get` through re-export chains (named and star, up to 3 hops)
+    SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'import'
+    FROM r
+    JOIN imp i ON i.path = r.path AND i."local" = r.name AND NOT i.target_is_module
+              AND i.name IS NOT NULL AND i.name <> '*'
+    JOIN py_exp1 x ON x.mod_path = i.target_path AND x.name = i.name
+    JOIN symbols s ON s.path = x.dpath AND s.qualname = x.dqual
+    WHERE r.receiver IS NULL AND r.family = 'py'
+  UNION ALL
+    -- Python: `pkg.get()` through re-export chains
+    SELECT r.*, s.path, s.qualname, s.kind, s.start_line, 'module'
+    FROM r
+    JOIN imp i ON i.path = r.path AND (i."local" = r.receiver OR i.module = r.receiver)
+              AND (i.target_is_module OR i.name IS NULL)
+    JOIN py_exp1 x ON x.mod_path = i.target_path AND x.name = r.name
+    JOIN symbols s ON s.path = x.dpath AND s.qualname = x.dqual
+    WHERE r.receiver IS NOT NULL AND r.family = 'py'
   UNION ALL
     -- Class.method / Type::method, with the class bound in this file: defined here, imported by name
     -- (directly or through one re-export), or reached through an imported module (mod.Class.method)

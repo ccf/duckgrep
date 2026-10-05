@@ -470,7 +470,8 @@ def freshen(
                     "CREATE OR REPLACE TEMP TABLE _aff_names AS "
                     "SELECT name FROM symbols WHERE path IN (SELECT path FROM _chg) "
                     'UNION SELECT "local" FROM imports WHERE path IN (SELECT path FROM _chg) '
-                    'AND "local" IS NOT NULL'
+                    'AND "local" IS NOT NULL '
+                    "UNION " + schema.STAR_NAMES.format(files="SELECT path FROM _chg")
                 )
                 con.execute(
                     "CREATE OR REPLACE TEMP TABLE _aff_keys AS "
@@ -478,7 +479,10 @@ def freshen(
                 )
                 con.execute(
                     "CREATE OR REPLACE TEMP TABLE _aff_types AS "
-                    + schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM _chg")
+                    + schema.TYPED_DIRTY_SEED.format(
+                        files="SELECT path FROM _chg",
+                        star_names=schema.STAR_NAMES.format(files="SELECT path FROM _chg"),
+                    )
                 )
             for t in PER_FILE_TABLES + ["files"]:
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
@@ -600,7 +604,8 @@ def _mark_edges_dirty(con) -> None:
         "INSERT INTO edges_dirty SELECT 'name', NULL, name FROM _aff_names "
         "UNION SELECT 'name', NULL, name FROM symbols WHERE path IN (SELECT path FROM _chg) "
         "UNION SELECT 'name', NULL, \"local\" FROM imports WHERE path IN (SELECT path FROM _chg) "
-        'AND "local" IS NOT NULL'
+        'AND "local" IS NOT NULL '
+        "UNION SELECT 'name', NULL, name FROM (" + schema.STAR_NAMES.format(files="SELECT path FROM _chg") + ")"
     )
     con.execute("""
         INSERT INTO edges_dirty
@@ -632,7 +637,10 @@ def _mark_edges_dirty(con) -> None:
     # typed edges also depend on other files' classes, bases, attr types and return annotations
     con.execute(
         schema.TYPED_DIRTY.format(
-            seed_after=schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM edges_dirty WHERE kind = 'path'"),
+            seed_after=schema.TYPED_DIRTY_SEED.format(
+                files="SELECT path FROM edges_dirty WHERE kind = 'path'",
+                star_names=schema.STAR_NAMES.format(files="SELECT path FROM edges_dirty WHERE kind = 'path'"),
+            ),
             depth=schema.INHERIT_DEPTH,
         )
     )

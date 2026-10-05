@@ -565,3 +565,54 @@ def test_template_generates_both_stages():
 
     assert "py_scoped1 AS" in schema.EDGES_COMPUTE and "py_bind1 AS" in schema.EDGES_COMPUTE
     assert "@N@" not in schema.EDGES_COMPUTE
+
+
+STAR = {
+    "pkg/fields.py": "class FileField:\n    def clean(self):\n        return 1\n\n\ndef _private():\n    return 0\n",
+    "pkg/__init__.py": "from pkg.fields import *\n",
+    "ops/models.py": "class CreateModel:\n    def state_forwards(self):\n        return 1\n",
+    "ops/__init__.py": "from ops.models import CreateModel\n",
+    "mig/__init__.py": "from ops import *\n",
+}
+
+
+def test_star_and_multi_hop_reexports(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            **STAR,
+            "use.py": "from pkg import FileField\nimport mig\n\n\n"
+            "def f():\n    x = FileField()\n    x.clean()\n    op = mig.CreateModel()\n    return op.state_forwards()\n",
+        },
+    )
+    assert edges_at(root, "use.py", "clean") == [("pkg/fields.py", "FileField.clean", "typed")]
+    assert edges_at(root, "use.py", "state_forwards") == [("ops/models.py", "CreateModel.state_forwards", "typed")]
+
+
+def test_star_reexports_refuse_two_sources_and_private_names(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "b.py": "class Foo:\n    def m(self):\n        return 2\n",
+            "two/__init__.py": "from a import *\nfrom b import *\n",
+            "p.py": "class _Hidden:\n    def go(self):\n        return 1\n",
+            "q/__init__.py": "from p import *\n",
+            "use.py": "from two import Foo\nfrom q import _Hidden\n\n\n"
+            "def f():\n    x = Foo()\n    h = _Hidden()\n    h.go()\n    return x.m()\n",
+        },
+    )
+    assert "typed" not in {r[2] for r in edges_at(root, "use.py", "m")}
+    assert "typed" not in {r[2] for r in edges_at(root, "use.py", "go")}  # a star doesn't export _names
+
+
+def test_cyclic_star_imports_terminate(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a/__init__.py": "from b import *\n\n\nclass A:\n    def m(self):\n        return 1\n",
+            "b/__init__.py": "from a import *\n",
+            "use.py": "from b import A\n\n\ndef f():\n    x = A()\n    return x.m()\n",
+        },
+    )
+    assert edges_at(root, "use.py", "m") == [("a/__init__.py", "A.m", "typed")]
