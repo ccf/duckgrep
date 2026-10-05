@@ -647,7 +647,8 @@ def _mark_edges_dirty(con) -> None:
         schema.TYPED_DIRTY.format(
             seed_after=schema.TYPED_DIRTY_SEED.format(
                 files="SELECT path FROM edges_dirty WHERE kind = 'path'",
-                star_names=schema.STAR_NAMES.format(files="SELECT path FROM edges_dirty WHERE kind = 'path'"),
+                # star names of the changed files only: a star-importer's own names are already path-dirty
+                star_names=schema.STAR_NAMES.format(files="SELECT path FROM _chg"),
             ),
             depth=schema.INHERIT_DEPTH,
         )
@@ -670,6 +671,8 @@ def sync_edges(con) -> int:
             SELECT rowid AS rid, path, line, col, name, hash(path) AS h FROM refs WHERE rowid IN (
                 SELECT rowid FROM refs WHERE path IN (SELECT path FROM edges_dirty WHERE kind = 'path')
                 UNION SELECT rowid FROM refs WHERE name IN (SELECT name FROM edges_dirty WHERE kind = 'name')
+                UNION SELECT rowid FROM refs WHERE name IN (SELECT name FROM edges_dirty WHERE kind = 'rname')
+                      AND receiver IS NOT NULL AND kind = 'call' AND lang = 'python'
                 -- refs bound through an import: by name (f()) or through their receiver (m.f(), Class.m())
                 UNION SELECT r.rowid FROM refs r
                       SEMI JOIN (SELECT path, name FROM edges_dirty WHERE kind = 'bound') b

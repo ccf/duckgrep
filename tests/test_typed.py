@@ -754,3 +754,61 @@ def test_self_method_return_and_the_stage_cap(tmp_path):
         root, "SELECT line, dst_qualname FROM edges WHERE src_path = 'use.py' AND resolution = 'typed' ORDER BY line"
     )
     assert got == [(10, "Engine.make"), (11, "Engine.make")]  # t.run() would need a third stage: none
+
+
+SCOPE_CLASS = {  # a binding in one class's method, used inside a class nested in that method: the binding's class
+    "self.make() bound outside a nested class that has its own make": (
+        {
+            "p.py": "class Part:\n    def run(self):\n        return 1\n\n\nclass Other:\n    def run(self):\n        return 2\n",
+            "e.py": "from p import Part, Other\n\n\nclass Engine:\n    def make(self):\n        return Part()\n\n"
+            "    def build(self):\n        part = self.make()\n\n        class Local:\n            def make(self):\n"
+            "                return Other()\n\n            def go(self):\n                return part.run()\n\n"
+            "        return Local\n",
+        },
+        "e.py",
+        "run",
+        "Other.run",
+    ),
+    "self.form_class() bound outside a nested class that has its own alias": (
+        {
+            "p.py": "class A:\n    def m(self):\n        return 1\n\n\nclass B:\n    def m(self):\n        return 2\n",
+            "v.py": "from p import A, B\n\n\nclass View:\n    form_class = A\n\n    def go(self):\n"
+            "        form = self.form_class()\n\n        class Local:\n            form_class = B\n\n"
+            "            def run(self):\n                return form.m()\n\n        return Local\n",
+        },
+        "v.py",
+        "m",
+        "B.m",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(SCOPE_CLASS))
+def test_a_binding_is_typed_in_its_own_class_not_the_callers(tmp_path, case):
+    files, path, name, wrong = SCOPE_CLASS[case]
+    root = make_repo(tmp_path / "r", files)
+    assert wrong not in {r[1] for r in edges_at(root, path, name) if r[2] == "typed"}
+
+
+def test_a_local_class_bound_before_its_class_line_is_not_inferred(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "t.py": "from base import Base\n\n\ndef f():\n    x = Late()\n\n    class Late(Base):\n        pass\n\n"
+            "    return x.run()\n",
+        },
+    )
+    assert "typed" not in {r[2] for r in edges_at(root, "t.py", "run")}
+
+
+def test_an_attribute_bound_through_a_class_alias(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "t.py": "from base import Base\n\n\nclass T:\n    storage_class = Base\n\n    def setUp(self):\n"
+            "        self.storage = self.storage_class()\n\n    def test(self):\n        return self.storage.run()\n",
+        },
+    )
+    assert edges_at(root, "t.py", "run") == [("base.py", "Base.run", "typed")]
