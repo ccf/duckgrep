@@ -290,6 +290,24 @@ CROSS_FILE = {  # name: (files, edits)
         },
         {"base.py": "from b import B\n\n\nclass Base(B):\n    pass\n"},
     ),
+    "an attribute's type changes in the head's class": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "bot.py": "from a import A\nfrom b import B\n\n\nclass Bot:\n    def __init__(self):\n        self.x = A()\n",
+            "use.py": "from bot import Bot\n\n\ndef f():\n    b = Bot()\n    return b.x.m()\n",
+        },
+        {"bot.py": "from a import A\nfrom b import B\n\n\nclass Bot:\n    def __init__(self):\n        self.x = B()\n"},
+    ),
+    "a module-level binding behind mod.attr changes": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "sig.py": "from a import A\nfrom b import B\n\nhook = A()\n",
+            "use.py": "import sig\n\n\ndef f():\n    return sig.hook.m()\n",
+        },
+        {"sig.py": "from a import A\nfrom b import B\n\nhook = B()\n"},
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (

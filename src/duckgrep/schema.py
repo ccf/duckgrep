@@ -394,6 +394,9 @@ py_tx AS (  -- dotted names to resolve, per file: binding types, callees, return
       UNION SELECT path, receiver FROM r
         WHERE family = 'py' AND regexp_matches(receiver, '^[A-Za-z_][A-Za-z0-9_]*([.][A-Za-z_][A-Za-z0-9_]*)*$')
           AND regexp_matches(recv_last, '^[A-Z]')
+      UNION SELECT path, regexp_extract(receiver, '^([A-Za-z_][A-Za-z0-9_]*)[.]', 1) FROM r
+        WHERE family = 'py' AND regexp_matches(receiver, '^[A-Za-z_][A-Za-z0-9_]*[.][A-Za-z_][A-Za-z0-9_]*$')
+          AND regexp_matches(receiver, '^[A-Z]')
     )
 ),
 py_multi AS (  -- names bound on more than one line of a file (imports at any depth, module-level definitions and
@@ -542,7 +545,53 @@ py_lcls AS (  -- classes defined in a function: once there, and no other binding
 ),
 py_subj1 AS (SELECT path, line, col, scope, scope_class, receiver AS subj FROM py_r),
 @PY_TYPING_1@
-py_type AS (SELECT * FROM py_type1),
+py_subj2 AS (  -- stage 2 subjects: the head of `h.a.m()` (h a name or self.x), for receivers stage 1 didn't type
+    SELECT r.path, r.line, r.col, r.scope, r.scope_class,
+           regexp_extract(r.receiver, '^(.*)[.][A-Za-z_][A-Za-z0-9_]*$', 1) AS subj,
+           regexp_extract(r.receiver, '[A-Za-z_][A-Za-z0-9_]*$') AS attr, 'attr' AS how
+    FROM py_r r
+    ANTI JOIN py_type1 t ON t.path = r.path AND t.line = r.line AND t.col = r.col
+    WHERE regexp_matches(r.receiver, '^[A-Za-z_][A-Za-z0-9_]*([.][A-Za-z_][A-Za-z0-9_]*)?[.][A-Za-z_][A-Za-z0-9_]*$')
+      AND NOT regexp_matches(r.receiver, '^(self|cls)[.][A-Za-z_][A-Za-z0-9_]*$')
+),
+@PY_TYPING_2@
+py_attr2 AS (  -- h.a: a's type text and the file it's written in
+    -- an instance or class head: the nearest class in its ancestry that binds self.a, when its bindings agree
+    SELECT path, line, col, apath, type_text FROM (
+        SELECT t.path, t.line, t.col, a.apath,
+               count(*) FILTER (WHERE b.type_text IS NULL) AS n_untyped,
+               count(DISTINCT b.type_text) AS n_types, min(b.type_text) AS type_text
+        FROM py_type2 t
+        JOIN py_subj2 s ON s.path = t.path AND s.line = t.line AND s.col = t.col AND s.how = 'attr'
+        JOIN py_mro a ON a.path = t.cpath AND a.qual = t.cqual AND a.depth >= t.from_depth
+        JOIN bindings b ON b.path = a.apath AND b.scope = a.aqual AND b.kind = 'attr' AND b.name = 'self.' || s.attr
+        WHERE NOT t.ext
+        GROUP BY t.path, t.line, t.col, a.apath, a.ord
+        QUALIFY row_number() OVER (PARTITION BY t.path, t.line, t.col ORDER BY a.ord) = 1
+    ) WHERE n_untyped = 0 AND n_types = 1
+  UNION ALL  -- a module head (bound only by an import): a's binding at the top of that module, bound once
+    SELECT s.path, s.line, s.col, i.target_path, min(b.type_text)
+    FROM py_subj2 s
+    JOIN py_imp i ON i.path = s.path AND i.target_path IS NOT NULL
+         AND ((i."local" = s.subj AND (i.name IS NULL OR i.target_is_module))
+              OR (i.name IS NULL AND i.alias IS NULL AND i.module = s.subj))
+    JOIN bindings b ON b.path = i.target_path AND b.scope = '' AND b.name = s.attr
+         AND b.kind IN ('assign', 'annot', 'global', 'import')
+    ANTI JOIN py_scoped2 x ON x.path = s.path AND x.line = s.line AND x.col = s.col
+    ANTI JOIN py_global g ON g.path = i.target_path AND g.name = s.attr
+    WHERE s.how = 'attr'
+    GROUP BY ALL
+    HAVING count(*) FILTER (WHERE b.type_text IS NULL OR b.kind = 'global') = 0 AND count(DISTINCT b.type_text) = 1
+),
+py_type2x AS (  -- stage 2 types: the attribute's type text, read in the file that binds it (no return hop)
+    SELECT a.path, a.line, a.col, c.cpath, c.cqual, 0 AS from_depth, FALSE AS ext
+    FROM py_attr2 a JOIN py_tclass c ON c.path = a.apath AND c.text = a.type_text AND c.hop = 0
+),
+py_type AS (
+    SELECT * FROM py_type1
+  UNION ALL
+    SELECT x.* FROM py_type2x x ANTI JOIN py_type1 t ON t.path = x.path AND t.line = x.line AND t.col = x.col
+),
 py_cand AS MATERIALIZED (  -- each typed receiver's classes to search, in resolution order (staged: joining the
                           -- ancestry to every method first was the tier's main cost)
     SELECT t.path, t.line, t.col, t.cpath, t.cqual, r.name, a.apath, a.aqual, a.ord
@@ -759,6 +808,7 @@ def _names(words) -> str:
 _GUARD = STDLIB_GUARD.replace("@PY_STDLIB@", _names(builtin_names.PY_STDLIB))
 EDGES_COMPUTE = (
     _EDGES_TEMPLATE.replace("@PY_TYPING_1@", _PY_TYPING.replace("@N@", "1"))
+    .replace("@PY_TYPING_2@", _PY_TYPING.replace("@N@", "2"))
     .replace("@BUILTIN_METHODS@", _values(builtin_names.METHODS))
     .replace("@BUILTIN_GLOBALS@", _values(builtin_names.GLOBALS))
     .replace("@STDLIB_GUARD@", _GUARD)

@@ -564,6 +564,7 @@ def test_template_generates_both_stages():
     from duckgrep import schema
 
     assert "py_scoped1 AS" in schema.EDGES_COMPUTE and "py_bind1 AS" in schema.EDGES_COMPUTE
+    assert "py_scoped2 AS" in schema.EDGES_COMPUTE
     assert "@N@" not in schema.EDGES_COMPUTE
 
 
@@ -677,3 +678,24 @@ def test_classes_defined_in_the_calling_function(tmp_path):
         root, "SELECT line, dst_qualname FROM edges WHERE src_path = 't.py' AND resolution = 'typed' ORDER BY line"
     )
     assert got == [(9, "Base.run"), (10, "Base.get"), (17, "Base.get")]
+
+
+def test_one_attribute_hop(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "bot.py": "from base import Base\nfrom other import Other\n\n\n"
+            "class Bot:\n    objects = Other()\n\n    def __init__(self):\n        self.exchange = Base()\n",
+            "sig.py": "from base import Base\n\npost_save = Base()\n",
+            "use.py": "import sig\nfrom bot import Bot\n\n\n"
+            "class Svc:\n    def __init__(self):\n        self.bot = Bot()\n\n"
+            "    def go(self):\n        return self.bot.exchange.run()\n\n\n"
+            "def f():\n    b = Bot()\n    b.exchange.get()\n    Bot.objects.run()\n    return sig.post_save.get()\n",
+        },
+    )
+    got = rows(
+        root, "SELECT line, dst_qualname FROM edges WHERE src_path = 'use.py' AND resolution = 'typed' ORDER BY line"
+    )
+    assert got == [(10, "Base.run"), (15, "Base.get"), (16, "Other.run"), (17, "Base.get")]
