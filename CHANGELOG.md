@@ -4,6 +4,20 @@ Notable changes to the `duckgrep` package, newest first. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- **Type inference, Phase 2 (Python).** Confident coverage of in-repo calls, measured against jedi, rose from 89.6% to 95.3% on django, from 93.1% to 95.4% on freqtrade and from 92.0% to 95.6% on requests, at 100% precision. The new cases:
+  - named and star re-exports, up to three hops (`from django.forms import FileField`, `migrations.CreateModel`);
+  - class-body aliases (`form_class = Foo`, then `self.form_class()`);
+  - one attribute hop on a typed instance, class or module (`bot.exchange.m()`, `User.objects.m()`);
+  - call-result receivers (`Foo(...).m()`, `super(C, self).m()`);
+  - unannotated functions whose returns agree, and `x = h.m()` on a typed `h`;
+  - classes defined in the calling function.
+- **The `qualified` tier** no longer reads a class name the calling function rebinds as the class.
+
+### Fixed
+- **Python star re-exports no longer give confident edges that Python wouldn't follow.** `from pkg import Foo` used to get an edge to each module when `pkg` star-imported `Foo` from two of them, and private `_names` were followed through a star. Both now get no confident edge.
+- **Indexing large repos on many-core machines no longer runs out of memory.** DuckDB's working memory grows with its thread count, so indexing now uses at most 4 threads (`DUCKGREP_THREADS` overrides it, as `DUCKGREP_MEMORY` does the 2 GB limit). With one thread per core, django's full edge rebuild needed nearly all of the 2 GB on a 16-core machine; at 4 threads it fits in 1 GB at the same speed.
+
 ## [0.2.1] - 2026-10-03
 
 ### Changed

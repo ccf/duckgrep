@@ -104,6 +104,7 @@ def _subtree(n):
 
 def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
     out: list[tuple] = []
+    fscopes: set[str] = set()  # function scopes: a class statement directly in one is a local class
 
     def text(n) -> str:
         return src[n.start_byte : n.end_byte].decode("utf-8", "replace")
@@ -176,6 +177,28 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             stack.extend(n.named_children)
         return out
 
+    def returns(fn_body) -> list[tuple]:
+        """(type text, node) per value-returning `return` of one function body (nested defs excluded); a
+        generator gives one untypable row, so no return is inferred for it"""
+        rows, stack, gen = [], [fn_body], False
+        while stack:
+            c = stack.pop()
+            if c.type in ("function_definition", "class_definition", "lambda"):
+                continue
+            if c.type == "yield":
+                gen = True
+            if c.type == "return_statement" and c.named_child_count:
+                v = c.named_children[0]
+                if v.type != "none":
+                    if v.type == "call":
+                        rows.append((value_type(v, {}), c))
+                    elif v.type == "identifier":
+                        rows.append(("var:" + text(v), c))
+                    else:
+                        rows.append((None, c))
+            stack.extend(c.named_children)
+        return [(None, fn_body)] if gen else rows
+
     def param(p):
         """(name, annotation node) for one parameter node"""
         t = p.type
@@ -203,6 +226,9 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
             if left is not None and left.type == "identifier":
                 tt = normalize_type(text(ann), qual) if ann is not None else value_type(right, {})
                 add(qual, "self." + text(left), "attr", tt, left)
+                rt = " ".join(text(right).split()) if right is not None else ""
+                if ann is None and right is not None and right.type in ("identifier", "attribute") and DOTTED.match(rt):
+                    add(qual, "self." + text(left), "alias", rt, left)  # X = Foo: self.X(...) makes a Foo
             return
         walk(c, qual, (qual, short), {})
 
@@ -214,6 +240,8 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
                 return
             short = text(nm)
             qual = f"{scope}.{short}" if scope else short
+            if scope in fscopes:
+                add(scope, short, "local_class", qual, nm)
             sup = n.child_by_field_name("superclasses")
             pos = 0
             for b in sup.named_children if sup is not None else []:
@@ -244,6 +272,10 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
                     ps[pname] = tt
             body = n.child_by_field_name("body")
             if body is not None:
+                fscopes.add(qual)
+                if n.child_by_field_name("return_type") is None:
+                    for tt, node in returns(body):
+                        add(qual, text(nm), "return", tt, node)
                 again = rebound(body)  # an annotation no longer types a parameter that is reassigned
                 walk(body, qual, cls, {k: v for k, v in ps.items() if k not in again})
             return
@@ -305,6 +337,23 @@ def extract_bindings(root, src: bytes, path: str) -> list[tuple]:
                     add(scope, text(a), kind, None, a)
                 else:
                     add(scope, text(c).split(".")[0], kind, None, c)
+        elif t == "call":  # Foo(...).m(), super(C, x).m(): the receiver is one call
+            fn = n.child_by_field_name("function")
+            if fn is not None and fn.type == "attribute":
+                obj, attr = fn.child_by_field_name("object"), fn.child_by_field_name("attribute")
+                if obj is not None and attr is not None and obj.type == "call":
+                    ofn = obj.child_by_field_name("function")
+                    ot = " ".join(text(ofn).split()) if ofn is not None else ""
+                    tt = None
+                    if ot == "super":
+                        args = obj.child_by_field_name("arguments")
+                        a = list(args.named_children) if args is not None else []
+                        if len(a) == 2 and a[0].type == "identifier":
+                            tt = "super:" + text(a[0])
+                    elif DOTTED.match(ot):
+                        tt = "call:" + ot
+                    if tt:
+                        add(scope, " ".join(text(obj).split()), "rcall", tt, attr, attr.start_point[1])
         elif t == "lambda":  # its parameters shadow the name inside the lambda, whose refs carry this scope
             plist = n.child_by_field_name("parameters")
             for p in plist.named_children if plist is not None else []:

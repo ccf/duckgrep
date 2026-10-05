@@ -312,3 +312,89 @@ def test_private_stdlib_modules_and_the_resolved_imports_view(tmp_path):
     assert got["proj/app.py:json"] is None
     assert got["proj/app.py:proj.utils"] is not None  # an ordinary package import still resolves
     assert got["src/use.py:math"] == "src/math.py"
+
+
+def test_bare_and_module_calls_through_star_chains(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "ops/models.py": "def make():\n    return 1\n",
+            "ops/__init__.py": "from ops.models import make\n",
+            "mig/__init__.py": "from ops import *\n",
+            "use.py": "import mig\nfrom mig import make\n\n\ndef f():\n    make()\n    return mig.make()\n",
+        },
+    )
+    got = rows(
+        root,
+        "SELECT line, dst_path, dst_qualname, resolution FROM edges WHERE src_path = 'use.py' "
+        "AND name = 'make' AND ref_kind = 'call' ORDER BY ALL",
+    )
+    assert got == [(6, "ops/models.py", "make", "import"), (7, "ops/models.py", "make", "module")]
+
+
+def test_qualified_skips_a_rebound_class_name(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": "class Base:\n    def run(self):\n        return 1\n",
+            "use.py": "from base import Base\n\n\ndef f(other):\n    Base = other\n    return Base.run()\n\n\n"
+            "def g():\n    return Base.run(None)\n",
+        },
+    )
+    got = rows(root, "SELECT line, resolution FROM edges WHERE src_path = 'use.py' AND name = 'run' ORDER BY ALL")
+    assert (6, "qualified") not in got and (10, "qualified") in got
+
+
+def test_qualified_keeps_a_class_imported_inside_the_function(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": "class Base:\n    @classmethod\n    def run(cls):\n        return 1\n",
+            "use.py": "def f():\n    from base import Base\n\n    return Base.run()\n",
+        },
+    )
+    got = rows(root, "SELECT line, resolution FROM edges WHERE src_path = 'use.py' AND name = 'run' ORDER BY ALL")
+    assert (4, "qualified") in got
+
+
+def test_star_reexport_refusals_hold_in_every_tier(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "a.py": "def Foo():\n    return 1\n",
+            "b.py": "def Foo():\n    return 2\n",
+            "two/__init__.py": "from a import *\nfrom b import *\n",
+            "p.py": "def _helper():\n    return 1\n",
+            "q/__init__.py": "from p import *\n",
+            "use.py": "import q\nfrom two import Foo\nfrom q import _helper\n\n\n"
+            "def f():\n    Foo()\n    _helper()\n    return q._helper()\n",
+        },
+    )
+    got = rows(
+        root,
+        "SELECT name, resolution FROM edges WHERE src_path = 'use.py' AND ref_kind = 'call' "
+        "AND resolution IN ('import', 'module') ORDER BY ALL",
+    )
+    assert got == []
+
+
+def test_qualified_sees_a_rebinding_on_the_import_line(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": "class Base:\n    def run(self):\n        return 1\n",
+            "use.py": "def f(other):\n    from base import Base; Base = other\n    return Base.run()\n",
+        },
+    )
+    got = rows(root, "SELECT resolution FROM edges WHERE src_path = 'use.py' AND name = 'run'")
+    assert ("qualified",) not in got

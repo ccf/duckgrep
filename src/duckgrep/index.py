@@ -115,6 +115,17 @@ def db_path(root: str) -> str:
     return os.path.join(d, DB_FILE)
 
 
+def _writer_config() -> dict:
+    """The indexing connection's limits. DuckDB's working memory grows with its thread count, so threads are capped
+    (default 4): with one per core, django's edge rebuild needed nearly the whole 2 GB on a 16-core machine."""
+    threads = int(os.environ.get("DUCKGREP_THREADS", "0")) or min(4, os.cpu_count() or 1)
+    return {
+        "preserve_insertion_order": False,
+        "memory_limit": os.environ.get("DUCKGREP_MEMORY", "2GB"),
+        "threads": threads,
+    }
+
+
 def connect(root: str, read_only: bool = False, retries: int = 40) -> duckdb.DuckDBPyConnection:
     """Open the index. Retries briefly if another duckgrep process holds the write lock."""
     path = db_path(root)
@@ -123,16 +134,13 @@ def connect(root: str, read_only: bool = False, retries: int = 40) -> duckdb.Duc
         try:
             if read_only:
                 return duckdb.connect(path, read_only=True)
-            con = duckdb.connect(
-                path,
-                config={"preserve_insertion_order": False, "memory_limit": os.environ.get("DUCKGREP_MEMORY", "2GB")},
-            )
+            con = duckdb.connect(path, config=_writer_config())
             if not ensure_schema(con):
                 con.close()
                 for suffix in ("", ".wal"):
                     if os.path.exists(path + suffix):
                         os.remove(path + suffix)
-                con = duckdb.connect(path)
+                con = duckdb.connect(path, config=_writer_config())
                 ensure_schema(con)
             return con
         except duckdb.IOException as e:  # lock held by another process
@@ -470,7 +478,8 @@ def freshen(
                     "CREATE OR REPLACE TEMP TABLE _aff_names AS "
                     "SELECT name FROM symbols WHERE path IN (SELECT path FROM _chg) "
                     'UNION SELECT "local" FROM imports WHERE path IN (SELECT path FROM _chg) '
-                    'AND "local" IS NOT NULL'
+                    'AND "local" IS NOT NULL '
+                    "UNION " + schema.STAR_NAMES.format(files="SELECT path FROM _chg")
                 )
                 con.execute(
                     "CREATE OR REPLACE TEMP TABLE _aff_keys AS "
@@ -478,7 +487,10 @@ def freshen(
                 )
                 con.execute(
                     "CREATE OR REPLACE TEMP TABLE _aff_types AS "
-                    + schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM _chg")
+                    + schema.TYPED_DIRTY_SEED.format(
+                        files="SELECT path FROM _chg",
+                        star_names=schema.STAR_NAMES.format(files="SELECT path FROM _chg"),
+                    )
                 )
             for t in PER_FILE_TABLES + ["files"]:
                 con.execute(f"DELETE FROM {t} WHERE path IN (SELECT path FROM _chg)")
@@ -600,7 +612,8 @@ def _mark_edges_dirty(con) -> None:
         "INSERT INTO edges_dirty SELECT 'name', NULL, name FROM _aff_names "
         "UNION SELECT 'name', NULL, name FROM symbols WHERE path IN (SELECT path FROM _chg) "
         "UNION SELECT 'name', NULL, \"local\" FROM imports WHERE path IN (SELECT path FROM _chg) "
-        'AND "local" IS NOT NULL'
+        'AND "local" IS NOT NULL '
+        "UNION SELECT 'name', NULL, name FROM (" + schema.STAR_NAMES.format(files="SELECT path FROM _chg") + ")"
     )
     con.execute("""
         INSERT INTO edges_dirty
@@ -632,7 +645,11 @@ def _mark_edges_dirty(con) -> None:
     # typed edges also depend on other files' classes, bases, attr types and return annotations
     con.execute(
         schema.TYPED_DIRTY.format(
-            seed_after=schema.TYPED_DIRTY_SEED.format(files="SELECT path FROM edges_dirty WHERE kind = 'path'"),
+            seed_after=schema.TYPED_DIRTY_SEED.format(
+                files="SELECT path FROM edges_dirty WHERE kind = 'path'",
+                # star names of the changed files only: a star-importer's own names are already path-dirty
+                star_names=schema.STAR_NAMES.format(files="SELECT path FROM _chg"),
+            ),
             depth=schema.INHERIT_DEPTH,
         )
     )
@@ -654,6 +671,8 @@ def sync_edges(con) -> int:
             SELECT rowid AS rid, path, line, col, name, hash(path) AS h FROM refs WHERE rowid IN (
                 SELECT rowid FROM refs WHERE path IN (SELECT path FROM edges_dirty WHERE kind = 'path')
                 UNION SELECT rowid FROM refs WHERE name IN (SELECT name FROM edges_dirty WHERE kind = 'name')
+                UNION SELECT rowid FROM refs WHERE name IN (SELECT name FROM edges_dirty WHERE kind = 'rname')
+                      AND receiver IS NOT NULL AND kind = 'call' AND lang = 'python'
                 -- refs bound through an import: by name (f()) or through their receiver (m.f(), Class.m())
                 UNION SELECT r.rowid FROM refs r
                       SEMI JOIN (SELECT path, name FROM edges_dirty WHERE kind = 'bound') b

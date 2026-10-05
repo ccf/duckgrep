@@ -227,6 +227,128 @@ CROSS_FILE = {  # name: (files, edits)
         },
         {"pkg/__init__.py": "from b import Thing\n"},
     ),
+    "star source gains, loses or renames the name": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "other.py": "class Foo:\n    def m(self):\n        return 2\n",
+            "pkg/__init__.py": "from src import *\n",
+            "use.py": "from pkg import Foo\n\n\ndef f():\n    x = Foo()\n    return x.m()\n",
+        },
+        {"src.py": "class Bar:\n    def m(self):\n        return 1\n"},
+    ),
+    "a second star source starts defining the name": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "two.py": "class Two:\n    def m(self):\n        return 2\n",
+            "pkg/__init__.py": "from src import *\nfrom two import *\n",
+            "use.py": "from pkg import Foo\n\n\ndef f():\n    x = Foo()\n    return x.m()\n",
+        },
+        {"two.py": "class Foo:\n    def m(self):\n        return 2\n"},
+    ),
+    "a re-export hop is inserted": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "mid/__init__.py": "",
+            "pkg/__init__.py": "from mid import *\n",
+            "use.py": "from pkg import Foo\n\n\ndef f():\n    x = Foo()\n    return x.m()\n",
+        },
+        {"mid/__init__.py": "from src import Foo\n"},
+    ),
+    "the class behind Foo().m() changes": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "use.py": "from src import Foo\n\n\ndef f():\n    return Foo().m()\n",
+        },
+        {"src.py": "class Foo:\n    def n(self):\n        return 1\n"},
+    ),
+    "an unannotated function's return changes": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "mk.py": "from a import A\nfrom b import B\n\n\ndef make():\n    return A()\n",
+            "use.py": "from mk import make\n\n\ndef f():\n    x = make()\n    return x.m()\n",
+        },
+        {"mk.py": "from a import A\nfrom b import B\n\n\ndef make():\n    return B()\n"},
+    ),
+    "an unannotated function's returns stop agreeing": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "mk.py": "from a import A\nfrom b import B\n\n\ndef make(c):\n    return A()\n",
+            "use.py": "from mk import make\n\n\ndef f():\n    x = make(1)\n    return x.m()\n",
+        },
+        {
+            "mk.py": "from a import A\nfrom b import B\n\n\ndef make(c):\n    if c:\n        return B()\n    return A()\n"
+        },
+    ),
+    "a local class's base changes in another file": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "base.py": "from a import A\n\n\nclass Base(A):\n    pass\n",
+            "t.py": "from base import Base\n\n\ndef t():\n    class L(Base):\n        pass\n\n    return L().m()\n",
+        },
+        {"base.py": "from b import B\n\n\nclass Base(B):\n    pass\n"},
+    ),
+    "an attribute's type changes in the head's class": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "bot.py": "from a import A\nfrom b import B\n\n\nclass Bot:\n    def __init__(self):\n        self.x = A()\n",
+            "use.py": "from bot import Bot\n\n\ndef f():\n    b = Bot()\n    return b.x.m()\n",
+        },
+        {"bot.py": "from a import A\nfrom b import B\n\n\nclass Bot:\n    def __init__(self):\n        self.x = B()\n"},
+    ),
+    "a module-level binding behind mod.attr changes": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "sig.py": "from a import A\nfrom b import B\n\nhook = A()\n",
+            "use.py": "import sig\n\n\ndef f():\n    return sig.hook.m()\n",
+        },
+        {"sig.py": "from a import A\nfrom b import B\n\nhook = B()\n"},
+    ),
+    "a class alias's target changes in a base class": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "view.py": "from a import A\nfrom b import B\n\n\nclass View:\n    form_class = A\n",
+            "sub.py": "from view import View\n\n\nclass Sub(View):\n    def go(self):\n        return self.form_class().m()\n",
+        },
+        {"view.py": "from a import A\nfrom b import B\n\n\nclass View:\n    form_class = B\n"},
+    ),
+    "a method behind x = h.m() changes its return": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "eng.py": "from a import A\nfrom b import B\n\n\nclass Engine:\n    def make(self):\n        return A()\n",
+            "use.py": "from eng import Engine\n\n\ndef f():\n    e = Engine()\n    t = e.make()\n    return t.m()\n",
+        },
+        {"eng.py": "from a import A\nfrom b import B\n\n\nclass Engine:\n    def make(self):\n        return B()\n"},
+    ),
+    "a subclass starts overriding the method behind x = h.m()": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def m(self):\n        return 2\n",
+            "base.py": "from a import A\n\n\nclass Base:\n    def make(self):\n        return A()\n",
+            "eng.py": "from base import Base\n\n\nclass Engine(Base):\n    pass\n",
+            "use.py": "from eng import Engine\n\n\ndef f():\n    e = Engine()\n    t = e.make()\n    return t.m()\n",
+        },
+        {
+            "eng.py": "from base import Base\nfrom b import B\n\n\nclass Engine(Base):\n    def make(self):\n        return B()\n"
+        },
+    ),
+    "a subclass shadows an inherited method with a class-body assignment": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "root.py": "from a import A\n\n\nclass Root:\n    def make(self):\n        return A()\n",
+            "child.py": "from root import Root\n\n\nclass Child(Root):\n    pass\n",
+            "use.py": "from child import Child\n\n\ndef f():\n    c = Child()\n    c.make()\n    x = c.make()\n    return x.m()\n",
+        },
+        {
+            "child.py": "from root import Root\n\n\ndef other():\n    return None\n\n\nclass Child(Root):\n    make = other\n"
+        },
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (
@@ -299,3 +421,284 @@ def test_a_sync_that_runs_out_of_memory_falls_back_to_a_rebuild(tmp_path, monkey
     assert rows(root, "SELECT count(*) FROM edges_dirty") == [(0,)]
     monkeypatch.setattr(index, "_compute_edges", real)
     same(root, tmp_path)
+
+
+STAGE2_FRESH = {  # review cases: stage-2, alias and return dependencies across files (name: (files, edits))
+    "stage2 class head via sibling ref (py_tx batch dependence)": (
+        {
+            "app.py": "from pkg import models\n"
+            "\n"
+            "\n"
+            "def f():\n"
+            "    models.Foo.bar()\n"
+            "    return models.Foo.objects.create()\n",
+            "other.py": "class Other:\n    def zzz(self):\n        return 1\n",
+            "pkg/__init__.py": "",
+            "pkg/models.py": "class Manager:\n"
+            "    def create(self):\n"
+            "        return 1\n"
+            "\n"
+            "\n"
+            "class Foo:\n"
+            "    objects = Manager()\n"
+            "\n"
+            "    @classmethod\n"
+            "    def bar(cls):\n"
+            "        return 2\n",
+        },
+        {"other.py": "class Other:\n    def create(self):\n        return 1\n"},
+    ),
+    "var: return behind a re-export switch": (
+        {
+            "lib1.py": "class E1:\n    def m(self):\n        return 1\n\n\ndef make():\n    e = E1()\n    return e\n",
+            "lib2.py": "class E2:\n    def m(self):\n        return 2\n\n\ndef make():\n    e = E2()\n    return e\n",
+            "pkg/__init__.py": "from lib1 import make\n",
+            "use.py": "from pkg import make\n\n\ndef f():\n    x = make()\n    return x.m()\n",
+        },
+        {"pkg/__init__.py": "from lib2 import make\n"},
+    ),
+    "call: return behind a re-export switch (control)": (
+        {
+            "lib1.py": "class E1:\n    def m(self):\n        return 1\n\n\ndef make():\n    return E1()\n",
+            "lib2.py": "class E2:\n    def m(self):\n        return 2\n\n\ndef make():\n    return E2()\n",
+            "pkg/__init__.py": "from lib1 import make\n",
+            "use.py": "from pkg import make\n\n\ndef f():\n    x = make()\n    return x.m()\n",
+        },
+        {"pkg/__init__.py": "from lib2 import make\n"},
+    ),
+    "alias head in stage 2 (py_alias_need batch dependence)": (
+        {
+            "a.py": "class Bar:\n"
+            "    def go(self):\n"
+            "        return 1\n"
+            "\n"
+            "\n"
+            "class Foo:\n"
+            "    x = Bar()\n"
+            "\n"
+            "    @classmethod\n"
+            "    def make(cls):\n"
+            "        return 2\n"
+            "\n"
+            "\n"
+            "class C:\n"
+            "    form_class = Foo\n"
+            "\n"
+            "    def run(self):\n"
+            "        self.form_class.make()\n"
+            "        return self.form_class.x.go()\n",
+            "other.py": "class Other:\n    def zzz(self):\n        return 1\n",
+        },
+        {"other.py": "class Other:\n    def go(self):\n        return 1\n"},
+    ),
+    "subclass override of h.make() to a class without m": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "b.py": "class B:\n    def n(self):\n        return 2\n",
+            "base.py": "from a import A\n\n\nclass Base:\n    def make(self):\n        return A()\n",
+            "eng.py": "from base import Base\n\n\nclass Engine(Base):\n    pass\n",
+            "use.py": "from eng import Engine\n\n\ndef f():\n    e = Engine()\n    t = e.make()\n    return t.m()\n",
+        },
+        {
+            "eng.py": "from base import Base\n"
+            "from b import B\n"
+            "\n"
+            "\n"
+            "class Engine(Base):\n"
+            "    def make(self):\n"
+            "        return B()\n"
+        },
+    ),
+    "alias exposed by removing a nearer binding": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "other.py": "class Other:\n    def m(self):\n        return 3\n",
+            "sub.py": "from view import View\n"
+            "\n"
+            "\n"
+            "class Sub(View):\n"
+            "    def __init__(self, k):\n"
+            "        self.form_class = k\n",
+            "sub2.py": "from sub import Sub\n"
+            "\n"
+            "\n"
+            "class Sub2(Sub):\n"
+            "    def go(self):\n"
+            "        return self.form_class().m()\n",
+            "view.py": "from a import A\n\n\nclass View:\n    form_class = A\n",
+        },
+        {"sub.py": "from view import View\n\n\nclass Sub(View):\n    def __init__(self, k):\n        pass\n"},
+    ),
+    "phase1 analog: self.x exposed by removing a nearer binding": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "other.py": "class Other:\n    def m(self):\n        return 3\n",
+            "sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        self.x = k\n",
+            "sub2.py": "from sub import Sub\n\n\nclass Sub2(Sub):\n    def go(self):\n        return self.x.m()\n",
+            "view.py": "from a import A\n\n\nclass View:\n    def __init__(self):\n        self.x = A()\n",
+        },
+        {"sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        pass\n"},
+    ),
+    "attr hop exposed by removing a nearer binding": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "other.py": "class Other:\n    def m(self):\n        return 3\n",
+            "sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        self.x = k\n",
+            "use.py": "from sub import Sub\n\n\ndef f():\n    s = Sub()\n    return s.x.m()\n",
+            "view.py": "from a import A\n\n\nclass View:\n    def __init__(self):\n        self.x = A()\n",
+        },
+        {"sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        pass\n"},
+    ),
+    "alias hidden by adding a nearer untyped binding": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "other.py": "class Other:\n    def m(self):\n        return 3\n",
+            "sub.py": "from view import View\n\n\nclass Sub(View):\n    def __init__(self, k):\n        pass\n",
+            "sub2.py": "from sub import Sub\n"
+            "\n"
+            "\n"
+            "class Sub2(Sub):\n"
+            "    def go(self):\n"
+            "        return self.form_class().m()\n",
+            "view.py": "from a import A\n\n\nclass View:\n    form_class = A\n",
+        },
+        {
+            "sub.py": "from view import View\n"
+            "\n"
+            "\n"
+            "class Sub(View):\n"
+            "    def __init__(self, k):\n"
+            "        self.form_class = k\n"
+        },
+    ),
+    "phase1 analog: self.x hidden by adding a nearer untyped binding": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "other.py": "class Other:\n    def m(self):\n        return 3\n",
+            "sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        pass\n",
+            "sub2.py": "from sub import Sub\n\n\nclass Sub2(Sub):\n    def go(self):\n        return self.x.m()\n",
+            "view.py": "from a import A\n\n\nclass View:\n    def __init__(self):\n        self.x = A()\n",
+        },
+        {"sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        self.x = k\n"},
+    ),
+    "attr hop hidden by adding a nearer untyped binding": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "other.py": "class Other:\n    def m(self):\n        return 3\n",
+            "sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        pass\n",
+            "use.py": "from sub import Sub\n\n\ndef f():\n    s = Sub()\n    return s.x.m()\n",
+            "view.py": "from a import A\n\n\nclass View:\n    def __init__(self):\n        self.x = A()\n",
+        },
+        {"sub.py": "from view import View\n\n\nclass Sub(View):\n    def setk(self, k):\n        self.x = k\n"},
+    ),
+    "module attr: module-level binding becomes untyped": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "other.py": "class Other:\n    def m(self):\n        return 3\n",
+            "sig.py": "from a import A\n\nhook = A()\n",
+            "use.py": "import sig\n\n\ndef f():\n    return sig.hook.m()\n",
+        },
+        {"sig.py": "from a import A\n\nhook = A()\nhook = make()\n"},
+    ),
+    "attr hop: the head's class changes through an inferred return in another file": (
+        {
+            "base.py": "class Base:\n    def get(self):\n        return 1\n",
+            "bot.py": "from base import Base\n\n\nclass Bot:\n    def __init__(self):\n        self.exchange = Base()\n",
+            "bot2.py": "from other import Other\n"
+            "\n"
+            "\n"
+            "class Bot2:\n"
+            "    def __init__(self):\n"
+            "        self.exchange = Other()\n",
+            "mk.py": "from bot import Bot\nfrom bot2 import Bot2\n\n\ndef make():\n    return Bot()\n",
+            "other.py": "class Other:\n    def get(self):\n        return 2\n",
+            "use.py": "from mk import make\n\n\ndef f():\n    b = make()\n    return b.exchange.get()\n",
+        },
+        {"mk.py": "from bot import Bot\nfrom bot2 import Bot2\n\n\ndef make():\n    return Bot2()\n"},
+    ),
+    "attr hop: the head's class changes through an annotated return in another file": (
+        {
+            "base.py": "class Base:\n    def get(self):\n        return 1\n",
+            "bot.py": "from base import Base\n\n\nclass Bot:\n    def __init__(self):\n        self.exchange = Base()\n",
+            "bot2.py": "from other import Other\n"
+            "\n"
+            "\n"
+            "class Bot2:\n"
+            "    def __init__(self):\n"
+            "        self.exchange = Other()\n",
+            "mk.py": "from bot import Bot\nfrom bot2 import Bot2\n\n\ndef make() -> Bot:\n    return Bot()\n",
+            "other.py": "class Other:\n    def get(self):\n        return 2\n",
+            "use.py": "from mk import make\n\n\ndef f():\n    b = make()\n    return b.exchange.get()\n",
+        },
+        {"mk.py": "from bot import Bot\nfrom bot2 import Bot2\n\n\ndef make() -> Bot2:\n    return Bot2()\n"},
+    ),
+    "ret: the head's class changes in another file": (
+        {
+            "base.py": "class Base:\n    def get(self):\n        return 1\n",
+            "eng.py": "from base import Base\n\n\nclass Engine:\n    def make(self):\n        return Base()\n",
+            "eng2.py": "from other import Other\n\n\nclass Engine2:\n    def make(self):\n        return Other()\n",
+            "mk.py": "from eng import Engine\nfrom eng2 import Engine2\n\n\ndef engine():\n    return Engine()\n",
+            "other.py": "class Other:\n    def get(self):\n        return 2\n",
+            "use.py": "from mk import engine\n\n\ndef f():\n    e = engine()\n    t = e.make()\n    return t.get()\n",
+        },
+        {"mk.py": "from eng import Engine\nfrom eng2 import Engine2\n\n\ndef engine():\n    return Engine2()\n"},
+    ),
+    "attr hop: middle class changes its base in another file": (
+        {
+            "base.py": "class Base:\n    def get(self):\n        return 1\n",
+            "bot.py": "from v1 import V1\nfrom v2 import V2\n\n\nclass Bot(V1):\n    pass\n",
+            "other.py": "class Other:\n    def get(self):\n        return 2\n",
+            "use.py": "from bot import Bot\n\n\ndef f():\n    b = Bot()\n    return b.exchange.get()\n",
+            "v1.py": "from base import Base\n\n\nclass V1:\n    def __init__(self):\n        self.exchange = Base()\n",
+            "v2.py": "from other import Other\n"
+            "\n"
+            "\n"
+            "class V2:\n"
+            "    def __init__(self):\n"
+            "        self.exchange = Other()\n",
+        },
+        {"bot.py": "from v1 import V1\nfrom v2 import V2\n\n\nclass Bot(V2):\n    pass\n"},
+    ),
+    "phase1 analog: self.x where the class's base changes in another file": (
+        {
+            "base.py": "class Base:\n    def get(self):\n        return 1\n",
+            "bot.py": "from v1 import V1\nfrom v2 import V2\n\n\nclass Bot(V1):\n    pass\n",
+            "other.py": "class Other:\n    def get(self):\n        return 2\n",
+            "sub.py": "from bot import Bot\n"
+            "\n"
+            "\n"
+            "class Sub(Bot):\n"
+            "    def go(self):\n"
+            "        return self.exchange.get()\n",
+            "v1.py": "from base import Base\n\n\nclass V1:\n    def __init__(self):\n        self.exchange = Base()\n",
+            "v2.py": "from other import Other\n"
+            "\n"
+            "\n"
+            "class V2:\n"
+            "    def __init__(self):\n"
+            "        self.exchange = Other()\n",
+        },
+        {"bot.py": "from v1 import V1\nfrom v2 import V2\n\n\nclass Bot(V2):\n    pass\n"},
+    ),
+    "ret with class head (inherited classmethod): py_tx batch dependence": (
+        {
+            "a.py": "class A:\n    def m(self):\n        return 1\n",
+            "base.py": "from a import A\n\n\nclass Base:\n    @classmethod\n    def create(cls):\n        return A()\n",
+            "foo.py": "from base import Base\n"
+            "\n"
+            "\n"
+            "class Foo(Base):\n"
+            "    @classmethod\n"
+            "    def bar(cls):\n"
+            "        return 1\n",
+            "other.py": "class Other:\n    def zzz(self):\n        return 1\n",
+            "use.py": "from foo import Foo\n\n\ndef f():\n    Foo.bar()\n    x = Foo.create()\n    return x.m()\n",
+        },
+        {"other.py": "class Other:\n    def m(self):\n        return 1\n"},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STAGE2_FRESH))
+def test_stage2_dependencies_keep_typed_edges_fresh(tmp_path, case):
+    edit_and_compare(tmp_path, *STAGE2_FRESH[case])

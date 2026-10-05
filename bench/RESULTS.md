@@ -140,6 +140,51 @@ The `typed` tier infers a Python receiver's class from syntax, resolves it throu
 
 `bench/typed_diff.py <repo> <before.duckdb> <after.duckdb> [n]` lists the Python calls whose confident targets differ between two indexes, and checks a sample against jedi. It is the per-rule gate of type inference Phase 2.
 
+### Type inference, Phase 2 (2026-10-05)
+
+Spec `docs/specs/2026-10-04-type-inference-phase-2.md`. Accuracy uses the deterministic `bench/accuracy.py`, on the same commits as the main baseline above.
+
+| repo | in-repo calls | confident coverage, main | Phase 2 | change | precision |
+|---|---:|---:|---:|---:|---:|
+| django (0ae93a0) | 1,554 | 89.6% | 95.3% | +5.7 | 100.0% |
+| freqtrade (f2ec745) | 1,598 | 93.1% | 95.4% | +2.3 | 100.0% |
+| requests (611c616) | 137 | 92.0% | 95.6% | +3.6 | 100.0% |
+
+None of the three samples had a confident miss to classify.
+
+**Per rule:** each rule landed as its own commit, with `bench/typed_diff.py` run on an index built before and after it. It lists the calls whose confident targets changed, and checks up to 30 of them against jedi. A call agrees only if every confident target is one jedi gives.
+
+| rule | django gained | agreement | freqtrade gained | agreement |
+|---|---:|---:|---:|---:|
+| named and star re-exports, up to 3 hops | 3,473 | 30/30 | 25 | 25/25 |
+| call-result receivers, `super(C, x)` | 686 | 30/30 | 64 | 30/30 |
+| inferred unannotated returns | 37 | 30/30 | 7 | 7/7 |
+| classes defined in the calling function | 752 | 30/30 | 0 | – |
+| one attribute hop (instance, class, module) | 581 | 30/30 | 212 | 30/30 |
+| class-body aliases | 273 | 30/30 | 0 | – |
+| a method's return through a typed receiver | 138 | 30/30 | 3 | 3/3 |
+| `qualified` skips a rebound class name | 0 changed | – | 0 changed | – |
+
+No rule changed or removed an existing confident target. Over the whole branch, main's index against Phase 2's gives django +5,940 confident edges and freqtrade +311. That re-check used the final gate, which also counts a call jedi resolves only outside the repo as a disagreement. Agreement was 60/60 on each repo. The `qualified` fix first removed 1 django edge and 28 freqtrade edges. All of them came from imports inside functions, which the extractor records as assignments. The fix now ignores those, and changes nothing on either repo.
+
+**Latency** (`bench/latency.py` on django; medians at a load average of 5–15). These are the final numbers, after the review fixes:
+
+| | main | Phase 2 | change |
+|---|---:|---:|---:|
+| full index | 7.13 s | 7.79 s | +9% |
+| no-op freshen | 113 ms | 116 ms | +3% |
+| edge sync after editing `query.py`, main at its 16-thread default | 454 ms (70,673 refs) | 572 ms (74,749 refs) | +26% |
+| edge sync after editing `query.py`, both at 4 threads | 494 ms | 571 ms | +16% |
+| edge sync after editing `forms/fields.py` (star-imported), both at 4 threads | 397 ms (56,095 refs) | 446 ms (40,560 refs) | +12% |
+| catch-up after 300 commits | 5.99 s | 6.81 s | +14% |
+| typical queries (`defs`, `callers`, `callees`, two hops, `grep`) | 7–14 ms | 8–15 ms | unchanged |
+
+- **Threads:** indexing now runs DuckDB with at most 4 threads (`DUCKGREP_THREADS`). With one thread per core, django's full rebuild needed nearly all of the 2 GB memory limit on this 16-core machine: on main it failed at 1.5 GB, and so did Phase 2 at 2 GB. At 4 threads it fits in 1 GB at the same speed. The 4-thread rows isolate what the new SQL costs.
+- **Freshness:** the review found edits that left stale typed edges behind stage-2 types. The cases were a class's ancestry, an attribute, an alias or a method return changing in another file. The dirty marking now follows those classes too. It marks their method names as `rname`, which recomputes only Python receiver calls, so the sync stays narrow: editing `forms/fields.py` recomputes fewer refs than on main.
+- **Two joins main already had:** `py_base`'s join to imports and `rest`'s joins to external receivers ran as nested loops, about 280 ms and 160–210 ms of a sync. Both are hash joins now. Every django edge is identical before and after.
+- **vscode:** not measured. There is no clone on this machine, and Phase 2's SQL only runs for Python.
+
+
 ## A/B evaluation: full run, repetition 1 (2026-10-02)
 
 The pilot's question, asked at scale: does a Claude Code agent find code with fewer tool calls, tokens and round trips when it has duckgrep, without losing accuracy? The design is in `docs/specs/2026-09-30-ab-eval-full-run.md`. The tables are in the next section but one, "A/B evaluation: full".

@@ -201,3 +201,20 @@ def test_reexports(repo, tmp_path):
     write(repo, "pkg/sub/__init__.py", "from .helpers import normalize\n")
     rows(repo, "SELECT 1")
     assert snapshot(repo) == fresh_snapshot(repo, tmp_path / "x")
+
+
+def test_the_writer_caps_threads_so_memory_does_not_scale_with_cores(tmp_path, monkeypatch):
+    from duckgrep.index import connect
+
+    root = str(tmp_path)
+    con = connect(root)
+    try:
+        assert con.execute("SELECT current_setting('threads')").fetchone()[0] <= 4
+    finally:
+        con.close()
+    monkeypatch.setenv("DUCKGREP_THREADS", "2")
+    con = connect(root)
+    try:
+        assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 2
+    finally:
+        con.close()
