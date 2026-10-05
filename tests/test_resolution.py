@@ -332,3 +332,32 @@ def test_bare_and_module_calls_through_star_chains(tmp_path):
         "AND name = 'make' AND ref_kind = 'call' ORDER BY ALL",
     )
     assert got == [(6, "ops/models.py", "make", "import"), (7, "ops/models.py", "make", "module")]
+
+
+def test_qualified_skips_a_rebound_class_name(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": "class Base:\n    def run(self):\n        return 1\n",
+            "use.py": "from base import Base\n\n\ndef f(other):\n    Base = other\n    return Base.run()\n\n\n"
+            "def g():\n    return Base.run(None)\n",
+        },
+    )
+    got = rows(root, "SELECT line, resolution FROM edges WHERE src_path = 'use.py' AND name = 'run' ORDER BY ALL")
+    assert (6, "qualified") not in got and (10, "qualified") in got
+
+
+def test_qualified_keeps_a_class_imported_inside_the_function(tmp_path):
+    from helpers import make_repo, rows
+
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": "class Base:\n    @classmethod\n    def run(cls):\n        return 1\n",
+            "use.py": "def f():\n    from base import Base\n\n    return Base.run()\n",
+        },
+    )
+    got = rows(root, "SELECT line, resolution FROM edges WHERE src_path = 'use.py' AND name = 'run' ORDER BY ALL")
+    assert (4, "qualified") in got

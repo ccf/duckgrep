@@ -709,6 +709,12 @@ py_typed_ext AS (  -- typed receivers whose method can only be outside the repo
     JOIN py_open o ON o.path = t.cpath AND o.qual = t.cqual AND o.ext AND NOT o.opaque
     ANTI JOIN py_defs h ON h.path = t.path AND h.line = t.line AND h.col = t.col  -- an in-repo definer: not external
 ),
+py_rebound AS (  -- capitalised names a function assigns or takes as a parameter: there they aren't the class
+    -- (an import inside a function is recorded as an assignment: it binds the class, so it doesn't count)
+    SELECT DISTINCT b.path, b.scope, b.name FROM bindings b
+    ANTI JOIN imports i ON i.path = b.path AND i."local" = b.name AND i.line = b.line
+    WHERE b.kind IN ('assign', 'annot', 'param') AND b.scope <> '' AND regexp_matches(b.name, '^[A-Z]')
+),
 t1 AS (
     SELECT r.*, s.path AS dst_path, s.qualname AS dst_qualname, s.kind AS dst_kind, s.start_line AS dst_line,
            'self' AS resolution
@@ -807,6 +813,9 @@ t1 AS (
                       WHERE i.path = r.path AND i."local" = r.recv_last
                         AND rx."local" = coalesce(nullif(i.name, 'default'), r.recv_last)
                         AND rx.target_path = s.path))
+      AND NOT (r.family = 'py' AND EXISTS (
+          SELECT 1 FROM py_rebound b WHERE b.path = r.path AND b.name = r.recv_root
+            AND (b.scope = r.scope OR starts_with(r.scope, b.scope || '.'))))
   UNION ALL
     -- the receiver's class, inferred from syntax (constructor, annotation, base classes)
     SELECT r.*, h.dst_path, h.dst_qualname, h.dst_kind, h.dst_line, 'typed'
