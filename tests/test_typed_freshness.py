@@ -254,6 +254,13 @@ CROSS_FILE = {  # name: (files, edits)
         },
         {"mid/__init__.py": "from src import Foo\n"},
     ),
+    "the class behind Foo().m() changes": (
+        {
+            "src.py": "class Foo:\n    def m(self):\n        return 1\n",
+            "use.py": "from src import Foo\n\n\ndef f():\n    return Foo().m()\n",
+        },
+        {"src.py": "class Foo:\n    def n(self):\n        return 1\n"},
+    ),
 }
 EXT_FLIPS = {  # a class's ancestry or a callee's return gains or loses an external type: name <-> unresolved
     "external base added": (

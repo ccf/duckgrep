@@ -257,6 +257,11 @@ py_bind@N@ AS (  -- subject -> (file to resolve its type in, type text, binding 
         GROUP BY r.path, r.line, r.col, a.apath, a.ord
         QUALIFY row_number() OVER (PARTITION BY r.path, r.line, r.col ORDER BY a.ord) = 1
     ) WHERE n_untyped = 0 AND n_types = 1
+  UNION ALL  -- Foo(...).m(), mod.Foo(...).m(): the receiver is one call, typed like `x = Foo(...)`
+    SELECT r.path, r.line, r.col, r.path, b.type_text, r.scope
+    FROM py_subj@N@ r
+    JOIN bindings b ON b.path = r.path AND b.kind = 'rcall' AND b.line = r.line AND b.pos = r.col
+    WHERE starts_with(b.type_text, 'call:')
 ),
 py_type@N@ AS (  -- typed subject -> its class (cpath, cqual) and where the method search starts
     SELECT b.path, b.line, b.col, c.cpath, c.cqual, 0 AS from_depth, FALSE AS ext
@@ -268,6 +273,11 @@ py_type@N@ AS (  -- typed subject -> its class (cpath, cqual) and where the meth
     SELECT r.path, r.line, r.col, d.dpath, d.dqual, 0, FALSE
     FROM py_subj@N@ r JOIN py_def d ON d.path = r.path AND d.text = r.subj AND d.dkind = 'class'
     ANTI JOIN py_scoped@N@ s ON s.path = r.path AND s.line = r.line AND s.col = r.col
+  UNION ALL  -- super(C, x): like super(), when C is the enclosing class
+    SELECT r.path, r.line, r.col, r.path, r.scope_class, 1, FALSE
+    FROM py_subj@N@ r
+    JOIN bindings b ON b.path = r.path AND b.kind = 'rcall' AND b.line = r.line AND b.pos = r.col
+    WHERE r.scope_class IS NOT NULL AND b.type_text = 'super:' || regexp_extract(r.scope_class, '[^.]*$')
 ),
 """
 

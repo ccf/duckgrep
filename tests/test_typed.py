@@ -616,3 +616,20 @@ def test_cyclic_star_imports_terminate(tmp_path):
         },
     )
     assert edges_at(root, "use.py", "m") == [("a/__init__.py", "A.m", "typed")]
+
+
+def test_call_result_receivers_and_two_argument_super(tmp_path):
+    root = make_repo(
+        tmp_path / "r",
+        {
+            "base.py": BASE,
+            "other.py": OTHER,
+            "ext_use.py": "from extlib import Ext\n\n\ndef g():\n    return Ext().run()\n",
+            "use.py": "import other\nfrom base import Base\n\n\n"
+            "class Child(Base):\n    def get(self):\n        return super(Child, self).get()\n\n\n"
+            "def f():\n    Base().run()\n    return other.Other(1).get()\n",
+        },
+    )
+    assert edges_at(root, "use.py", "run") == [("base.py", "Base.run", "typed")]
+    assert edges_at(root, "use.py", "get") == [("base.py", "Base.get", "typed"), ("other.py", "Other.get", "typed")]
+    assert [r[2] for r in edges_at(root, "ext_use.py", "run")] == ["unresolved"]
